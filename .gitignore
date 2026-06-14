@@ -1,0 +1,15 @@
+target/
+.m2/
+.npm-cache/
+.akshare-venv/
+akshare-service/__pycache__/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
+*.log
+.idea/
+*.iml
+.superpowers/
+.data/

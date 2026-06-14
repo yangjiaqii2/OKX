@@ -1,0 +1,83 @@
+spring:
+  application:
+    name: quant-assistant
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/quant_assistant?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+
+quant:
+  auth:
+    username: ${QUANT_AUTH_USERNAME:admin}
+    password: ${QUANT_AUTH_PASSWORD:admin123}
+    session-ttl-minutes: ${QUANT_AUTH_SESSION_TTL_MINUTES:480}
+  stock:
+    enabled: true
+    data-source: AKSHARE
+    scan-interval-seconds: 300
+    min-turnover-amount: 300000000
+    min-change-percent: 2
+    max-change-percent: 8
+    volume-spike-ratio: 1.5
+    exclude-st: true
+    analyze-only: true
+  contract:
+    enabled: true
+    exchange: OKX
+    scan-interval-seconds: 60
+    inst-type: SWAP
+    quote-currency: USDT
+    min-volume-24h: 10000000
+    change-5m-threshold: 1.5
+    volume-spike-ratio: 1.8
+    max-abs-funding-rate: 0.001
+    max-leverage: 3
+    default-td-mode: cross
+    max-single-margin-rate: 0.05
+    max-single-loss-rate: 0.01
+    max-daily-loss-rate: 0.03
+    min-risk-reward-ratio: 1.5
+    allow-add-position: false
+
+trading:
+  mode: SEMI_AUTO
+  require-user-confirm: true
+  okx-live-enabled: true
+  order-expire-seconds: 120
+  emergency-stop: false
+
+okx:
+  api:
+    base-url: https://www.okx.com
+    key: ${OKX_API_KEY:}
+    secret: ${OKX_API_SECRET:}
+    passphrase: ${OKX_API_PASSPHRASE:}
+  websocket:
+    public-url: wss://ws.okx.com:8443/ws/v5/public
+    private-url: wss://ws.okx.com:8443/ws/v5/private
+    reconnect-delay-ms: 3000
+    heartbeat-interval-ms: 15000
+    max-market-delay-ms: 5000
+
+news:
+  enabled: true
+  max-results-per-symbol: 10
+  lookback-hours-stock: 72
+  lookback-hours-crypto: 24
+  use-mock-when-no-provider: false
+
+akshare:
+  base-url: ${AKSHARE_BASE_URL:http://127.0.0.1:18080}
+
+ai:
+  enabled: true
+  provider: OPENAI_COMPATIBLE
+  model: ${AI_MODEL:mimo-v2-pro}
+  api-key: sk-c4w7mofy8vz9gr03wkxnou0fa9vh1101k6uo16tqyngqggha
+  base-url: https://api.xiaomimimo.com/v1
