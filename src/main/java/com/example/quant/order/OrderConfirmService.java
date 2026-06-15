@@ -31,6 +31,11 @@ public class OrderConfirmService {
         this.clock = clock;
     }
 
+    public OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount) {
+        PendingOrder order = pendingOrderService.get(orderId);
+        return confirm(orderId, marginAmount, riskRequestFor(order, marginAmount));
+    }
+
     public OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount, ContractRiskRequest riskRequest) {
         PendingOrder order = pendingOrderService.get(orderId);
         Instant now = clock.instant();
@@ -57,5 +62,34 @@ public class OrderConfirmService {
             order.markExecuted(now);
         }
         return result;
+    }
+
+    private static ContractRiskRequest riskRequestFor(PendingOrder order, BigDecimal marginAmount) {
+        ContractRiskRequest defaults = ContractRiskRequest.safeDefaults();
+        return new ContractRiskRequest(
+                defaults.emergencyStop(),
+                defaults.websocketConnected(),
+                defaults.marketDelayMs(),
+                defaults.maxMarketDelayMs(),
+                defaults.accountEquity(),
+                marginAmount,
+                defaults.maxSingleMarginRate(),
+                order.leverage(),
+                defaults.maxLeverage(),
+                order.price(),
+                order.stopLossPrice(),
+                order.riskRewardRatio(),
+                defaults.minRiskRewardRatio(),
+                order.fundingRate(),
+                defaults.maxAbsFundingRate(),
+                order.volume24h(),
+                defaults.minVolume24h(),
+                defaults.newsRiskLevel(),
+                order.volatility(),
+                defaults.maxStopLossDistanceRate(),
+                order.signalScore(),
+                defaults.minSignalScore(),
+                defaults.maxSingleLossRate()
+        );
     }
 }

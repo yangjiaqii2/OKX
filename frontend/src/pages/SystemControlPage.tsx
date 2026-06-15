@@ -1,8 +1,9 @@
 import EmergencyIcon from '@mui/icons-material/Emergency';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import { Alert, Box, Button, Card, CardContent, Stack, Typography } from '@mui/material';
-import { Title, useNotify } from 'react-admin';
+import { Alert, Button, Card, CardContent, Stack, Typography } from '@mui/material';
+import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
+import { PageHeader, PageShell } from '../components/PageShell';
 
 export function SystemControlPage() {
   const notify = useNotify();
@@ -26,17 +27,13 @@ export function SystemControlPage() {
   }
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Title title="系统控制" />
+    <PageShell title="系统控制" maxWidth={980}>
       <Stack spacing={2.5} maxWidth={900}>
-        <Box>
-          <Typography variant="h5" fontWeight={900}>
-            系统控制
-          </Typography>
-          <Typography color="text.secondary" variant="body2">
-            这里集中放置影响交易流程的系统级动作。
-          </Typography>
-        </Box>
+        <PageHeader
+          title="系统控制"
+          subtitle="集中放置影响交易流程的系统级动作。"
+          eyebrow="Control Room"
+        />
         <Alert severity="warning">紧急停止不会删除数据，但会切换后端运行状态。实盘环境下请先确认当前OKX未留有未处理订单。</Alert>
         <Card>
           <CardContent>
@@ -54,6 +51,6 @@ export function SystemControlPage() {
           </CardContent>
         </Card>
       </Stack>
-    </Box>
+    </PageShell>
   );
 }

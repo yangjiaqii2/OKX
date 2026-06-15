@@ -35,9 +35,9 @@ public class ContractTradePlanBuilder {
         }
 
         BigDecimal entry = positiveDecimal(plan, "entryPrice", candidate.lastPrice());
-        BigDecimal stopLoss = positiveDecimal(plan, "stopLossPrice", null);
-        BigDecimal takeProfit = positiveDecimal(plan, "takeProfitPrice", null);
-        int leverage = Math.max(1, Math.min(3, plan.path("leverage").asInt(1)));
+        BigDecimal stopLoss = positiveDecimal(plan, "stopLossPrice", candidate.stopLossPrice());
+        BigDecimal takeProfit = positiveDecimal(plan, "takeProfitPrice", candidate.takeProfitPrice());
+        int leverage = analyzedLeverage(candidate, plan.path("leverage").asInt(candidate.suggestedLeverage()));
         BigDecimal confidence = decimal(plan, "confidence", BigDecimal.valueOf(0.5)).max(BigDecimal.ZERO).min(BigDecimal.ONE);
         BigDecimal riskRewardRatio = riskReward(action, entry, stopLoss, takeProfit);
         DirectionBias direction = action == TradePlanType.OPEN_SHORT ? DirectionBias.BEARISH : DirectionBias.BULLISH;
@@ -57,6 +57,10 @@ public class ContractTradePlanBuilder {
                 BigDecimal.ZERO,
                 BigDecimal.ZERO,
                 riskRewardRatio,
+                candidate.score(),
+                candidate.fundingRate(),
+                candidate.volatility(),
+                candidate.volume24h(),
                 "cross",
                 stringList(plan.path("reasonList"), "AI生成的交易计划"),
                 stringList(plan.path("riskList"), "市场波动风险"),
@@ -72,7 +76,8 @@ public class ContractTradePlanBuilder {
                 必须输出严格JSON，不要Markdown，不要解释。
                 你只能生成待人工确认的计划，不能要求直接下单。
                 如果条件不足，action输出WAIT。
-                杠杆leverage必须是1到3之间的整数。
+                杠杆leverage必须结合波动率、资金费率、ATR止损距离和清算风险，不允许固定倍数。
+                leverage不得超过输入里的系统建议杠杆。
                 输出字段：
                 action: OPEN_LONG | OPEN_SHORT | WAIT
                 orderType: LIMIT | MARKET
@@ -95,6 +100,16 @@ public class ContractTradePlanBuilder {
                 24h涨跌幅百分比: %s
                 24h成交量USDT: %s
                 趋势方向: %s
+                综合评分: %s
+                系统建议杠杆上限: %sx
+                系统分析止损价: %s
+                系统分析止盈价: %s
+                系统分析风险收益比: %s
+                5m涨跌幅百分比: %s
+                量能放大倍数: %s
+                资金费率: %s
+                持仓量: %s
+                ATR波动率: %s
                 入选理由: %s
                 风险标签: %s
                 """.formatted(
@@ -103,6 +118,16 @@ public class ContractTradePlanBuilder {
                 candidate.changePercent24h(),
                 candidate.volume24h(),
                 candidate.trendDirection(),
+                candidate.score(),
+                candidate.suggestedLeverage(),
+                candidate.stopLossPrice(),
+                candidate.takeProfitPrice(),
+                candidate.riskRewardRatio(),
+                candidate.changePercent5m(),
+                candidate.volumeSpikeRatio(),
+                candidate.fundingRate(),
+                candidate.openInterest(),
+                candidate.volatility(),
                 candidate.candidateReasonList(),
                 candidate.riskTagList()
         );
@@ -150,6 +175,12 @@ public class ContractTradePlanBuilder {
             throw new IllegalStateException("AI计划止盈止损方向不合理");
         }
         return reward.divide(risk, 2, RoundingMode.HALF_UP);
+    }
+
+    private static int analyzedLeverage(ContractCandidate candidate, int aiLeverage) {
+        int analyzed = Math.max(1, candidate.suggestedLeverage());
+        int requested = Math.max(1, aiLeverage);
+        return Math.min(analyzed, requested);
     }
 
     private static List<String> stringList(JsonNode node, String fallback) {

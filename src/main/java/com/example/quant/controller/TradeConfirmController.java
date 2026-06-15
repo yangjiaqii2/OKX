@@ -1,7 +1,6 @@
 package com.example.quant.controller;
 
 import com.example.quant.order.OrderConfirmService;
-import com.example.quant.risk.ContractRiskRequest;
 import java.math.BigDecimal;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -20,6 +19,6 @@ public class TradeConfirmController {
 
     @PostMapping("/confirm")
     public Object confirm(@RequestParam UUID id, @RequestParam BigDecimal marginAmount) {
-        return orderConfirmService.confirm(id, marginAmount, ContractRiskRequest.safeDefaults());
+        return orderConfirmService.confirm(id, marginAmount);
     }
 }

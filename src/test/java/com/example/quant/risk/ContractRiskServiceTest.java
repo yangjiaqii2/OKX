@@ -64,4 +64,36 @@ class ContractRiskServiceTest {
         assertThat(result.passed()).isTrue();
         assertThat(result.riskLevel()).isIn(RiskLevel.LOW, RiskLevel.MEDIUM);
     }
+
+    @Test
+    void volatileCrowdedSetupMustUseReducedDynamicLeverage() {
+        ContractRiskService service = new ContractRiskService();
+
+        RiskCheckResult result = service.check(ContractRiskRequest.safeDefaults()
+                .withLeverage(3)
+                .withVolatility(BigDecimal.valueOf(0.07))
+                .withFundingRate(BigDecimal.valueOf(0.00095))
+                .withSignalScore(64));
+
+        assertThat(result.passed()).isFalse();
+        assertThat(result.rejectCode()).isEqualTo("LEVERAGE_ABOVE_DYNAMIC_CAP");
+        assertThat(result.adjustedLeverage()).isEqualTo(1);
+    }
+
+    @Test
+    void highRiskSetupCanPassOnlyWithOneXAndSmallerLossBudget() {
+        ContractRiskService service = new ContractRiskService();
+
+        RiskCheckResult result = service.check(ContractRiskRequest.safeDefaults()
+                .withLeverage(1)
+                .withVolatility(BigDecimal.valueOf(0.085))
+                .withFundingRate(BigDecimal.valueOf(0.00085))
+                .withSignalScore(68));
+
+        assertThat(result.passed()).isTrue();
+        assertThat(result.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(result.adjustedLeverage()).isEqualTo(1);
+        assertThat(result.maxLossAmount()).isEqualByComparingTo("25.00000000");
+        assertThat(result.warningList()).anyMatch(item -> item.contains("volatility"));
+    }
 }

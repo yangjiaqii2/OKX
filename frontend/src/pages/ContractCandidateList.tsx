@@ -23,10 +23,12 @@ import {
   Typography,
 } from '@mui/material';
 import { useEffect, useMemo, useState } from 'react';
-import { Title, useNotify } from 'react-admin';
+import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
+import { compactGlass, glassCard, interactiveGlass } from '../components/glass';
+import { PageHeader, PageShell } from '../components/PageShell';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
-import { formatPercent, formatPrice, formatTrend, formatVolume } from '../formatters';
+import { formatLeverage, formatNumber, formatPercent, formatPrice, formatTrend, formatVolume } from '../formatters';
 
 type ContractCandidate = Record<string, unknown>;
 type Candle = {
@@ -168,28 +170,14 @@ export function ContractCandidateList() {
   const top = contracts[0] as ContractCandidate | undefined;
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 }, minHeight: '100%' }}>
-      <Title title="OKX合约机会池" />
+    <PageShell title="OKX合约机会池">
       <Stack spacing={2.25}>
-        <Box
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1fr) 360px' },
-            gap: 2,
-            alignItems: 'stretch',
-          }}
-        >
-          <Box>
-            <Typography variant="h5" fontWeight={900}>
-              OKX合约机会池
-            </Typography>
-            <Typography color="text.secondary" variant="body2" sx={{ mt: 0.75 }}>
-              {lastUpdatedAt ? `行情刷新 ${lastUpdatedAt.toLocaleTimeString()}` : '行情准备中'}
-              {refreshing ? ' · 更新中' : ''}
-            </Typography>
-          </Box>
-
-          <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', lg: 'flex-end' }} alignItems="center">
+        <PageHeader
+          title="OKX合约机会池"
+          subtitle={`${lastUpdatedAt ? `行情刷新 ${lastUpdatedAt.toLocaleTimeString()}` : '行情准备中'}${refreshing ? ' · 更新中' : ''}`}
+          eyebrow="Market Scanner"
+          actions={
+            <>
             <TextField
               size="small"
               value={query}
@@ -250,8 +238,9 @@ export function ContractCandidateList() {
             >
               {batchPlanning ? '推理中' : '一键AI计划'}
             </Button>
-          </Stack>
-        </Box>
+            </>
+          }
+        />
 
         <TradingStatusStrip risk={risk} account={account} pendingCount={pendingCount} />
 
@@ -264,13 +253,13 @@ export function ContractCandidateList() {
             gap: 1.5,
           }}
         >
-          <MarketStat label="机会数量" value={contracts.length} helper="AI候选上限 20" />
+          <MarketStat label="机会数量" value={contracts.length} helper="综合评分候选上限 20" />
           <MarketStat label="首位合约" value={String(top?.instId ?? '--')} helper={formatTrend(top?.trendDirection)} />
-          <MarketStat label="24h成交量" value={formatVolume(top?.volume24h)} helper="按成交量排序" />
+          <MarketStat label="首位评分" value={formatNumber(top?.score, 0)} helper={`建议杠杆 ${formatLeverage(top?.suggestedLeverage)}`} />
         </Box>
 
         {loading ? (
-          <Box sx={{ py: 8, display: 'grid', placeItems: 'center' }}>
+          <Box sx={{ ...glassCard, py: 8, display: 'grid', placeItems: 'center', borderRadius: 3 }}>
             <CircularProgress size={28} />
           </Box>
         ) : (
@@ -299,7 +288,7 @@ export function ContractCandidateList() {
         )}
       </Stack>
       <CandleDialog instId={chartInstId} open={Boolean(chartInstId)} onClose={() => setChartInstId('')} />
-    </Box>
+    </PageShell>
   );
 }
 
@@ -333,20 +322,22 @@ function ContractCard({
         }
       }}
       sx={{
+        ...glassCard,
+        ...interactiveGlass,
         width: '100%',
         textAlign: 'left',
-        p: 1.5,
+        p: 1.6,
         border: `1px solid ${positive ? 'rgba(0, 212, 170, 0.34)' : 'rgba(239, 68, 68, 0.34)'}`,
         borderLeft: `4px solid ${trendColor}`,
-        borderRadius: 1,
-        bgcolor: positive ? 'rgba(4, 120, 87, 0.10)' : 'rgba(127, 29, 29, 0.10)',
+        borderRadius: 3,
+        background: positive
+          ? 'linear-gradient(145deg, rgba(0, 212, 170, 0.12), rgba(8, 13, 24, 0.58))'
+          : 'linear-gradient(145deg, rgba(239, 68, 68, 0.12), rgba(8, 13, 24, 0.58))',
         color: 'text.primary',
         cursor: 'pointer',
-        transition: 'transform 160ms ease, border-color 160ms ease, background 160ms ease',
         '&:hover': {
           transform: 'translateY(-2px)',
           borderColor: positive ? 'rgba(0, 212, 170, 0.52)' : 'rgba(239, 68, 68, 0.52)',
-          bgcolor: 'rgba(17, 24, 39, 0.96)',
         },
       }}
     >
@@ -413,13 +404,21 @@ function ContractCard({
           </Stack>
         </Box>
 
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 1 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
+          <MiniMetric label="综合评分" value={formatNumber(contract.score, 0)} />
+          <MiniMetric label="建议杠杆" value={formatLeverage(contract.suggestedLeverage)} />
           <MiniMetric label="24h成交量" value={formatVolume(contract.volume24h)} />
+          <MiniMetric label="量能放大" value={`${formatNumber(contract.volumeSpikeRatio, 2)}x`} />
+          <MiniMetric label="止损" value={formatPrice(contract.stopLossPrice)} />
+          <MiniMetric label="止盈" value={formatPrice(contract.takeProfitPrice)} />
         </Box>
 
         <Stack direction="row" gap={0.75} flexWrap="wrap" sx={{ minHeight: 26 }}>
           {((contract.candidateReasonList as string[]) ?? []).slice(0, 2).map((item) => (
             <Chip key={item} size="small" label={item} variant="outlined" sx={{ maxWidth: '100%' }} />
+          ))}
+          {((contract.riskTagList as string[]) ?? []).slice(0, 1).map((item) => (
+            <Chip key={item} size="small" color="warning" label={item} variant="outlined" sx={{ maxWidth: '100%' }} />
           ))}
         </Stack>
       </Stack>
@@ -566,7 +565,7 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
   const trendLine = regressionTrendLine(data, padding.left, step, y);
 
   return (
-    <Box sx={{ height: 1, width: 1, overflow: 'hidden', border: '1px solid rgba(148, 163, 184, 0.12)', borderRadius: 1 }}>
+    <Box sx={{ height: 1, width: 1, overflow: 'hidden', border: '1px solid rgba(180, 205, 255, 0.14)', borderRadius: 3 }}>
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%" preserveAspectRatio="none" role="img">
         <rect x="0" y="0" width={width} height={height} fill="#070b12" />
         <g>
@@ -722,7 +721,7 @@ function formatCandleTime(date: Date, bar: string) {
 
 function MarketStat({ label, value, helper }: { label: string; value: unknown; helper: string }) {
   return (
-    <Box sx={{ p: 1.5, border: '1px solid rgba(148, 163, 184, 0.14)', borderRadius: 1, bgcolor: 'rgba(2, 6, 23, 0.5)' }}>
+    <Box sx={{ ...compactGlass, p: 1.5, borderRadius: 2, bgcolor: 'rgba(2, 6, 23, 0.5)' }}>
       <Typography variant="caption" color="text.secondary" fontWeight={800}>
         {label}
       </Typography>
@@ -736,7 +735,7 @@ function MarketStat({ label, value, helper }: { label: string; value: unknown; h
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <Box sx={{ p: 1, borderRadius: 1, bgcolor: 'rgba(2, 6, 23, 0.38)' }}>
+    <Box sx={{ ...compactGlass, p: 1, borderRadius: 2, bgcolor: 'rgba(2, 6, 23, 0.38)' }}>
       <Typography variant="caption" color="text.secondary" fontWeight={800}>
         {label}
       </Typography>

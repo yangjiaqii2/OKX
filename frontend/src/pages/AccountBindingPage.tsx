@@ -12,8 +12,9 @@ import {
   Typography,
 } from '@mui/material';
 import { FormEvent, useEffect, useState } from 'react';
-import { Loading, Title, useNotify } from 'react-admin';
+import { Loading, useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
+import { PageHeader, PageShell } from '../components/PageShell';
 import { MetricCard } from '../components/MetricCard';
 import { StatusChip } from '../components/StatusChip';
 
@@ -111,17 +112,14 @@ export function AccountBindingPage() {
   }
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Title title="账号绑定" />
+    <PageShell title="账号绑定" maxWidth={1040}>
       <Stack spacing={2.5} maxWidth={980}>
-        <Box>
-          <Typography variant="h5" fontWeight={800}>
-            OKX账号绑定
-          </Typography>
-          <Typography color="text.secondary" variant="body2">
-            API Key会保存到后端数据库，后端重启后仍可恢复绑定状态。Secret和Passphrase不会回显；绑定后请立即验证接口，确认读取权限和IP白名单正确。
-          </Typography>
-        </Box>
+        <PageHeader
+          title="OKX账号绑定"
+          subtitle="API Key会保存到后端数据库，后端重启后仍可恢复绑定状态。Secret和Passphrase不会回显；绑定后请立即验证接口，确认读取权限和IP白名单正确。"
+          eyebrow="Credential Vault"
+          status={<StatusChip value={Boolean(status.bound)} />}
+        />
 
         <Box
           sx={{
@@ -203,6 +201,6 @@ export function AccountBindingPage() {
           </CardContent>
         </Card>
       </Stack>
-    </Box>
+    </PageShell>
   );
 }

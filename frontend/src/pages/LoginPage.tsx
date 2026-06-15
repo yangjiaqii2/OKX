@@ -1,4 +1,5 @@
 import LockIcon from '@mui/icons-material/Lock';
+import ShieldIcon from '@mui/icons-material/Shield';
 import {
   Alert,
   Box,
@@ -10,6 +11,7 @@ import {
 } from '@mui/material';
 import { FormEvent, useState } from 'react';
 import { useLogin, useNotify } from 'react-admin';
+import { glassCard } from '../components/glass';
 
 export function LoginPage() {
   const login = useLogin();
@@ -32,21 +34,46 @@ export function LoginPage() {
   return (
     <Box
       sx={{
-        minHeight: '100vh',
+        minHeight: '100dvh',
         bgcolor: 'background.default',
         display: 'grid',
         placeItems: 'center',
         px: 2,
+        position: 'relative',
+        overflow: 'hidden',
+        '&::before': {
+          content: '""',
+          position: 'absolute',
+          inset: '8% auto auto 10%',
+          width: 420,
+          height: 420,
+          borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(0,212,170,0.20), transparent 62%)',
+          filter: 'blur(12px)',
+        },
+        '&::after': {
+          content: '""',
+          position: 'absolute',
+          right: '8%',
+          bottom: '6%',
+          width: 360,
+          height: 360,
+          borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(139,211,255,0.16), transparent 64%)',
+          filter: 'blur(12px)',
+        },
       }}
     >
       <Paper
         component="form"
         onSubmit={(event) => void submit(event)}
         sx={{
+          ...glassCard,
           width: '100%',
           maxWidth: 420,
-          p: 3,
-          border: '1px solid rgba(148, 163, 184, 0.16)',
+          p: 3.2,
+          border: '1px solid rgba(180, 205, 255, 0.18)',
+          zIndex: 1,
         }}
       >
         <Stack spacing={2.25}>
@@ -55,11 +82,12 @@ export function LoginPage() {
               sx={{
                 width: 36,
                 height: 36,
-                borderRadius: 1,
+                borderRadius: 2,
                 display: 'grid',
                 placeItems: 'center',
                 bgcolor: 'rgba(0, 212, 170, 0.14)',
                 color: 'primary.main',
+                border: '1px solid rgba(0, 212, 170, 0.28)',
               }}
             >
               <LockIcon fontSize="small" />
@@ -72,6 +100,24 @@ export function LoginPage() {
                 登录后访问 OKX 合约交易功能
               </Typography>
             </Box>
+          </Stack>
+
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            sx={{
+              px: 1.25,
+              py: 1,
+              borderRadius: 2,
+              bgcolor: 'rgba(0, 212, 170, 0.08)',
+              border: '1px solid rgba(0, 212, 170, 0.16)',
+            }}
+          >
+            <ShieldIcon fontSize="small" color="success" />
+            <Typography variant="caption" color="text.secondary" fontWeight={700}>
+              风控优先，人工确认后才提交 OKX 实盘。
+            </Typography>
           </Stack>
 
           <Alert severity="warning">

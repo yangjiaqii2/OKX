@@ -1,9 +1,10 @@
-import RefreshIcon from '@mui/icons-material/Refresh';
-import { Alert, Box, Button, Card, CardContent, Stack, Typography } from '@mui/material';
+import { Alert, Box, Card, CardContent, Stack, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Loading, Title, useNotify } from 'react-admin';
+import { Loading, useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
+import { compactGlass } from '../components/glass';
+import { PageHeader, PageShell } from '../components/PageShell';
 import { PositionSnapshotTable } from '../components/PositionSnapshotTable';
 import { StatusChip } from '../components/StatusChip';
 import { TradeMetricCard } from '../components/TradeMetricCard';
@@ -58,17 +59,15 @@ export function AccountRiskPage() {
   const accountMessage = String(account.message ?? '');
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Title title="账户与风控" />
+    <PageShell title="账户与风控">
       <Stack spacing={2.5}>
-        <Stack direction="row" alignItems="center" justifyContent="space-between" gap={2}>
-          <Typography variant="h5" fontWeight={900}>
-            账户与风控
-          </Typography>
-          <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => void load()}>
-            刷新
-          </Button>
-        </Stack>
+        <PageHeader
+          title="账户与风控"
+          subtitle="集中查看 OKX 账户模式、权益、持仓快照和风控拦截原因。"
+          eyebrow="Risk Desk"
+          status={<StatusChip value={accountMode} />}
+          onRefresh={() => void load()}
+        />
 
         {accountMode === 'OKX_UNBOUND' && <Alert severity="warning">尚未绑定OKX API，余额和持仓不会返回真实数据。</Alert>}
         {accountMode === 'OKX_ERROR' && (
@@ -125,7 +124,7 @@ export function AccountRiskPage() {
           </Card>
         </Box>
       </Stack>
-    </Box>
+    </PageShell>
   );
 }
 
@@ -136,7 +135,7 @@ function RiskRule({ label, value }: { label: string; value: ReactNode }) {
       justifyContent="space-between"
       alignItems="center"
       gap={2}
-      sx={{ borderTop: '1px solid rgba(148, 163, 184, 0.12)', pt: 1 }}
+      sx={{ ...compactGlass, borderRadius: 2, p: 1.15 }}
     >
       <Typography color="text.secondary" variant="body2">
         {label}

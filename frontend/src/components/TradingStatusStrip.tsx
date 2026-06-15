@@ -1,6 +1,7 @@
 import { Alert, Box, Stack, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
 import { formatLeverage, formatStatus } from '../formatters';
+import { compactGlass } from './glass';
 import { StatusChip } from './StatusChip';
 
 type TradingStatusStripProps = {
@@ -47,10 +48,10 @@ function StripItem({ label, value, tone = 'neutral' }: { label: string; value: R
   return (
     <Box
       sx={{
+        ...compactGlass,
         p: 1.25,
-        borderRadius: 1,
+        borderRadius: 2,
         bgcolor: tone === 'warning' ? 'rgba(245, 158, 11, 0.10)' : 'rgba(17, 24, 39, 0.86)',
-        border: '1px solid rgba(148, 163, 184, 0.12)',
         minHeight: 64,
       }}
     >

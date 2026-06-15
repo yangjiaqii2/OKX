@@ -21,6 +21,12 @@ public record ContractCandidate(
         BigDecimal openInterestChange,
         DirectionBias trendDirection,
         BigDecimal volatility,
+        int score,
+        BigDecimal entryPrice,
+        BigDecimal stopLossPrice,
+        BigDecimal takeProfitPrice,
+        int suggestedLeverage,
+        BigDecimal riskRewardRatio,
         List<String> candidateReasonList,
         List<String> riskTagList,
         Instant createdAt

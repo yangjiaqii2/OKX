@@ -24,6 +24,10 @@ public class PendingOrder {
     private BigDecimal maxLossAmount;
     private BigDecimal marginAmount;
     private final BigDecimal riskRewardRatio;
+    private final int signalScore;
+    private final BigDecimal fundingRate;
+    private final BigDecimal volatility;
+    private final BigDecimal volume24h;
     private final UUID tradePlanId;
     private final String confirmToken;
     private OrderStatus status;
@@ -37,8 +41,8 @@ public class PendingOrder {
     public PendingOrder(UUID id, MarketType marketType, String instId, TradePlanType action, String side, String posSide,
                         String orderType, BigDecimal price, BigDecimal size, int leverage, String tdMode,
                         BigDecimal stopLossPrice, BigDecimal takeProfitPrice, BigDecimal maxLossAmount,
-                        BigDecimal riskRewardRatio, UUID tradePlanId, String confirmToken, Instant createdAt,
-                        Instant expireAt) {
+                        BigDecimal riskRewardRatio, int signalScore, BigDecimal fundingRate, BigDecimal volatility,
+                        BigDecimal volume24h, UUID tradePlanId, String confirmToken, Instant createdAt, Instant expireAt) {
         this.id = id;
         this.marketType = marketType;
         this.instId = instId;
@@ -54,6 +58,10 @@ public class PendingOrder {
         this.takeProfitPrice = takeProfitPrice;
         this.maxLossAmount = maxLossAmount;
         this.riskRewardRatio = riskRewardRatio;
+        this.signalScore = signalScore;
+        this.fundingRate = fundingRate;
+        this.volatility = volatility;
+        this.volume24h = volume24h;
         this.tradePlanId = tradePlanId;
         this.confirmToken = confirmToken;
         this.createdAt = createdAt;
@@ -77,6 +85,10 @@ public class PendingOrder {
     public BigDecimal maxLossAmount() { return maxLossAmount; }
     public BigDecimal marginAmount() { return marginAmount; }
     public BigDecimal riskRewardRatio() { return riskRewardRatio; }
+    public int signalScore() { return signalScore; }
+    public BigDecimal fundingRate() { return fundingRate; }
+    public BigDecimal volatility() { return volatility; }
+    public BigDecimal volume24h() { return volume24h; }
     public UUID tradePlanId() { return tradePlanId; }
     public String confirmToken() { return confirmToken; }
     public OrderStatus status() { return status; }

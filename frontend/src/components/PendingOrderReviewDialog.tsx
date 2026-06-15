@@ -57,6 +57,10 @@ export function PendingOrderReviewDialog({ open, record, submitting, onClose, on
             <ReviewItem label="止损" value={formatPrice(record.stopLossPrice)} />
             <ReviewItem label="止盈" value={formatPrice(record.takeProfitPrice)} />
             <ReviewItem label="风险收益比" value={formatNumber(record.riskRewardRatio, 2)} />
+            <ReviewItem label="信号评分" value={formatNumber(record.signalScore, 0)} />
+            <ReviewItem label="资金费率" value={formatNumber(record.fundingRate, 4)} />
+            <ReviewItem label="波动率" value={formatNumber(record.volatility, 4)} />
+            <ReviewItem label="24h成交量" value={formatNumber(record.volume24h, 0)} />
             <ReviewItem label="状态" value={String(record.status ?? '-')} />
           </Box>
         </Stack>

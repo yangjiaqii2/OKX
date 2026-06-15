@@ -3,6 +3,7 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { Alert, Box, Card, CardContent, LinearProgress, Stack, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
 import { formatLeverage, formatStatus, formatUSDT } from '../formatters';
+import { compactGlass, glassCard } from './glass';
 import { StatusChip } from './StatusChip';
 
 type RiskCommandPanelProps = {
@@ -24,9 +25,12 @@ export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: Risk
   return (
     <Card
       sx={{
+        ...glassCard,
         height: '100%',
         borderColor: isBlocked ? 'rgba(239, 68, 68, 0.46)' : 'rgba(245, 158, 11, 0.34)',
-        bgcolor: isBlocked ? 'rgba(127, 29, 29, 0.20)' : 'rgba(17, 24, 39, 0.92)',
+        background: isBlocked
+          ? 'linear-gradient(145deg, rgba(127, 29, 29, 0.26), rgba(8, 13, 24, 0.62))'
+          : 'linear-gradient(145deg, rgba(35, 28, 11, 0.34), rgba(8, 13, 24, 0.62))',
       }}
     >
       <CardContent sx={{ p: 2.25 }}>
@@ -46,9 +50,10 @@ export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: Risk
                 height: 40,
                 display: 'grid',
                 placeItems: 'center',
-                borderRadius: 1,
+                borderRadius: 2,
                 color: isBlocked ? 'error.main' : 'warning.main',
                 bgcolor: isBlocked ? 'rgba(239, 68, 68, 0.12)' : 'rgba(245, 158, 11, 0.12)',
+                border: '1px solid rgba(255,255,255,0.12)',
               }}
             >
               {isBlocked ? <WarningAmberIcon /> : <ShieldIcon />}
@@ -89,10 +94,10 @@ function MiniStat({ label, value, tone = 'neutral' }: { label: string; value: Re
   return (
     <Box
       sx={{
+        ...compactGlass,
         p: 1,
-        borderRadius: 1,
+        borderRadius: 2,
         bgcolor: tone === 'warning' ? 'rgba(245, 158, 11, 0.10)' : 'rgba(15, 23, 42, 0.72)',
-        border: '1px solid rgba(148, 163, 184, 0.10)',
         minHeight: 58,
       }}
     >

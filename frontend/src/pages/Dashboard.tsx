@@ -1,13 +1,14 @@
-import RefreshIcon from '@mui/icons-material/Refresh';
-import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Stack, Typography } from '@mui/material';
+import { Alert, Box, Card, CardContent, Chip, CircularProgress, Stack, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
-import { Title, useNotify } from 'react-admin';
+import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
+import { compactGlass, glassCard } from '../components/glass';
+import { PageHeader, PageShell } from '../components/PageShell';
 import { PositionSnapshotTable } from '../components/PositionSnapshotTable';
 import { RiskCommandPanel } from '../components/RiskCommandPanel';
 import { StatusChip } from '../components/StatusChip';
 import { TradeMetricCard } from '../components/TradeMetricCard';
-import { formatPercent, formatPrice, formatStatus, formatUSDT } from '../formatters';
+import { formatLeverage, formatNumber, formatPercent, formatPrice, formatStatus, formatUSDT } from '../formatters';
 
 type DashboardState = {
   risk?: Record<string, unknown>;
@@ -65,17 +66,14 @@ export function Dashboard() {
 
   if (loading) {
     return (
-      <Box sx={{ p: 3 }}>
-        <Title title="量化实盘控制台" />
+      <PageShell title="量化实盘控制台">
         <Stack spacing={2}>
-          <Typography variant="h5" fontWeight={900}>
-            量化实盘控制台
-          </Typography>
-          <Box sx={{ py: 8, display: 'grid', placeItems: 'center' }}>
+          <PageHeader title="量化实盘控制台" subtitle="正在同步 OKX 账户、风险状态、候选合约和待确认订单。" />
+          <Box sx={{ ...glassCard, py: 8, display: 'grid', placeItems: 'center', borderRadius: 3 }}>
             <CircularProgress size={28} />
           </Box>
         </Stack>
-      </Box>
+      </PageShell>
     );
   }
 
@@ -84,28 +82,14 @@ export function Dashboard() {
   const topContracts = state.contracts.slice(0, 4) as Record<string, unknown>[];
   
   return (
-    <Box sx={{ p: 3 }}>
-      <Title title="量化实盘控制台" />
+    <PageShell title="量化实盘控制台">
       <Stack spacing={3}>
-        <Stack direction="row" alignItems="center" justifyContent="space-between" gap={2}>
-          <Box>
-            <Typography variant="h5" fontWeight={900}>
-              量化实盘控制台
-            </Typography>
-            <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5 }}>
-              OKX合约人工确认后实盘 · 风控优先 · A股仅分析筛选
-            </Typography>
-          </Box>
-          <Button
-            startIcon={<RefreshIcon />}
-            variant="outlined"
-            size="small"
-            onClick={() => void load()}
-            sx={{ borderRadius: 2 }}
-          >
-            刷新
-          </Button>
-        </Stack>
+        <PageHeader
+          title="量化实盘控制台"
+          subtitle="OKX合约人工确认后实盘，风控优先，A股仅分析筛选。"
+          status={<StatusChip value={accountMode} />}
+          onRefresh={() => void load()}
+        />
 
         {/* 告警 */}
         {accountMode === 'OKX_ERROR' && (
@@ -186,11 +170,12 @@ export function Dashboard() {
                         <Box
                           key={String(order.id)}
                           sx={{
+                            ...compactGlass,
                             p: 1.25,
                             borderLeft: '3px solid',
                             borderColor: 'warning.main',
-                            borderRadius: 1,
-                            bgcolor: 'rgba(15, 23, 42, 0.62)',
+                            borderRadius: 2,
+                            bgcolor: 'rgba(245, 158, 11, 0.08)',
                           }}
                         >
                           <Typography fontWeight={800}>{String(order.instId ?? '-')}</Typography>
@@ -224,9 +209,9 @@ export function Dashboard() {
                     <Box
                       key={String(contract.instId)}
                       sx={{
+                        ...compactGlass,
                         p: 1.25,
-                        borderRadius: 1,
-                        border: '1px solid rgba(148, 163, 184, 0.12)',
+                        borderRadius: 2,
                         bgcolor: 'rgba(15, 23, 42, 0.62)',
                       }}
                     >
@@ -241,7 +226,7 @@ export function Dashboard() {
                           fontFamily: '"JetBrains Mono", monospace',
                         }}
                       >
-                        {formatPercent(contract.changePercent24h)}
+                        {formatPercent(contract.changePercent24h)} · 评分 {formatNumber(contract.score, 0)} · {formatLeverage(contract.suggestedLeverage)}
                       </Typography>
                     </Box>
                   ))
@@ -251,6 +236,6 @@ export function Dashboard() {
           </CardContent>
         </Card>
       </Stack>
-    </Box>
+    </PageShell>
   );
 }

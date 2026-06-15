@@ -7,12 +7,14 @@ import com.example.quant.score.ContractScoreInput;
 import com.example.quant.score.ScoreDetail;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ContractAnalysisService {
     private final OkxContractScanner scanner;
     private final ContractScoreCalculator calculator;
+    private final AtomicReference<List<ContractCandidate>> cachedCandidates = new AtomicReference<>(List.of());
 
     public ContractAnalysisService(OkxContractScanner scanner, ContractScoreCalculator calculator) {
         this.scanner = scanner;
@@ -20,16 +22,26 @@ public class ContractAnalysisService {
     }
 
     public List<ContractCandidate> candidates() {
-        return scanner.scan();
+        List<ContractCandidate> cached = cachedCandidates.get();
+        if (!cached.isEmpty()) {
+            return cached;
+        }
+        return refreshCandidates();
+    }
+
+    public List<ContractCandidate> refreshCandidates() {
+        List<ContractCandidate> next = scanner.scan();
+        cachedCandidates.set(next);
+        return next;
     }
 
     public ContractAnalysisReport analyze(String instId) {
-        ContractCandidate candidate = scanner.scan().stream()
+        ContractCandidate candidate = candidates().stream()
                 .filter(item -> item.instId().equals(instId))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("OKX did not return contract: " + instId));
         ScoreDetail score = calculator.calculate(new ContractScoreInput(
-                80,
+                candidate.score(),
                 candidate.volumeSpikeRatio(),
                 candidate.fundingRate(),
                 candidate.volatility(),
