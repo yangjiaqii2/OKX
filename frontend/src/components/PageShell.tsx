@@ -21,7 +21,7 @@ type PageHeaderProps = {
 
 export function PageShell({ title, children, maxWidth = '1540px' }: PageShellProps) {
   return (
-    <Box sx={{ px: { xs: 2, md: 3 }, py: { xs: 2, md: 3 }, minHeight: '100%' }}>
+    <Box sx={{ px: { xs: 1.5, md: 2.5 }, py: { xs: 1.5, md: 2 }, minHeight: '100%' }}>
       <Title title={title} />
       <Box sx={{ width: 1, maxWidth, mx: 'auto' }}>{children}</Box>
     </Box>
@@ -42,34 +42,38 @@ export function PageHeader({
       direction={{ xs: 'column', md: 'row' }}
       alignItems={{ xs: 'stretch', md: 'flex-start' }}
       justifyContent="space-between"
-      gap={2}
+      gap={1.5}
+      sx={{
+        pb: 1.5,
+        borderBottom: '1px solid rgba(148, 163, 184, 0.12)',
+      }}
     >
-      <Stack spacing={1} minWidth={0}>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+      <Stack spacing={0.85} minWidth={0}>
+        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
           <Chip size="small" label={eyebrow} variant="outlined" sx={{ width: 'fit-content' }} />
           {status}
         </Stack>
         <Box>
           <Typography
-            variant="h4"
+            variant="h5"
             fontWeight={900}
             sx={{
-              fontSize: { xs: '1.55rem', md: '2.15rem' },
+              fontSize: { xs: '1.32rem', md: '1.65rem' },
               letterSpacing: 0,
-              lineHeight: 1.08,
+              lineHeight: 1.15,
             }}
           >
             {title}
           </Typography>
           {subtitle ? (
-            <Typography color="text.secondary" variant="body2" sx={{ mt: 0.75, maxWidth: 760 }}>
+            <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5, maxWidth: 780 }}>
               {subtitle}
             </Typography>
           ) : null}
         </Box>
       </Stack>
 
-      <Stack direction="row" spacing={1} alignItems="center" justifyContent={{ xs: 'flex-start', md: 'flex-end' }} flexWrap="wrap">
+      <Stack direction="row" spacing={0.75} alignItems="center" justifyContent={{ xs: 'flex-start', md: 'flex-end' }} flexWrap="wrap">
         {actions}
         {onRefresh ? (
           <Button

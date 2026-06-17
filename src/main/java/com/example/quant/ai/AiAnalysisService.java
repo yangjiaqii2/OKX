@@ -7,6 +7,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -52,32 +53,16 @@ public class AiAnalysisService {
         try {
             Map<String, Object> payload = Map.of(
                     "model", hasText(aiProperties.model()) ? aiProperties.model() : "moonshot-v1-8k",
-                    "temperature", 0.2,
+                    "temperature", 1,
                     "response_format", Map.of("type", "json_object"),
                     "messages", List.of(
                             Map.of("role", "system", "content", systemPrompt),
                             Map.of("role", "user", "content", userPrompt)
                     )
             );
-            HttpRequest request = HttpRequest.newBuilder(URI.create(chatCompletionsUrl(aiProperties.baseUrl())))
-                    .timeout(Duration.ofSeconds(45))
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + aiProperties.apiKey())
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
-                    .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                if (response.statusCode() == 401) {
-                    throw new IllegalStateException("AI鉴权失败：请确认 AI_API_KEY 来自 Moonshot/Kimi 开放平台，且 AI_BASE_URL 与模型匹配");
-                }
-                throw new IllegalStateException("AI request failed HTTP " + response.statusCode() + ": " + compact(response.body()));
-            }
-            JsonNode root = objectMapper.readTree(response.body());
-            String content = root.path("choices").path(0).path("message").path("content").asText("");
-            if (!hasText(content)) {
-                throw new IllegalStateException("AI响应为空");
-            }
-            return objectMapper.readTree(extractJson(content));
+            String body = objectMapper.writeValueAsString(payload);
+            HttpResponse<String> response = sendWithRetry(body);
+            return parseAiJson(response);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("AI request interrupted", ex);
@@ -86,6 +71,43 @@ public class AiAnalysisService {
         } catch (Exception ex) {
             throw new IllegalStateException("AI request failed: " + ex.getMessage(), ex);
         }
+    }
+
+    private HttpResponse<String> sendWithRetry(String body) throws Exception {
+        int maxAttempts = aiProperties.effectiveMaxRetries() + 1;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(chatCompletionsUrl(aiProperties.baseUrl())))
+                    .timeout(Duration.ofSeconds(aiProperties.effectiveRequestTimeoutSeconds()))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + aiProperties.apiKey())
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+            try {
+                return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            } catch (HttpTimeoutException ex) {
+                if (attempt >= maxAttempts) {
+                    throw new IllegalStateException("AI request timed out after "
+                            + aiProperties.effectiveRequestTimeoutSeconds()
+                            + "s, attempts=" + maxAttempts, ex);
+                }
+            }
+        }
+        throw new IllegalStateException("AI request failed before sending");
+    }
+
+    private JsonNode parseAiJson(HttpResponse<String> response) throws Exception {
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            if (response.statusCode() == 401) {
+                throw new IllegalStateException("AI鉴权失败：请确认 AI_API_KEY 来自 Moonshot/Kimi 开放平台，且 AI_BASE_URL 与模型匹配");
+            }
+            throw new IllegalStateException("AI request failed HTTP " + response.statusCode() + ": " + compact(response.body()));
+        }
+        JsonNode root = objectMapper.readTree(response.body());
+        String content = root.path("choices").path(0).path("message").path("content").asText("");
+        if (!hasText(content)) {
+            throw new IllegalStateException("AI响应为空");
+        }
+        return objectMapper.readTree(extractJson(content));
     }
 
     private static String extractJson(String content) {

@@ -1,30 +1,51 @@
 import CancelIcon from '@mui/icons-material/Cancel';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import { Alert, Stack } from '@mui/material';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import SearchIcon from '@mui/icons-material/Search';
 import {
+  Alert,
+  Box,
   Button,
-  Confirm,
-  Datagrid,
-  FunctionField,
-  List,
-  NumberField,
-  SearchInput,
+  CircularProgress,
+  InputAdornment,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
-  useNotify,
-  useRefresh,
-} from 'react-admin';
-import { useEffect, useState } from 'react';
+  Typography,
+} from '@mui/material';
+import { Confirm, useNotify } from 'react-admin';
+import { useEffect, useMemo, useState } from 'react';
 import { quantApi } from '../api/quantApi';
+import { compactGlass, glassCard } from '../components/glass';
+import { PageHeader, PageShell } from '../components/PageShell';
 import { PendingOrderReviewDialog } from '../components/PendingOrderReviewDialog';
 import { StatusChip } from '../components/StatusChip';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
-import { formatAction, formatSide } from '../formatters';
+import { formatAction, formatLeverage, formatPrice, formatSide } from '../formatters';
 
-const pendingOrderFilters = [<SearchInput key="q" source="q" alwaysOn placeholder="搜索合约、方向、状态" />];
+type PendingOrderState = {
+  risk?: Record<string, unknown>;
+  account?: Record<string, unknown>;
+  orders: Record<string, unknown>[];
+};
 
-const PendingOrderActions = ({ record }: { record: Record<string, unknown> }) => {
+const emptyState: PendingOrderState = {
+  orders: [],
+};
+
+const PendingOrderActions = ({
+  record,
+  onChanged,
+}: {
+  record: Record<string, unknown>;
+  onChanged: () => void;
+}) => {
   const notify = useNotify();
-  const refresh = useRefresh();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -33,9 +54,12 @@ const PendingOrderActions = ({ record }: { record: Record<string, unknown> }) =>
   async function confirmOrder(marginAmount: string) {
     setSubmitting(true);
     try {
-      await quantApi.confirmOrder(id, marginAmount);
-      notify('订单已确认，已提交OKX实盘接口', { type: 'success' });
-      refresh();
+      const result = (await quantApi.confirmOrder(id, marginAmount)) as Record<string, unknown>;
+      if (result.executed !== true) {
+        throw new Error(String(result.message ?? '订单未提交OKX'));
+      }
+      notify(String(result.message ?? 'OKX委托已提交，等待成交，请到OKX当前委托/持仓确认'), { type: 'info' });
+      onChanged();
     } catch (error) {
       notify(error instanceof Error ? error.message : '确认订单失败', { type: 'error' });
     } finally {
@@ -49,7 +73,7 @@ const PendingOrderActions = ({ record }: { record: Record<string, unknown> }) =>
     try {
       await quantApi.cancelOrder(id);
       notify('订单已取消', { type: 'success' });
-      refresh();
+      onChanged();
     } catch (error) {
       notify(error instanceof Error ? error.message : '取消订单失败', { type: 'error' });
     } finally {
@@ -59,12 +83,18 @@ const PendingOrderActions = ({ record }: { record: Record<string, unknown> }) =>
   }
 
   return (
-    <Stack direction="row" gap={1}>
-      <Button label="实盘确认" onClick={() => setConfirmOpen(true)}>
-        <CheckCircleIcon />
+    <Stack direction="row" gap={0.75} justifyContent="flex-end">
+      <Button
+        size="small"
+        variant="contained"
+        color="warning"
+        startIcon={<CheckCircleIcon />}
+        onClick={() => setConfirmOpen(true)}
+      >
+        实盘确认
       </Button>
-      <Button label="取消" onClick={() => setCancelOpen(true)} color="warning">
-        <CancelIcon />
+      <Button size="small" variant="outlined" color="warning" startIcon={<CancelIcon />} onClick={() => setCancelOpen(true)}>
+        取消
       </Button>
       <PendingOrderReviewDialog
         open={confirmOpen}
@@ -86,82 +116,161 @@ const PendingOrderActions = ({ record }: { record: Record<string, unknown> }) =>
   );
 };
 
-const PendingOrderTradingStatus = () => {
-  const [state, setState] = useState<{
-    risk?: Record<string, unknown>;
-    account?: Record<string, unknown>;
-    pendingCount: number;
-  }>({ pendingCount: 0 });
+export function PendingOrderList() {
+  const notify = useNotify();
+  const [state, setState] = useState<PendingOrderState>(emptyState);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [query, setQuery] = useState('');
+  const [error, setError] = useState('');
+
+  async function load(silent = false) {
+    if (silent) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    try {
+      const [risk, account, orders] = await Promise.all([
+        quantApi.riskStatus(),
+        quantApi.accountSummary(),
+        quantApi.pendingOrders(),
+      ]);
+      setState({
+        risk: risk as Record<string, unknown>,
+        account: account as Record<string, unknown>,
+        orders: Array.isArray(orders) ? (orders as Record<string, unknown>[]) : [],
+      });
+      setError('');
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : '待确认订单加载失败';
+      setError(message);
+      if (!silent) {
+        notify(message, { type: 'error' });
+      }
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
-    let active = true;
-    async function load() {
-      try {
-        const [risk, account, orders] = await Promise.all([
-          quantApi.riskStatus(),
-          quantApi.accountSummary(),
-          quantApi.pendingOrders(),
-        ]);
-        if (active) {
-          setState({
-            risk: risk as Record<string, unknown>,
-            account: account as Record<string, unknown>,
-            pendingCount: Array.isArray(orders) ? orders.length : 0,
-          });
-        }
-      } catch {
-        if (active) {
-          setState({ pendingCount: 0 });
-        }
-      }
-    }
     void load();
-    return () => {
-      active = false;
-    };
   }, []);
 
-  return (
-    <Stack spacing={1.5} sx={{ mb: 2 }}>
-      <TradingStatusStrip risk={state.risk} account={state.account} pendingCount={state.pendingCount} />
-    </Stack>
-  );
-};
+  const filtered = useMemo(() => {
+    const text = query.trim().toLowerCase();
+    const orders = [...state.orders].sort((left, right) =>
+      String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? '')),
+    );
+    if (!text) {
+      return orders;
+    }
+    return orders.filter((order) =>
+      [order.instId, order.action, order.side, order.posSide, order.status]
+        .some((value) => String(value ?? '').toLowerCase().includes(text)),
+    );
+  }, [query, state.orders]);
 
-export function PendingOrderList() {
   return (
-    <List
-      title="待确认订单"
-      filters={pendingOrderFilters}
-      sort={{ field: 'createdAt', order: 'DESC' }}
-      perPage={25}
-      exporter={false}
-    >
-      <>
-        <PendingOrderTradingStatus />
-        <Datagrid bulkActionButtons={false} rowClick={false}>
-          <TextField source="instId" label="合约" sortable />
-          <FunctionField label="动作" sortBy="action" render={(record: Record<string, unknown>) => formatAction(record.action)} />
-          <FunctionField
-            label="方向"
-            sortBy="side"
-            render={(record: Record<string, unknown>) => `${formatSide(record.side)} / ${formatSide(record.posSide)}`}
-          />
-          <NumberField source="price" label="价格" sortable />
-          <NumberField source="leverage" label="杠杆" sortable />
-          <NumberField source="stopLossPrice" label="止损" sortable />
-          <NumberField source="takeProfitPrice" label="止盈" sortable />
-          <FunctionField
-            label="状态"
-            sortBy="status"
-            render={(record: Record<string, unknown>) => <StatusChip value={String(record.status ?? '-')} />}
-          />
-          <FunctionField
-            label="操作"
-            render={(record: Record<string, unknown>) => <PendingOrderActions record={record} />}
-          />
-        </Datagrid>
-      </>
-    </List>
+    <PageShell title="待确认订单">
+      <Stack spacing={2}>
+        <PageHeader
+          title="待确认订单"
+          subtitle="这里是 OKX 实盘提交前的人工审核台。确认前必须填写保证金并复核方向、杠杆、止损和止盈。"
+          eyebrow="Order Review"
+          actions={
+            <>
+              <TextField
+                size="small"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索合约、方向、状态"
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon fontSize="small" />
+                    </InputAdornment>
+                  ),
+                }}
+                sx={{ minWidth: { xs: 1, sm: 240 } }}
+              />
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={refreshing ? <CircularProgress size={14} /> : <RefreshIcon />}
+                onClick={() => void load(true)}
+                disabled={refreshing}
+              >
+                刷新
+              </Button>
+            </>
+          }
+        />
+
+        <TradingStatusStrip risk={state.risk} account={state.account} pendingCount={state.orders.length} />
+
+        <Alert severity="warning">
+          实盘确认会调用 OKX 下单接口。确认前请核对合约、方向、保证金、杠杆、止损和止盈。
+        </Alert>
+
+        {error ? <Alert severity="error">{error}</Alert> : null}
+
+        <Box sx={{ ...glassCard }}>
+          {loading ? (
+            <Box sx={{ minHeight: 260, display: 'grid', placeItems: 'center' }}>
+              <CircularProgress size={28} />
+            </Box>
+          ) : filtered.length === 0 ? (
+            <Box sx={{ minHeight: 220, display: 'grid', placeItems: 'center', p: 3 }}>
+              <Typography color="text.secondary">当前没有匹配的待确认订单。</Typography>
+            </Box>
+          ) : (
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>合约</TableCell>
+                    <TableCell>动作</TableCell>
+                    <TableCell>方向</TableCell>
+                    <TableCell align="right">价格</TableCell>
+                    <TableCell align="right">杠杆</TableCell>
+                    <TableCell align="right">止损</TableCell>
+                    <TableCell align="right">止盈</TableCell>
+                    <TableCell>状态</TableCell>
+                    <TableCell align="right">操作</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {filtered.map((order) => (
+                    <TableRow key={String(order.id)} hover>
+                      <TableCell sx={{ fontWeight: 900 }}>{String(order.instId ?? '-')}</TableCell>
+                      <TableCell>{formatAction(order.action)}</TableCell>
+                      <TableCell>{`${formatSide(order.side)} / ${formatSide(order.posSide)}`}</TableCell>
+                      <TableCell align="right">{formatPrice(order.price)}</TableCell>
+                      <TableCell align="right">{formatLeverage(order.leverage)}</TableCell>
+                      <TableCell align="right">{formatPrice(order.stopLossPrice)}</TableCell>
+                      <TableCell align="right">{formatPrice(order.takeProfitPrice)}</TableCell>
+                      <TableCell>
+                        <StatusChip value={String(order.status ?? '-')} />
+                      </TableCell>
+                      <TableCell align="right">
+                        <PendingOrderActions record={order} onChanged={() => void load(true)} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </Box>
+
+        <Box sx={{ ...compactGlass, borderRadius: 1, p: 1.25 }}>
+          <Typography variant="caption" color="text.secondary">
+            显示 {filtered.length} / {state.orders.length} 条待确认订单。
+          </Typography>
+        </Box>
+      </Stack>
+    </PageShell>
   );
 }

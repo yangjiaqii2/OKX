@@ -1,6 +1,7 @@
 package com.example.quant;
 
 import com.example.quant.config.AiProperties;
+import com.example.quant.config.AgentProperties;
 import com.example.quant.config.AkShareProperties;
 import com.example.quant.config.AuthProperties;
 import com.example.quant.config.ContractProperties;
@@ -20,6 +21,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         ContractProperties.class,
         OkxProperties.class,
         NewsProperties.class,
+        AgentProperties.class,
         AiProperties.class,
         AkShareProperties.class,
         TradingProperties.class,

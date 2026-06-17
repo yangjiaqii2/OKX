@@ -3,9 +3,10 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Loading, useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
+import { ClosePositionDialog } from '../components/ClosePositionDialog';
 import { compactGlass } from '../components/glass';
 import { PageHeader, PageShell } from '../components/PageShell';
-import { PositionSnapshotTable } from '../components/PositionSnapshotTable';
+import { PositionSnapshotTable, positionKey } from '../components/PositionSnapshotTable';
 import { StatusChip } from '../components/StatusChip';
 import { TradeMetricCard } from '../components/TradeMetricCard';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
@@ -19,6 +20,8 @@ export function AccountRiskPage() {
   const [positions, setPositions] = useState<Record<string, unknown>[]>([]);
   const [orders, setOrders] = useState<Record<string, unknown>[]>([]);
   const [positionError, setPositionError] = useState('');
+  const [closeDialogPosition, setCloseDialogPosition] = useState<Record<string, unknown> | null>(null);
+  const [closingKey, setClosingKey] = useState('');
 
   async function load() {
     setLoading(true);
@@ -47,6 +50,28 @@ export function AccountRiskPage() {
     }
   }
 
+  async function confirmClosePosition() {
+    if (!closeDialogPosition) {
+      return;
+    }
+    const key = positionKey(closeDialogPosition);
+    setClosingKey(key);
+    try {
+      await quantApi.closePosition({
+        instId: String(closeDialogPosition.instId ?? ''),
+        posSide: String(closeDialogPosition.posSide ?? ''),
+        marginMode: String(closeDialogPosition.marginMode ?? ''),
+      });
+      notify(`已提交平仓：${String(closeDialogPosition.instId ?? '-')}`, { type: 'success' });
+      setCloseDialogPosition(null);
+      await load();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '平仓提交失败', { type: 'error', multiLine: true });
+    } finally {
+      setClosingKey('');
+    }
+  }
+
   useEffect(() => {
     void load();
   }, []);
@@ -63,7 +88,7 @@ export function AccountRiskPage() {
       <Stack spacing={2.5}>
         <PageHeader
           title="账户与风控"
-          subtitle="集中查看 OKX 账户模式、权益、持仓快照和风控拦截原因。"
+          subtitle="集中查看 OKX 账户总览、可用余额、持仓快照和风控拦截原因。自动交易使用可用余额。"
           eyebrow="Risk Desk"
           status={<StatusChip value={accountMode} />}
           onRefresh={() => void load()}
@@ -86,8 +111,8 @@ export function AccountRiskPage() {
           }}
         >
           <TradeMetricCard label="账户模式" value={formatStatus(accountMode)} helper={accountMessage || undefined} />
-          <TradeMetricCard label="账户权益" value={formatUSDT(account.equity)} />
-          <TradeMetricCard label="可用余额" value={formatUSDT(account.availableBalance)} />
+          <TradeMetricCard label="账户总览" value={formatUSDT(account.equity)} helper="OKX账户全部资金参考" />
+          <TradeMetricCard label="可用余额" value={formatUSDT(account.availableBalance)} helper="自动交易实际使用" />
           <TradeMetricCard
             label="风控"
             value={<StatusChip value={risk.passed as boolean | undefined} />}
@@ -117,13 +142,24 @@ export function AccountRiskPage() {
                 {positionError ? (
                   <Alert severity="error">持仓不可用，不代表账户空仓：{positionError}</Alert>
                 ) : (
-                  <PositionSnapshotTable positions={positions} />
+                  <PositionSnapshotTable
+                    positions={positions}
+                    closingKey={closingKey}
+                    onClosePosition={setCloseDialogPosition}
+                  />
                 )}
               </Stack>
             </CardContent>
           </Card>
         </Box>
       </Stack>
+      <ClosePositionDialog
+        open={Boolean(closeDialogPosition)}
+        position={closeDialogPosition}
+        loading={Boolean(closingKey)}
+        onCancel={() => setCloseDialogPosition(null)}
+        onConfirm={() => void confirmClosePosition()}
+      />
     </PageShell>
   );
 }
@@ -135,7 +171,7 @@ function RiskRule({ label, value }: { label: string; value: ReactNode }) {
       justifyContent="space-between"
       alignItems="center"
       gap={2}
-      sx={{ ...compactGlass, borderRadius: 2, p: 1.15 }}
+      sx={{ ...compactGlass, borderRadius: 1, p: 1.15 }}
     >
       <Typography color="text.secondary" variant="body2">
         {label}

@@ -17,12 +17,15 @@ public class PendingOrder {
     private final String orderType;
     private final BigDecimal price;
     private BigDecimal size;
-    private final int leverage;
+    private int leverage;
     private final String tdMode;
     private final BigDecimal stopLossPrice;
     private final BigDecimal takeProfitPrice;
     private BigDecimal maxLossAmount;
     private BigDecimal marginAmount;
+    private UUID budgetReservationId;
+    private String budgetAllocationJson;
+    private String clientOrderId;
     private final BigDecimal riskRewardRatio;
     private final int signalScore;
     private final BigDecimal fundingRate;
@@ -33,7 +36,9 @@ public class PendingOrder {
     private OrderStatus status;
     private boolean userConfirmed;
     private Instant confirmedAt;
+    private Instant submittedAt;
     private Instant executedAt;
+    private String externalOrderId;
     private String rejectReason;
     private final Instant createdAt;
     private final Instant expireAt;
@@ -84,6 +89,9 @@ public class PendingOrder {
     public BigDecimal takeProfitPrice() { return takeProfitPrice; }
     public BigDecimal maxLossAmount() { return maxLossAmount; }
     public BigDecimal marginAmount() { return marginAmount; }
+    public UUID budgetReservationId() { return budgetReservationId; }
+    public String budgetAllocationJson() { return budgetAllocationJson; }
+    public String clientOrderId() { return clientOrderId; }
     public BigDecimal riskRewardRatio() { return riskRewardRatio; }
     public int signalScore() { return signalScore; }
     public BigDecimal fundingRate() { return fundingRate; }
@@ -94,7 +102,9 @@ public class PendingOrder {
     public OrderStatus status() { return status; }
     public boolean userConfirmed() { return userConfirmed; }
     public Instant confirmedAt() { return confirmedAt; }
+    public Instant submittedAt() { return submittedAt; }
     public Instant executedAt() { return executedAt; }
+    public String externalOrderId() { return externalOrderId; }
     public String rejectReason() { return rejectReason; }
     public Instant createdAt() { return createdAt; }
     public Instant expireAt() { return expireAt; }
@@ -129,13 +139,73 @@ public class PendingOrder {
                 .setScale(4, RoundingMode.HALF_UP);
     }
 
+    public synchronized void applyBudgetReservation(BigDecimal orderMarginUsdt, UUID reservationId,
+                                                    String allocationJson, String clientOrderId) {
+        applyMarginAmount(orderMarginUsdt);
+        this.budgetReservationId = reservationId;
+        this.budgetAllocationJson = allocationJson;
+        this.clientOrderId = clientOrderId;
+        this.status = OrderStatus.BUDGET_RESERVED;
+    }
+
+    public synchronized boolean transition(OrderStatus expectedStatus, OrderStatus newStatus) {
+        if (this.status != expectedStatus) {
+            return false;
+        }
+        this.status = newStatus;
+        return true;
+    }
+
+    public synchronized boolean transitionFromAny(OrderStatus newStatus, OrderStatus... expectedStatuses) {
+        for (OrderStatus expectedStatus : expectedStatuses) {
+            if (this.status == expectedStatus) {
+                this.status = newStatus;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public void adjustLeverage(int leverage) {
+        if (leverage <= 0) {
+            throw new IllegalArgumentException("杠杆必须大于0");
+        }
+        this.leverage = leverage;
+        if (marginAmount != null && marginAmount.signum() > 0) {
+            applyMarginAmount(marginAmount);
+        }
+    }
+
     public void markExecuted(Instant now) {
         this.status = OrderStatus.EXECUTED;
         this.executedAt = now;
     }
 
+    public void markSubmitted(Instant now, String externalOrderId) {
+        this.status = OrderStatus.SUBMITTED;
+        this.submittedAt = now;
+        this.externalOrderId = externalOrderId;
+    }
+
+    public void markUnknownSubmitStatus(String reason) {
+        this.status = OrderStatus.UNKNOWN_SUBMIT_STATUS;
+        this.rejectReason = reason;
+    }
+
+    public void markProtectionFailed(String reason) {
+        this.status = OrderStatus.PROTECTION_FAILED;
+        this.rejectReason = reason;
+    }
+
     public void markRejected(String reason) {
         this.status = OrderStatus.REJECTED;
+        this.rejectReason = reason;
+    }
+
+    public void markRetryableRejected(String reason) {
+        this.status = OrderStatus.PENDING_CONFIRM;
+        this.userConfirmed = false;
+        this.confirmedAt = null;
         this.rejectReason = reason;
     }
 

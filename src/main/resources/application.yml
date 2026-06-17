@@ -2,7 +2,7 @@ spring:
   application:
     name: quant-assistant
   datasource:
-    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/quant_assistant?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+    url: ${MYSQL_URL:jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:33066}/${MYSQL_DATABASE:OKX}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true}
     username: ${MYSQL_USERNAME:root}
     password: ${MYSQL_PASSWORD:}
   jpa:
@@ -44,6 +44,181 @@ quant:
     max-daily-loss-rate: 0.03
     min-risk-reward-ratio: 1.5
     allow-add-position: false
+  agent:
+    enabled: false
+    mode: MANUAL_CONFIRM
+    scan-interval-seconds: 300
+    risk-block-scan-interval-seconds: 1800
+    top-candidate-limit: 10
+    auto-trade:
+      enabled: ${QUANT_AGENT_AUTO_TRADE_ENABLED:true}
+      min-score: 80
+      no-risk-min-score: ${QUANT_AGENT_AUTO_TRADE_NO_RISK_MIN_SCORE:70}
+      min-risk-reward: 2
+      require-backtest-pass: ${QUANT_AGENT_REQUIRE_BACKTEST_PASS:false}
+      max-open-positions: ${QUANT_AGENT_MAX_OPEN_POSITIONS:3}
+      min-open-positions: ${QUANT_AGENT_MIN_OPEN_POSITIONS:3}
+      in-flight-order-hold-seconds: ${QUANT_AGENT_IN_FLIGHT_ORDER_HOLD_SECONDS:120}
+    score:
+      min-total-score: 75
+      min-trend-score: 18
+      min-volume-score: 17
+      min-liquidity-score: 10
+      min-news-risk-score: 7
+    market:
+      min-volume-24h-usdt: 50000000
+      max-spread-bps: 8
+      min-depth-usdt: 100000
+      max-depth-usage-rate: 0.20
+      max-funding-abs: 0.0015
+      max-wick-ratio: 0.55
+      max-24h-range-pct: 40
+      max-estimated-slippage-bps: 15
+      stale-data-seconds: 20
+    entry:
+      smart-entry-enabled: true
+      market-min-score: 85
+      market-min-risk-reward: 1.8
+      max-market-spread-pct: 0.03
+      max-market-slippage-pct: 0.12
+      max-distance-from-ema20-pct: 1.5
+      allow-market-signal-types:
+        - STRONG_LONG
+        - TREND_SHORT
+      wait-pullback-signal-types:
+        - PULLBACK_LONG
+      reversal-short-force-confirm: true
+    today-change:
+      long-healthy-min-pct: 3
+      long-healthy-max-pct: 15
+      long-light-overheated-max-pct: 25
+      long-high-overheated-max-pct: 50
+      long-forbidden-pct: 50
+      neutral-min-pct: -3
+      neutral-max-pct: 3
+      short-weak-min-pct: -10
+      short-weak-max-pct: -3
+      short-oversold-below-pct: -10
+    ranking:
+      max-auto-trade-fallback-rank: 5
+      min-risk-reward: 1.5
+      min-final-rank-score: 70
+    budget:
+      enabled: true
+      input-margin-means-total-budget: true
+      allocation-mode: TARGET_UTILIZATION
+      target-utilization-pct: 90
+      min-target-utilization-pct: 80
+      max-utilization-pct: 100
+      min-order-margin-usdt: 5
+      preferred-min-order-margin-usdt: 10
+      max-single-position-budget-pct: 50
+      slot-weights:
+        1: 0.45
+        2: 0.30
+        3: 0.25
+      score-margin-factor:
+        score-90-plus: 1.00
+        score-85-90: 0.90
+        score-80-85: 0.80
+        score-75-80: 0.60
+        score-70-75: 0.60
+        score-60-70: 0.60
+      allow-redistribute-unused-budget: true
+      redistribute-only-to-score-above: 85
+      reserve-inflight-budget: true
+      include-manual-positions: false
+    fallback:
+      continue-on-plan-risk-fail: true
+      continue-on-spread-fail: true
+      continue-on-slippage-fail: true
+      continue-on-ai-plan-invalid: true
+      stop-on-okx-api-error: true
+      stop-on-account-risk-error: true
+      stop-on-protection-fail: true
+    position-quality:
+      enabled: true
+      min-score-by-open-positions:
+        0: 80
+        1: 84
+        2: 88
+      min-final-rank-score-by-open-positions:
+        0: 80
+        1: 84
+        2: 88
+      max-positions-by-market-regime:
+        BULLISH: 3
+        BEARISH: 3
+        CHOPPY: 1
+        HIGH_VOLATILITY: 1
+        RISK_OFF: 0
+    exposure:
+      enabled: true
+      max-same-direction-alt-positions: 2
+      max-same-direction-alt-positions-high-volatility: 1
+      score-penalty-per-same-direction-position: 4
+      exclude-majors-from-alt-count:
+        - BTC-USDT-SWAP
+        - ETH-USDT-SWAP
+    pre-confirm-refresh:
+      enabled: true
+      max-price-deviation-pct: 0.25
+      max-spread-pct: 0.05
+      reject-if-5m-reverse: true
+      reject-if-btc-reverse: true
+      reject-if-news-risk-upgraded: true
+    concurrency:
+      scan-lock-enabled: true
+      auto-trade-lock-enabled: true
+      symbol-lock-enabled: true
+      symbol-lock-ttl-seconds: 180
+    timeout:
+      scan-round-timeout-seconds: 45
+      ai-plan-timeout-seconds: 12
+      market-data-timeout-seconds: 8
+      okx-order-submit-timeout-seconds: 8
+      okx-order-query-timeout-seconds: 6
+      protection-submit-timeout-seconds: 10
+      pending-order-expire-seconds: 120
+    idempotency:
+      enabled: true
+      client-order-id-prefix: AUTO
+      check-before-retry: true
+    retry:
+      okx-submit-retry: 1
+      okx-query-retry: 3
+      retry-backoff-millis: 500
+    recovery:
+      enabled: true
+      interval-seconds: 30
+      reserved-budget-timeout-seconds: 180
+      submitted-order-timeout-seconds: 60
+      protection-pending-timeout-seconds: 20
+      unknown-submit-status-timeout-seconds: 60
+    protection:
+      recalc-after-fill: true
+      max-entry-price-deviation-pct: 0.25
+      min-risk-reward-after-fill: 1.5
+      max-stop-loss-pct-after-fill: 5
+      protection-submit-retry: 3
+      protection-fail-action: CLOSE_POSITION
+    take-profit:
+      tp1-ratio: 0.30
+      tp2-ratio: 0.40
+      tp3-ratio: 0.30
+      merge-small-tp-orders: true
+      final-tp-use-remaining-size: true
+    risk:
+      single-trade-risk-percent: 1
+      max-single-loss-percent: 5
+      max-daily-loss-percent: 30
+      max-daily-trades: 5
+      max-consecutive-losses: 3
+      cooldown-minutes-after-loss: 30
+      max-leverage: 5
+    monitor:
+      interval-seconds: 10
+      max-hold-minutes: 120
 
 trading:
   mode: SEMI_AUTO
@@ -78,6 +253,8 @@ akshare:
 ai:
   enabled: true
   provider: OPENAI_COMPATIBLE
-  model: ${AI_MODEL:mimo-v2-pro}
-  api-key: sk-c4w7mofy8vz9gr03wkxnou0fa9vh1101k6uo16tqyngqggha
-  base-url: https://api.xiaomimimo.com/v1
+  model: ${AI_MODEL:kimi-k2.6}
+  api-key: ${AI_API_KEY:}
+  base-url: ${AI_BASE_URL:https://api.moonshot.cn/v1}
+  request-timeout-seconds: ${AI_REQUEST_TIMEOUT_SECONDS:20}
+  max-retries: ${AI_MAX_RETRIES:0}

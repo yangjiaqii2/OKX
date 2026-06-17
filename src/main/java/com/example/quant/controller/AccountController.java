@@ -2,12 +2,14 @@ package com.example.quant.controller;
 
 import com.example.quant.account.AccountSnapshotService;
 import com.example.quant.account.OkxAccountBindingService;
+import com.example.quant.account.PositionCloseService;
 import com.example.quant.account.PositionSnapshotService;
 import com.example.quant.account.dto.OkxAccountBindRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -15,12 +17,15 @@ import org.springframework.web.bind.annotation.RestController;
 public class AccountController {
     private final AccountSnapshotService accountSnapshotService;
     private final PositionSnapshotService positionSnapshotService;
+    private final PositionCloseService positionCloseService;
     private final OkxAccountBindingService okxAccountBindingService;
 
     public AccountController(AccountSnapshotService accountSnapshotService, PositionSnapshotService positionSnapshotService,
+                             PositionCloseService positionCloseService,
                              OkxAccountBindingService okxAccountBindingService) {
         this.accountSnapshotService = accountSnapshotService;
         this.positionSnapshotService = positionSnapshotService;
+        this.positionCloseService = positionCloseService;
         this.okxAccountBindingService = okxAccountBindingService;
     }
 
@@ -32,6 +37,13 @@ public class AccountController {
     @GetMapping("/positions")
     public Object positions() {
         return positionSnapshotService.positions();
+    }
+
+    @PostMapping("/positions/close")
+    public Object closePosition(@RequestParam String instId,
+                                @RequestParam(required = false) String posSide,
+                                @RequestParam(required = false) String marginMode) {
+        return positionCloseService.closePosition(instId, posSide, marginMode);
     }
 
     @GetMapping("/binding-status")

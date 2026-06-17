@@ -51,8 +51,11 @@ export function formatStatus(value: unknown) {
     false: '拦截',
     PENDING_CONFIRM: '待确认',
     CONFIRMED: '已确认',
+    SUBMITTED: '已提交',
     EXECUTED: '已执行',
     REJECTED: '已拒绝',
+    FAILED: '失败',
+    SKIPPED: '已跳过',
     CANCELLED: '已取消',
     EXPIRED: '已过期',
     LOW: '低风险',
@@ -106,7 +109,7 @@ export function formatPercentWithColor(value: unknown, digits = 2): ReactNode {
     return '-';
   }
   const sign = number > 0 ? '+' : '';
-  const color = number > 0 ? '#00d4aa' : number < 0 ? '#ef4444' : '#94a3b8';
+  const color = number > 0 ? '#22c55e' : number < 0 ? '#ef4444' : '#94a3b8';
   return createElement(
     'span',
     { style: { color, fontWeight: 600, fontFamily: '"JetBrains Mono", monospace' } },

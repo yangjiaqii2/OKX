@@ -1,0 +1,16 @@
+.git
+.agents
+.codex
+.data
+frontend/node_modules
+frontend/dist/.vite
+frontend/.vite
+target/classes
+target/generated-sources
+target/generated-test-sources
+target/maven-archiver
+target/maven-status
+target/surefire
+target/surefire-reports
+target/test-classes
+*.tar

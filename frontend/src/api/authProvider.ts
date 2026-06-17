@@ -21,6 +21,18 @@ async function authFetch(path: string, options: RequestInit = {}) {
   return (await response.json()) as AuthSession;
 }
 
+async function bestEffortAuthFetch(path: string, options: RequestInit = {}) {
+  try {
+    return await authFetch(path, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('404') || message.includes('500') || message.includes('Failed to fetch')) {
+      return { authenticated: false } as AuthSession;
+    }
+    throw error;
+  }
+}
+
 export const authProvider: AuthProvider = {
   async login(params) {
     const session = await authFetch('/auth/login', {
@@ -38,7 +50,9 @@ export const authProvider: AuthProvider = {
 
   async logout() {
     try {
-      await authFetch('/auth/logout', { method: 'POST' });
+      await bestEffortAuthFetch('/auth/logout', { method: 'POST' });
+    } catch {
+      // Logout must clear local state even when the backend is unavailable or the session already expired.
     } finally {
       clearAuthSession();
     }

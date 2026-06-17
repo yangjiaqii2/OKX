@@ -26,6 +26,7 @@ type PendingOrderReviewDialogProps = {
 export function PendingOrderReviewDialog({ open, record, submitting, onClose, onConfirm }: PendingOrderReviewDialogProps) {
   const [marginAmount, setMarginAmount] = useState('');
   const amountValid = Number(marginAmount) > 0;
+  const notional = amountValid ? Number(marginAmount) * Number(record.leverage ?? 1) : 0;
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
@@ -38,21 +39,26 @@ export function PendingOrderReviewDialog({ open, record, submitting, onClose, on
       <DialogContent>
         <Stack spacing={2}>
           <TextField
-            label="投入保证金金额 USDT"
+            label="本次投入保证金 USDT"
             value={marginAmount}
             onChange={(event) => setMarginAmount(event.target.value)}
             type="number"
             size="small"
             inputProps={{ min: 0, step: '0.01' }}
-            helperText="确认时按 金额 × 杠杆 ÷ 入场价 换算下单数量"
+            helperText="这里输入的是保证金，不是开仓价；确认时按 保证金 × 杠杆 ÷ 计划入场价 换算下单数量"
             fullWidth
           />
+          {amountValid ? (
+            <Alert severity="warning">
+              预计名义仓位约 {formatNumber(notional, 2)} USDT。提交成功只代表OKX已接收委托，成交、账单和持仓以OKX为准。
+            </Alert>
+          ) : null}
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1 }}>
             <ReviewItem label="合约" value={String(record.instId ?? '-')} emphasis />
             <ReviewItem label="动作" value={formatAction(record.action)} emphasis />
             <ReviewItem label="方向" value={`${formatSide(record.side)} / ${formatSide(record.posSide)}`} />
             <ReviewItem label="订单类型" value={formatSide(record.orderType)} />
-            <ReviewItem label="价格" value={formatPrice(record.price)} />
+            <ReviewItem label="计划入场价" value={formatPrice(record.price)} />
             <ReviewItem label="杠杆" value={formatLeverage(record.leverage)} />
             <ReviewItem label="止损" value={formatPrice(record.stopLossPrice)} />
             <ReviewItem label="止盈" value={formatPrice(record.takeProfitPrice)} />

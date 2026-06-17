@@ -1,5 +1,6 @@
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import CloseIcon from '@mui/icons-material/Close';
+import OutputIcon from '@mui/icons-material/Output';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 import SortIcon from '@mui/icons-material/Sort';
@@ -25,12 +26,18 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
+import { ClosePositionDialog } from '../components/ClosePositionDialog';
 import { compactGlass, glassCard, interactiveGlass } from '../components/glass';
 import { PageHeader, PageShell } from '../components/PageShell';
+import { positionKey } from '../components/PositionSnapshotTable';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
-import { formatLeverage, formatNumber, formatPercent, formatPrice, formatTrend, formatVolume } from '../formatters';
+import { formatLeverage, formatNumber, formatPercent, formatPrice, formatSide, formatTrend, formatUSDT, formatVolume } from '../formatters';
 
 type ContractCandidate = Record<string, unknown>;
+type PositionRow = Record<string, unknown>;
+type HeldContract = ContractCandidate & {
+  position: PositionRow;
+};
 type Candle = {
   timestamp: string;
   open: number | string;
@@ -54,6 +61,7 @@ const candlePeriods = [
 export function ContractCandidateList() {
   const notify = useNotify();
   const [contracts, setContracts] = useState<ContractCandidate[]>([]);
+  const [positions, setPositions] = useState<PositionRow[]>([]);
   const [risk, setRisk] = useState<Record<string, unknown>>();
   const [account, setAccount] = useState<Record<string, unknown>>();
   const [pendingCount, setPendingCount] = useState(0);
@@ -63,6 +71,8 @@ export function ContractCandidateList() {
   const [planningInstId, setPlanningInstId] = useState('');
   const [batchPlanning, setBatchPlanning] = useState(false);
   const [chartInstId, setChartInstId] = useState('');
+  const [closeDialogPosition, setCloseDialogPosition] = useState<PositionRow | null>(null);
+  const [closingKey, setClosingKey] = useState('');
   const [error, setError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [sortField, setSortField] = useState<SortField>('default');
@@ -75,13 +85,15 @@ export function ContractCandidateList() {
       setLoading(true);
     }
     try {
-      const [contractData, riskData, accountData, orderData] = await Promise.all([
+      const [contractData, riskData, accountData, orderData, positionData] = await Promise.all([
         quantApi.contractCandidates(),
         quantApi.riskStatus(),
         quantApi.accountSummary(),
         quantApi.pendingOrders(),
+        quantApi.positions(),
       ]);
       setContracts(Array.isArray(contractData) ? (contractData as ContractCandidate[]) : []);
+      setPositions(Array.isArray(positionData) ? (positionData as PositionRow[]) : []);
       setRisk(riskData as Record<string, unknown>);
       setAccount(accountData as Record<string, unknown>);
       setPendingCount(Array.isArray(orderData) ? orderData.length : 0);
@@ -112,21 +124,41 @@ export function ContractCandidateList() {
     }
   }
 
-  async function createBatchAiPlan() {
+  async function confirmClosePosition() {
+    if (!closeDialogPosition) {
+      return;
+    }
+    const key = positionKey(closeDialogPosition);
+    setClosingKey(key);
+    try {
+      await quantApi.closePosition({
+        instId: String(closeDialogPosition.instId ?? ''),
+        posSide: String(closeDialogPosition.posSide ?? ''),
+        marginMode: String(closeDialogPosition.marginMode ?? ''),
+      });
+      notify(`已提交平仓：${String(closeDialogPosition.instId ?? '-')}`, { type: 'success' });
+      setCloseDialogPosition(null);
+      await load(true);
+    } catch (closeError) {
+      notify(closeError instanceof Error ? closeError.message : '平仓提交失败', { type: 'error', multiLine: true });
+    } finally {
+      setClosingKey('');
+    }
+  }
+
+  async function createTopAiPlan() {
     if (contracts.length === 0) {
       notify('当前没有合约可生成计划', { type: 'warning' });
       return;
     }
     setBatchPlanning(true);
     try {
-      const instIds = contracts.map((c) => String(c.instId));
-      const result = (await quantApi.createPendingOrderBatch(instIds)) as Record<string, unknown>;
-      const created = Array.isArray(result.created) ? result.created.length : 0;
-      const errors = Array.isArray(result.errors) ? result.errors.length : 0;
-      notify(`批量AI计划完成：成功 ${created} 个${errors > 0 ? `，失败 ${errors} 个` : ''}，请到待确认订单查看`, { type: 'success' });
+      const topContract = [...contracts].sort((a, b) => Number(b.score ?? 0) - Number(a.score ?? 0))[0];
+      const order = (await quantApi.createPendingOrder(String(topContract.instId))) as Record<string, unknown>;
+      notify(`最高分计划已创建：${String(order.instId)}，请到待确认订单查看`, { type: 'success' });
       await load(true);
     } catch (planError) {
-      notify(planError instanceof Error ? planError.message : '批量AI计划生成失败', { type: 'error', multiLine: true });
+      notify(planError instanceof Error ? planError.message : '最高分计划生成失败', { type: 'error', multiLine: true });
     } finally {
       setBatchPlanning(false);
     }
@@ -134,14 +166,23 @@ export function ContractCandidateList() {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(true), 2000);
+    const timer = window.setInterval(() => void load(true), 5000);
     return () => window.clearInterval(timer);
   }, []);
 
+  const heldContracts = useMemo<HeldContract[]>(() => {
+    return positions
+      .filter((position) => Number(position.size ?? 0) !== 0)
+      .map((position) => {
+        const candidate = contracts.find((contract) => String(contract.instId) === String(position.instId)) ?? {};
+        return { ...candidate, instId: position.instId, position };
+      });
+  }, [contracts, positions]);
+
   const sorted = useMemo(() => {
-    if (sortField === 'default') return contracts;
+    if (sortField === 'default') return heldContracts;
     const dir = sortDir === 'asc' ? 1 : -1;
-    return [...contracts].sort((a, b) => {
+    return [...heldContracts].sort((a, b) => {
       if (sortField === 'price') {
         const av = Number(a.lastPrice ?? 0);
         const bv = Number(b.lastPrice ?? 0);
@@ -154,7 +195,7 @@ export function ContractCandidateList() {
       }
       return 0;
     });
-  }, [contracts, sortField, sortDir]);
+  }, [heldContracts, sortField, sortDir]);
 
   const filtered = useMemo(() => {
     const text = query.trim().toLowerCase();
@@ -162,18 +203,19 @@ export function ContractCandidateList() {
       return sorted;
     }
     return sorted.filter((item) =>
-      [item.instId, item.baseCurrency, item.trendDirection]
+      [item.instId, item.baseCurrency, item.trendDirection, item.position?.posSide]
         .some((value) => String(value ?? '').toLowerCase().includes(text)),
     );
   }, [sorted, query]);
 
   const top = contracts[0] as ContractCandidate | undefined;
+  const totalPnl = heldContracts.reduce((sum, contract) => sum + Number(contract.position.unrealizedPnl ?? 0), 0);
 
   return (
-    <PageShell title="OKX合约机会池">
+    <PageShell title="OKX当前持仓">
       <Stack spacing={2.25}>
         <PageHeader
-          title="OKX合约机会池"
+          title="OKX当前持仓"
           subtitle={`${lastUpdatedAt ? `行情刷新 ${lastUpdatedAt.toLocaleTimeString()}` : '行情准备中'}${refreshing ? ' · 更新中' : ''}`}
           eyebrow="Market Scanner"
           actions={
@@ -233,10 +275,10 @@ export function ContractCandidateList() {
               variant="outlined"
               size="small"
               startIcon={batchPlanning ? <CircularProgress size={14} /> : <AutoAwesomeIcon />}
-              onClick={() => void createBatchAiPlan()}
+              onClick={() => void createTopAiPlan()}
               disabled={batchPlanning || contracts.length === 0}
             >
-              {batchPlanning ? '推理中' : '一键AI计划'}
+              {batchPlanning ? '生成中' : '最高分计划'}
             </Button>
             </>
           }
@@ -253,13 +295,17 @@ export function ContractCandidateList() {
             gap: 1.5,
           }}
         >
-          <MarketStat label="机会数量" value={contracts.length} helper="综合评分候选上限 20" />
-          <MarketStat label="首位合约" value={String(top?.instId ?? '--')} helper={formatTrend(top?.trendDirection)} />
-          <MarketStat label="首位评分" value={formatNumber(top?.score, 0)} helper={`建议杠杆 ${formatLeverage(top?.suggestedLeverage)}`} />
+          <MarketStat label="当前持仓" value={heldContracts.length} helper="页面只显示已买入合约" />
+          <MarketStat label="最高分候选" value={String(top?.instId ?? '--')} helper={`${formatTrend(top?.trendDirection)} · ${formatNumber(top?.score, 0)}分`} />
+          <MarketStat label="持仓浮盈亏" value={formatUSDT(totalPnl)} helper="OKX未实现盈亏" />
         </Box>
 
+        <Alert severity="info">
+          评分权重：趋势25，成交量25，流动性15，波动10，持仓/资金费率10，市场环境8，新闻风险7。
+        </Alert>
+
         {loading ? (
-          <Box sx={{ ...glassCard, py: 8, display: 'grid', placeItems: 'center', borderRadius: 3 }}>
+          <Box sx={{ ...glassCard, py: 8, display: 'grid', placeItems: 'center', borderRadius: 1 }}>
             <CircularProgress size={28} />
           </Box>
         ) : (
@@ -280,14 +326,28 @@ export function ContractCandidateList() {
                 contract={contract}
                 rank={index + 1}
                 planning={planningInstId === contract.instId || batchPlanning}
+                closing={closingKey === positionKey(contract.position)}
                 onCreatePlan={() => void createAiPlan(String(contract.instId))}
+                onClosePosition={() => setCloseDialogPosition(contract.position)}
                 onOpenChart={() => setChartInstId(String(contract.instId))}
               />
             ))}
+            {filtered.length === 0 && (
+              <Box sx={{ ...glassCard, p: 2, borderRadius: 1, color: 'text.secondary' }}>
+                当前没有OKX持仓。自动交易仍会按最高分候选尝试开仓。
+              </Box>
+            )}
           </Box>
         )}
       </Stack>
       <CandleDialog instId={chartInstId} open={Boolean(chartInstId)} onClose={() => setChartInstId('')} />
+      <ClosePositionDialog
+        open={Boolean(closeDialogPosition)}
+        position={closeDialogPosition}
+        loading={Boolean(closingKey)}
+        onCancel={() => setCloseDialogPosition(null)}
+        onConfirm={() => void confirmClosePosition()}
+      />
     </PageShell>
   );
 }
@@ -296,20 +356,26 @@ function ContractCard({
   contract,
   rank,
   planning,
+  closing,
   onCreatePlan,
+  onClosePosition,
   onOpenChart,
 }: {
-  contract: ContractCandidate;
+  contract: HeldContract;
   rank: number;
   planning: boolean;
+  closing: boolean;
   onCreatePlan: () => void;
+  onClosePosition: () => void;
   onOpenChart: () => void;
 }) {
   const change = Number(contract.changePercent24h);
-  const positive = change >= 0;
+  const position = contract.position ?? {};
+  const pnl = Number(position.unrealizedPnl ?? 0);
+  const positive = pnl >= 0;
   const TrendIcon = positive ? TrendingUpIcon : TrendingDownIcon;
-  const trendText = positive ? '多头趋势' : '空头趋势';
-  const trendColor = positive ? '#00d4aa' : '#ef4444';
+  const trendText = formatSide(position.posSide);
+  const trendColor = positive ? '#22c55e' : '#ef4444';
 
   return (
     <Box
@@ -326,18 +392,15 @@ function ContractCard({
         ...interactiveGlass,
         width: '100%',
         textAlign: 'left',
-        p: 1.6,
-        border: `1px solid ${positive ? 'rgba(0, 212, 170, 0.34)' : 'rgba(239, 68, 68, 0.34)'}`,
+        p: 1.5,
+        border: `1px solid ${positive ? 'rgba(34, 197, 94, 0.34)' : 'rgba(239, 68, 68, 0.34)'}`,
         borderLeft: `4px solid ${trendColor}`,
-        borderRadius: 3,
-        background: positive
-          ? 'linear-gradient(145deg, rgba(0, 212, 170, 0.12), rgba(8, 13, 24, 0.58))'
-          : 'linear-gradient(145deg, rgba(239, 68, 68, 0.12), rgba(8, 13, 24, 0.58))',
+        borderRadius: 1,
+        background: '#111827',
         color: 'text.primary',
         cursor: 'pointer',
         '&:hover': {
-          transform: 'translateY(-2px)',
-          borderColor: positive ? 'rgba(0, 212, 170, 0.52)' : 'rgba(239, 68, 68, 0.52)',
+          borderColor: positive ? 'rgba(34, 197, 94, 0.52)' : 'rgba(239, 68, 68, 0.52)',
         },
       }}
     >
@@ -359,25 +422,41 @@ function ContractCard({
                 height: 22,
                 color: trendColor,
                 borderColor: `${trendColor}66`,
-                bgcolor: positive ? 'rgba(0, 212, 170, 0.10)' : 'rgba(239, 68, 68, 0.10)',
+                bgcolor: positive ? 'rgba(34, 197, 94, 0.10)' : 'rgba(239, 68, 68, 0.10)',
                 '& .MuiChip-icon': { color: trendColor, fontSize: 14 },
               }}
               variant="outlined"
             />
           </Box>
-          <Button
-            size="small"
-            variant="contained"
-            startIcon={planning ? <CircularProgress size={12} /> : <AutoAwesomeIcon />}
-            disabled={planning}
-            onClick={(event) => {
-              event.stopPropagation();
-              onCreatePlan();
-            }}
-            sx={{ minWidth: 88 }}
-          >
-            {planning ? '推理中' : 'AI计划'}
-          </Button>
+          <Stack direction="row" gap={0.75} flexWrap="wrap" justifyContent="flex-end">
+            <Button
+              size="small"
+              color="error"
+              variant="outlined"
+              startIcon={closing ? <CircularProgress size={12} color="inherit" /> : <OutputIcon />}
+              disabled={closing}
+              onClick={(event) => {
+                event.stopPropagation();
+                onClosePosition();
+              }}
+              sx={{ minWidth: 72 }}
+            >
+              {closing ? '提交中' : '平仓'}
+            </Button>
+            <Button
+              size="small"
+              variant="contained"
+              startIcon={planning ? <CircularProgress size={12} /> : <AutoAwesomeIcon />}
+              disabled={planning}
+              onClick={(event) => {
+                event.stopPropagation();
+                onCreatePlan();
+              }}
+              sx={{ minWidth: 88 }}
+            >
+              {planning ? '推理中' : 'AI计划'}
+            </Button>
+          </Stack>
         </Stack>
 
         <Box
@@ -390,27 +469,31 @@ function ContractCard({
         >
           <Box>
             <Typography variant="caption" color="text.secondary">
-              最新价
+              未实现盈亏
             </Typography>
             <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 22, fontWeight: 900 }}>
-              {formatPrice(contract.lastPrice)}
+              {formatUSDT(position.unrealizedPnl)}
             </Typography>
           </Box>
           <Stack direction="row" alignItems="center" spacing={0.5} sx={{ color: positive ? 'success.main' : 'error.main' }}>
             <TrendIcon sx={{ fontSize: 18 }} />
             <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontWeight: 900 }}>
-              {formatPercent(contract.changePercent24h)}
+              {formatPercent(change)}
             </Typography>
           </Stack>
         </Box>
 
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
+          <MiniMetric label="持仓数量" value={formatNumber(position.size)} />
+          <MiniMetric label="持仓均价" value={formatPrice(position.avgPrice)} />
+          <MiniMetric label="真实保证金" value={formatUSDT(position.margin)} />
+          <MiniMetric label="保证金模式" value={`${formatSide(position.marginMode)} ${formatLeverage(position.leverage)}`} />
+          <MiniMetric label="最新价" value={formatPrice(contract.lastPrice)} />
           <MiniMetric label="综合评分" value={formatNumber(contract.score, 0)} />
           <MiniMetric label="建议杠杆" value={formatLeverage(contract.suggestedLeverage)} />
           <MiniMetric label="24h成交量" value={formatVolume(contract.volume24h)} />
           <MiniMetric label="量能放大" value={`${formatNumber(contract.volumeSpikeRatio, 2)}x`} />
-          <MiniMetric label="止损" value={formatPrice(contract.stopLossPrice)} />
-          <MiniMetric label="止盈" value={formatPrice(contract.takeProfitPrice)} />
+          <MiniMetric label="方向" value={formatSide(position.posSide)} />
         </Box>
 
         <Stack direction="row" gap={0.75} flexWrap="wrap" sx={{ minHeight: 26 }}>
@@ -565,18 +648,18 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
   const trendLine = regressionTrendLine(data, padding.left, step, y);
 
   return (
-    <Box sx={{ height: 1, width: 1, overflow: 'hidden', border: '1px solid rgba(180, 205, 255, 0.14)', borderRadius: 3 }}>
+    <Box sx={{ height: 1, width: 1, overflow: 'hidden', border: '1px solid rgba(148, 163, 184, 0.16)', borderRadius: 1 }}>
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%" preserveAspectRatio="none" role="img">
-        <rect x="0" y="0" width={width} height={height} fill="#070b12" />
+        <rect x="0" y="0" width={width} height={height} fill="#0b111c" />
         <g>
-          <rect x={padding.left} y={padding.top} width="240" height="72" rx="6" fill="rgba(2,6,23,0.82)" stroke="rgba(148,163,184,0.18)" />
+          <rect x={padding.left} y={padding.top} width="240" height="72" rx="6" fill="#111827" stroke="rgba(148,163,184,0.22)" />
           <text x={padding.left + 12} y={padding.top + 20} fill="#94a3b8" fontSize="12">
             实时最新价
           </text>
           <text x={padding.left + 12} y={padding.top + 48} fill="#f8fafc" fontSize="18" fontWeight="800">
             {formatPrice(last.close)}
           </text>
-          <text x={padding.left + 12} y={padding.top + 66} fill={trendPositive ? '#00d4aa' : '#ef4444'} fontSize="14" fontWeight="800">
+          <text x={padding.left + 12} y={padding.top + 66} fill={trendPositive ? '#22c55e' : '#ef4444'} fontSize="14" fontWeight="800">
             {formatPercent(changePercent)}
           </text>
         </g>
@@ -599,7 +682,7 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
         <path
           d={data.map((item, index) => `${index === 0 ? 'M' : 'L'} ${padding.left + index * step + step / 2} ${y(item.close)}`).join(' ')}
           fill="none"
-          stroke={trendPositive ? '#00d4aa' : '#ef4444'}
+          stroke={trendPositive ? '#22c55e' : '#ef4444'}
           strokeWidth="2"
           opacity="0.42"
         />
@@ -618,7 +701,7 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
         {data.map((item, index) => {
           const x = padding.left + index * step + step / 2;
           const up = item.close >= item.open;
-          const color = up ? '#00d4aa' : '#ef4444';
+          const color = up ? '#22c55e' : '#ef4444';
           const bodyTop = y(Math.max(item.open, item.close));
           const bodyBottom = y(Math.min(item.open, item.close));
           const bodyHeight = Math.max(2, bodyBottom - bodyTop);
@@ -630,14 +713,14 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
                 y={bodyTop}
                 width={candleWidth}
                 height={bodyHeight}
-                fill={up ? 'rgba(0,212,170,0.9)' : 'rgba(239,68,68,0.9)'}
+                fill={up ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)'}
               />
               <rect
                 x={x - candleWidth / 2}
                 y={volumeY(item.volume)}
                 width={candleWidth}
                 height={Math.max(1, volumeTop + volumeHeight - volumeY(item.volume))}
-                fill={up ? 'rgba(0,212,170,0.38)' : 'rgba(239,68,68,0.38)'}
+                fill={up ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)'}
               />
             </g>
           );
@@ -721,11 +804,11 @@ function formatCandleTime(date: Date, bar: string) {
 
 function MarketStat({ label, value, helper }: { label: string; value: unknown; helper: string }) {
   return (
-    <Box sx={{ ...compactGlass, p: 1.5, borderRadius: 2, bgcolor: 'rgba(2, 6, 23, 0.5)' }}>
+    <Box sx={{ ...compactGlass, p: 1.25, borderRadius: 1, bgcolor: '#101826' }}>
       <Typography variant="caption" color="text.secondary" fontWeight={800}>
         {label}
       </Typography>
-      <Typography sx={{ mt: 0.5, fontSize: 22, fontWeight: 900, overflowWrap: 'anywhere' }}>{String(value)}</Typography>
+      <Typography sx={{ mt: 0.35, fontSize: 20, fontWeight: 900, overflowWrap: 'anywhere' }}>{String(value)}</Typography>
       <Typography variant="caption" color="text.secondary">
         {helper}
       </Typography>
@@ -735,7 +818,7 @@ function MarketStat({ label, value, helper }: { label: string; value: unknown; h
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <Box sx={{ ...compactGlass, p: 1, borderRadius: 2, bgcolor: 'rgba(2, 6, 23, 0.38)' }}>
+    <Box sx={{ ...compactGlass, p: 0.9, borderRadius: 1, bgcolor: '#0f172a' }}>
       <Typography variant="caption" color="text.secondary" fontWeight={800}>
         {label}
       </Typography>

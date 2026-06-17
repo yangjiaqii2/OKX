@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
+import com.example.quant.agent.budget.BudgetAllocation;
+import com.example.quant.agent.budget.BudgetReservation;
+import com.example.quant.agent.budget.BudgetReservationStatus;
 import com.example.quant.tradeplan.TradePlan;
 import com.example.quant.tradeplan.TradePlanType;
 import java.math.BigDecimal;
@@ -36,6 +39,55 @@ class PendingOrderServiceTest {
         assertThat(order.maxLossAmount()).isEqualByComparingTo(BigDecimal.valueOf(100));
     }
 
+    @Test
+    void createsAutoPendingOrderWithReservedBudgetAllocation() {
+        PendingOrderService service = new PendingOrderService(120);
+        BudgetReservation reservation = new BudgetReservation(
+                UUID.randomUUID(),
+                samplePlan().id(),
+                UUID.randomUUID(),
+                "BTC-USDT-SWAP",
+                new BigDecimal("22.5"),
+                BudgetReservationStatus.RESERVED,
+                Instant.now(),
+                Instant.now(),
+                "RESERVED"
+        );
+
+        PendingOrder order = service.createAutoPendingOrder(
+                MarketType.OKX_SWAP,
+                samplePlan(),
+                new BigDecimal("22.5"),
+                reservation.reservationId(),
+                allocation("22.5"),
+                "AUTO_plan_pending_abc"
+        );
+
+        assertThat(order.status()).isEqualTo(OrderStatus.BUDGET_RESERVED);
+        assertThat(order.marginAmount()).isEqualByComparingTo("22.5000");
+        assertThat(order.budgetReservationId()).isEqualTo(reservation.reservationId());
+        assertThat(order.clientOrderId()).isEqualTo("AUTO_plan_pending_abc");
+        assertThat(order.budgetAllocationJson()).contains("\"finalOrderMarginUsdt\":22.5");
+        assertThat(order.size()).isEqualByComparingTo("0.45000000");
+    }
+
+    @Test
+    void compareAndSetAllowsOnlyOneConfirmingTransition() {
+        PendingOrderService service = new PendingOrderService(120);
+        PendingOrder order = service.createAutoPendingOrder(
+                MarketType.OKX_SWAP,
+                samplePlan(),
+                new BigDecimal("20"),
+                UUID.randomUUID(),
+                allocation("20"),
+                "AUTO_plan_pending_abc"
+        );
+
+        assertThat(order.transition(OrderStatus.BUDGET_RESERVED, OrderStatus.CONFIRMING)).isTrue();
+        assertThat(order.transition(OrderStatus.BUDGET_RESERVED, OrderStatus.CONFIRMING)).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMING);
+    }
+
     static TradePlan samplePlan() {
         return new TradePlan(
                 UUID.randomUUID(),
@@ -62,6 +114,32 @@ class PendingOrderServiceTest {
                 "test invalid condition",
                 true,
                 Instant.now().plusSeconds(120)
+        );
+    }
+
+    private static BudgetAllocation allocation(String finalMargin) {
+        return new BudgetAllocation(
+                new BigDecimal("50"),
+                new BigDecimal("45"),
+                new BigDecimal("40"),
+                new BigDecimal("50"),
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                new BigDecimal("50"),
+                1,
+                new BigDecimal("0.45"),
+                new BigDecimal("22.5"),
+                BigDecimal.ONE,
+                new BigDecimal("22.5"),
+                new BigDecimal("30"),
+                new BigDecimal("25"),
+                BigDecimal.ZERO,
+                new BigDecimal(finalMargin),
+                new BigDecimal("45"),
+                "TARGET_UTILIZATION",
+                "OK",
+                List.of(),
+                "test budget allocation"
         );
     }
 }

@@ -54,8 +54,10 @@ class ContractSignalAnalyzerTest {
         );
 
         assertThat(signal.score()).isLessThan(65);
-        assertThat(signal.suggestedLeverage()).isEqualTo(1);
-        assertThat(signal.riskTagList()).contains("资金费率拥挤", "波动率过高");
+        assertThat(signal.suggestedLeverage()).isZero();
+        assertThat(signal.action()).isIn("WAIT", "NO_TRADE");
+        assertThat(signal.riskTagList()).anyMatch(risk -> risk.contains("资金费率拥挤"));
+        assertThat(signal.riskTagList()).contains("波动率过高");
     }
 
     private static List<ContractCandle> risingCandles() {

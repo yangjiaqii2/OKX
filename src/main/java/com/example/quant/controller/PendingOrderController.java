@@ -35,14 +35,13 @@ public class PendingOrderController {
     public Object createContractPendingOrderBatch(@RequestParam List<String> instIds) {
         List<PendingOrderView> results = new ArrayList<>();
         List<String> errors = new ArrayList<>();
-        for (String instId : instIds) {
-            try {
-                results.add(PendingOrderView.from(
-                        pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, tradePlanService.createContractPlan(instId))
-                ));
-            } catch (Exception ex) {
-                errors.add(instId + ": " + ex.getMessage());
-            }
+        String instId = instIds == null || instIds.isEmpty() ? "" : instIds.get(0);
+        try {
+            results.add(PendingOrderView.from(
+                    pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, tradePlanService.createContractPlan(instId))
+            ));
+        } catch (Exception ex) {
+            errors.add(instId + ": " + ex.getMessage());
         }
         return new BatchPendingOrderResult(results, errors);
     }

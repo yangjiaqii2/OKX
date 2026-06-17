@@ -5,6 +5,7 @@ import { authProvider } from './api/authProvider';
 import { AppLayout, appIcons } from './layout';
 import { AccountBindingPage } from './pages/AccountBindingPage';
 import { AccountRiskPage } from './pages/AccountRiskPage';
+import { AutoTradeRecordList } from './pages/AutoTradeRecordList';
 import { ContractCandidateList } from './pages/ContractCandidateList';
 import { Dashboard } from './pages/Dashboard';
 import { LoginPage } from './pages/LoginPage';
@@ -35,6 +36,12 @@ export default function App() {
         list={PendingOrderList}
         icon={appIcons.pending}
         options={{ label: '待确认订单' }}
+      />
+      <Resource
+        name="autoTradeRecords"
+        list={AutoTradeRecordList}
+        icon={appIcons.autoTrade}
+        options={{ label: '自动交易记录' }}
       />
       <CustomRoutes>
         <Route path="/account-binding" element={<AccountBindingPage />} />

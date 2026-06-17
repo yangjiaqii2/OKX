@@ -27,20 +27,18 @@ export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: Risk
       sx={{
         ...glassCard,
         height: '100%',
-        borderColor: isBlocked ? 'rgba(239, 68, 68, 0.46)' : 'rgba(245, 158, 11, 0.34)',
-        background: isBlocked
-          ? 'linear-gradient(145deg, rgba(127, 29, 29, 0.26), rgba(8, 13, 24, 0.62))'
-          : 'linear-gradient(145deg, rgba(35, 28, 11, 0.34), rgba(8, 13, 24, 0.62))',
+        borderColor: isBlocked ? 'rgba(239, 68, 68, 0.48)' : 'rgba(245, 158, 11, 0.36)',
+        background: isBlocked ? 'rgba(127, 29, 29, 0.18)' : '#111827',
       }}
     >
-      <CardContent sx={{ p: 2.25 }}>
-        <Stack spacing={2}>
+      <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+        <Stack spacing={1.6}>
           <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={1.5}>
             <Stack spacing={0.5}>
               <Typography variant="caption" color="text.secondary" fontWeight={800} sx={{ textTransform: 'uppercase' }}>
                 Risk Command
               </Typography>
-              <Typography variant="h4" fontWeight={900} sx={{ fontFamily: '"JetBrains Mono", monospace' }}>
+              <Typography variant="h5" fontWeight={900} sx={{ fontFamily: '"JetBrains Mono", monospace', lineHeight: 1.1 }}>
                 {formatStatus(riskLevel)}
               </Typography>
             </Stack>
@@ -50,10 +48,10 @@ export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: Risk
                 height: 40,
                 display: 'grid',
                 placeItems: 'center',
-                borderRadius: 2,
+                borderRadius: 1.25,
                 color: isBlocked ? 'error.main' : 'warning.main',
                 bgcolor: isBlocked ? 'rgba(239, 68, 68, 0.12)' : 'rgba(245, 158, 11, 0.12)',
-                border: '1px solid rgba(255,255,255,0.12)',
+                border: '1px solid rgba(148, 163, 184, 0.16)',
               }}
             >
               {isBlocked ? <WarningAmberIcon /> : <ShieldIcon />}
@@ -96,8 +94,8 @@ function MiniStat({ label, value, tone = 'neutral' }: { label: string; value: Re
       sx={{
         ...compactGlass,
         p: 1,
-        borderRadius: 2,
-        bgcolor: tone === 'warning' ? 'rgba(245, 158, 11, 0.10)' : 'rgba(15, 23, 42, 0.72)',
+        borderRadius: 1,
+        bgcolor: tone === 'warning' ? 'rgba(245, 158, 11, 0.10)' : '#0f172a',
         minHeight: 58,
       }}
     >

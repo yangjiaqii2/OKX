@@ -27,9 +27,22 @@ public class AccountSnapshotService {
                 );
             }
             JsonNode account = data.get(0);
-            return new AccountSummary(
-                    decimal(account, "totalEq"),
+            BigDecimal available = firstPositive(
                     decimal(account, "availEq"),
+                    detailDecimal(account, "USDT", "availEq"),
+                    detailDecimal(account, "USDT", "availBal"),
+                    detailDecimal(account, "USDT", "cashBal"),
+                    detailDecimal(account, "USDT", "eq")
+            );
+            BigDecimal equity = firstPositive(
+                    decimal(account, "totalEq"),
+                    detailDecimal(account, "USDT", "eq"),
+                    detailDecimal(account, "USDT", "cashBal"),
+                    available
+            );
+            return new AccountSummary(
+                    equity,
+                    available,
                     "OKX_REAL",
                     "OKX account balance loaded."
             );
@@ -74,5 +87,30 @@ public class AccountSnapshotService {
             return BigDecimal.ZERO;
         }
         return new BigDecimal(value);
+    }
+
+    private static BigDecimal detailDecimal(JsonNode account, String currency, String field) {
+        JsonNode details = account.path("details");
+        if (!details.isArray()) {
+            return BigDecimal.ZERO;
+        }
+        for (JsonNode detail : details) {
+            if (currency.equalsIgnoreCase(detail.path("ccy").asText(""))) {
+                BigDecimal value = decimal(detail, field);
+                if (value.signum() > 0) {
+                    return value;
+                }
+            }
+        }
+        return BigDecimal.ZERO;
+    }
+
+    private static BigDecimal firstPositive(BigDecimal... values) {
+        for (BigDecimal value : values) {
+            if (value != null && value.signum() > 0) {
+                return value;
+            }
+        }
+        return BigDecimal.ZERO;
     }
 }

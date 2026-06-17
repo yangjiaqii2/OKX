@@ -1,9 +1,12 @@
 package com.example.quant.order;
 
-import com.example.quant.market.MarketType;
+import com.example.quant.agent.budget.BudgetAllocation;
+import com.example.quant.agent.plan.TradePlanRecordService;
 import com.example.quant.config.TradingProperties;
+import com.example.quant.market.MarketType;
 import com.example.quant.tradeplan.TradePlan;
 import com.example.quant.tradeplan.TradePlanType;
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -19,19 +22,29 @@ public class PendingOrderService {
     private final Map<UUID, PendingOrder> orders = new ConcurrentHashMap<>();
     private final int expireSeconds;
     private final Clock clock;
+    private final TradePlanRecordService tradePlanRecordService;
 
     @Autowired
+    public PendingOrderService(TradingProperties tradingProperties, TradePlanRecordService tradePlanRecordService) {
+        this(tradingProperties.orderExpireSeconds(), Clock.systemUTC(), tradePlanRecordService);
+    }
+
     public PendingOrderService(TradingProperties tradingProperties) {
-        this(tradingProperties.orderExpireSeconds(), Clock.systemUTC());
+        this(tradingProperties.orderExpireSeconds(), Clock.systemUTC(), null);
     }
 
     public PendingOrderService(int expireSeconds) {
-        this(expireSeconds, Clock.systemUTC());
+        this(expireSeconds, Clock.systemUTC(), null);
     }
 
     public PendingOrderService(int expireSeconds, Clock clock) {
+        this(expireSeconds, clock, null);
+    }
+
+    public PendingOrderService(int expireSeconds, Clock clock, TradePlanRecordService tradePlanRecordService) {
         this.expireSeconds = expireSeconds;
         this.clock = clock;
+        this.tradePlanRecordService = tradePlanRecordService;
     }
 
     public PendingOrder createPendingOrder(MarketType marketType, TradePlan plan) {
@@ -44,8 +57,45 @@ public class PendingOrderService {
         Instant now = clock.instant();
         String side = plan.action() == TradePlanType.OPEN_SHORT ? "sell" : "buy";
         String posSide = plan.action() == TradePlanType.OPEN_SHORT ? "short" : "long";
-        PendingOrder order = new PendingOrder(
-                UUID.randomUUID(),
+        PendingOrder order = buildPendingOrder(UUID.randomUUID(), marketType, plan, now);
+        orders.put(order.id(), order);
+        if (tradePlanRecordService != null) {
+            tradePlanRecordService.markPendingOrderCreated(plan.id());
+        }
+        return order;
+    }
+
+    public PendingOrder createAutoPendingOrder(MarketType marketType, TradePlan plan, UUID pendingOrderId,
+                                               BigDecimal orderMarginUsdt, UUID budgetReservationId,
+                                               BudgetAllocation allocation, String clientOrderId) {
+        if (marketType == MarketType.A_SHARE) {
+            throw new IllegalArgumentException("A股只做分析，不能生成PendingOrder");
+        }
+        if (marketType != MarketType.OKX_SWAP) {
+            throw new IllegalArgumentException("仅OKX合约支持待确认订单");
+        }
+        Instant now = clock.instant();
+        PendingOrder order = buildPendingOrder(pendingOrderId, marketType, plan, now);
+        order.applyBudgetReservation(orderMarginUsdt, budgetReservationId, budgetAllocationJson(allocation), clientOrderId);
+        orders.put(order.id(), order);
+        if (tradePlanRecordService != null) {
+            tradePlanRecordService.markPendingOrderCreated(plan.id());
+        }
+        return order;
+    }
+
+    public PendingOrder createAutoPendingOrder(MarketType marketType, TradePlan plan, BigDecimal orderMarginUsdt,
+                                               UUID budgetReservationId, BudgetAllocation allocation,
+                                               String clientOrderId) {
+        return createAutoPendingOrder(marketType, plan, UUID.randomUUID(), orderMarginUsdt,
+                budgetReservationId, allocation, clientOrderId);
+    }
+
+    private PendingOrder buildPendingOrder(UUID id, MarketType marketType, TradePlan plan, Instant now) {
+        String side = plan.action() == TradePlanType.OPEN_SHORT ? "sell" : "buy";
+        String posSide = plan.action() == TradePlanType.OPEN_SHORT ? "short" : "long";
+        return new PendingOrder(
+                id,
                 marketType,
                 plan.instId(),
                 plan.action(),
@@ -69,8 +119,6 @@ public class PendingOrderService {
                 now,
                 now.plusSeconds(expireSeconds)
         );
-        orders.put(order.id(), order);
-        return order;
     }
 
     public PendingOrder get(UUID id) {
@@ -87,7 +135,47 @@ public class PendingOrderService {
                 .toList();
     }
 
+    public List<PendingOrder> allOrders() {
+        return new ArrayList<>(orders.values());
+    }
+
     public void cancel(UUID id) {
         get(id).markCancelled("用户取消");
+    }
+
+    private static String budgetAllocationJson(BudgetAllocation allocation) {
+        if (allocation == null) {
+            return "{}";
+        }
+        return "{"
+                + "\"totalBudgetUsdt\":" + number(allocation.totalBudgetUsdt()) + ","
+                + "\"targetUsedBudgetUsdt\":" + number(allocation.targetUsedBudgetUsdt()) + ","
+                + "\"minTargetUsedBudgetUsdt\":" + number(allocation.minTargetUsedBudgetUsdt()) + ","
+                + "\"usedBudgetBefore\":" + number(allocation.usedBudgetBefore()) + ","
+                + "\"inFlightReservedBefore\":" + number(allocation.inFlightReservedBefore()) + ","
+                + "\"remainingBudgetBefore\":" + number(allocation.remainingBudgetBefore()) + ","
+                + "\"slotIndex\":" + allocation.slotIndex() + ","
+                + "\"slotWeight\":" + number(allocation.slotWeight()) + ","
+                + "\"slotBudgetUsdt\":" + number(allocation.slotBudgetUsdt()) + ","
+                + "\"scoreFactor\":" + number(allocation.scoreFactor()) + ","
+                + "\"qualityAdjustedBudgetUsdt\":" + number(allocation.qualityAdjustedBudgetUsdt()) + ","
+                + "\"riskBasedMaxMarginUsdt\":" + number(allocation.riskBasedMaxMarginUsdt()) + ","
+                + "\"maxSinglePositionBudgetUsdt\":" + number(allocation.maxSinglePositionBudgetUsdt()) + ","
+                + "\"redistributedExtraUsdt\":" + number(allocation.redistributedExtraUsdt()) + ","
+                + "\"finalOrderMarginUsdt\":" + number(allocation.finalOrderMarginUsdt()) + ","
+                + "\"budgetUtilizationAfter\":" + number(allocation.budgetUtilizationAfter()) + ","
+                + "\"allocationMode\":\"" + allocation.allocationMode() + "\","
+                + "\"status\":\"" + allocation.status() + "\","
+                + "\"underUtilizedReasons\":\"" + String.join(",", allocation.underUtilizedReasons()) + "\","
+                + "\"reason\":\"" + escape(allocation.reason()) + "\""
+                + "}";
+    }
+
+    private static String number(BigDecimal value) {
+        return value == null ? "0" : value.stripTrailingZeros().toPlainString();
+    }
+
+    private static String escape(String value) {
+        return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

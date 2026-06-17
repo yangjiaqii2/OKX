@@ -11,6 +11,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -22,6 +23,9 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class OkxRestClient {
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(3);
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(6);
+
     private final OkxProperties okxProperties;
     private final OkxAccountBindingService bindingService;
     private final OkxSigner signer;
@@ -33,7 +37,8 @@ public class OkxRestClient {
     @Autowired
     public OkxRestClient(OkxProperties okxProperties, OkxAccountBindingService bindingService,
                          OkxSigner signer, ObjectMapper objectMapper) {
-        this(okxProperties, bindingService, signer, objectMapper, HttpClient.newHttpClient());
+        this(okxProperties, bindingService, signer, objectMapper,
+                HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build());
     }
 
     OkxRestClient(OkxProperties okxProperties, OkxAccountBindingService bindingService,
@@ -54,7 +59,7 @@ public class OkxRestClient {
     }
 
     public JsonNode publicGet(String requestPath) {
-        return send(HttpRequest.newBuilder(URI.create(okxProperties.api().baseUrl() + requestPath)).GET().build());
+        return send(requestBuilder(requestPath).GET().build());
     }
 
     public JsonNode privateGet(String requestPath) {
@@ -62,7 +67,7 @@ public class OkxRestClient {
                 .orElseThrow(() -> new IllegalStateException("OKX account is not bound"));
         String timestamp = okxTimestamp();
         String signature = signer.sign(timestamp, "GET", requestPath, "", credentials.secret());
-        HttpRequest request = HttpRequest.newBuilder(URI.create(okxProperties.api().baseUrl() + requestPath))
+        HttpRequest request = requestBuilder(requestPath)
                 .GET()
                 .header("OK-ACCESS-KEY", credentials.apiKey())
                 .header("OK-ACCESS-SIGN", signature)
@@ -79,7 +84,7 @@ public class OkxRestClient {
             String body = objectMapper.writeValueAsString(payload);
             String timestamp = okxTimestamp();
             String signature = signer.sign(timestamp, "POST", requestPath, body, credentials.secret());
-            HttpRequest request = HttpRequest.newBuilder(URI.create(okxProperties.api().baseUrl() + requestPath))
+            HttpRequest request = requestBuilder(requestPath)
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .header("Content-Type", "application/json")
                     .header("OK-ACCESS-KEY", credentials.apiKey())
@@ -111,6 +116,11 @@ public class OkxRestClient {
             ));
         }
         return Optional.empty();
+    }
+
+    private HttpRequest.Builder requestBuilder(String requestPath) {
+        return HttpRequest.newBuilder(URI.create(okxProperties.api().baseUrl() + requestPath))
+                .timeout(REQUEST_TIMEOUT);
     }
 
     private String okxTimestamp() {

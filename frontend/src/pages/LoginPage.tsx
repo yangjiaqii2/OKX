@@ -41,27 +41,6 @@ export function LoginPage() {
         px: 2,
         position: 'relative',
         overflow: 'hidden',
-        '&::before': {
-          content: '""',
-          position: 'absolute',
-          inset: '8% auto auto 10%',
-          width: 420,
-          height: 420,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(0,212,170,0.20), transparent 62%)',
-          filter: 'blur(12px)',
-        },
-        '&::after': {
-          content: '""',
-          position: 'absolute',
-          right: '8%',
-          bottom: '6%',
-          width: 360,
-          height: 360,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(139,211,255,0.16), transparent 64%)',
-          filter: 'blur(12px)',
-        },
       }}
     >
       <Paper
@@ -71,8 +50,8 @@ export function LoginPage() {
           ...glassCard,
           width: '100%',
           maxWidth: 420,
-          p: 3.2,
-          border: '1px solid rgba(180, 205, 255, 0.18)',
+          p: 3,
+          border: '1px solid rgba(148, 163, 184, 0.18)',
           zIndex: 1,
         }}
       >
@@ -82,12 +61,12 @@ export function LoginPage() {
               sx={{
                 width: 36,
                 height: 36,
-                borderRadius: 2,
+                borderRadius: 1.25,
                 display: 'grid',
                 placeItems: 'center',
-                bgcolor: 'rgba(0, 212, 170, 0.14)',
+                bgcolor: 'rgba(20, 184, 166, 0.14)',
                 color: 'primary.main',
-                border: '1px solid rgba(0, 212, 170, 0.28)',
+                border: '1px solid rgba(20, 184, 166, 0.28)',
               }}
             >
               <LockIcon fontSize="small" />
@@ -109,9 +88,9 @@ export function LoginPage() {
             sx={{
               px: 1.25,
               py: 1,
-              borderRadius: 2,
-              bgcolor: 'rgba(0, 212, 170, 0.08)',
-              border: '1px solid rgba(0, 212, 170, 0.16)',
+              borderRadius: 1,
+              bgcolor: 'rgba(20, 184, 166, 0.08)',
+              border: '1px solid rgba(20, 184, 166, 0.16)',
             }}
           >
             <ShieldIcon fontSize="small" color="success" />

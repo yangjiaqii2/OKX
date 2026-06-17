@@ -18,7 +18,7 @@ export function TradingStatusStrip({ risk = {}, account = {}, pendingCount = 0, 
   const showAlert = accountMode === 'OKX_UNBOUND' || accountMode === 'OKX_ERROR' || risk.passed === false || Boolean(rejectReason);
 
   return (
-    <Stack spacing={1.25} sx={{ mb: 2 }}>
+    <Stack spacing={1} sx={{ mb: 2 }}>
       <Box
         sx={{
           display: 'grid',
@@ -26,7 +26,7 @@ export function TradingStatusStrip({ risk = {}, account = {}, pendingCount = 0, 
             xs: '1fr 1fr',
             md: compact ? 'repeat(4, minmax(0, 1fr))' : 'repeat(5, minmax(0, 1fr))',
           },
-          gap: 1,
+          gap: 0.75,
         }}
       >
         <StripItem label="账户" value={<StatusChip value={accountMode} />} />
@@ -49,16 +49,16 @@ function StripItem({ label, value, tone = 'neutral' }: { label: string; value: R
     <Box
       sx={{
         ...compactGlass,
-        p: 1.25,
-        borderRadius: 2,
-        bgcolor: tone === 'warning' ? 'rgba(245, 158, 11, 0.10)' : 'rgba(17, 24, 39, 0.86)',
-        minHeight: 64,
+        p: 1,
+        borderRadius: 1,
+        bgcolor: tone === 'warning' ? 'rgba(245, 158, 11, 0.10)' : '#101826',
+        minHeight: 58,
       }}
     >
-      <Typography variant="caption" color="text.secondary" fontWeight={800}>
+      <Typography variant="caption" color="text.secondary" fontWeight={800} sx={{ letterSpacing: 0 }}>
         {label}
       </Typography>
-      <Typography component="div" fontWeight={800} sx={{ mt: 0.5, fontFamily: '"JetBrains Mono", monospace' }}>
+      <Typography component="div" fontWeight={800} sx={{ mt: 0.45, fontFamily: '"JetBrains Mono", monospace', overflowWrap: 'anywhere' }}>
         {value}
       </Typography>
     </Box>

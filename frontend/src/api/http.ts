@@ -1,13 +1,10 @@
 import { clearAuthSession, getAuthToken } from './auth';
 
 function defaultApiBaseUrl() {
-  if (typeof window === 'undefined') {
-    return '/api/quant';
-  }
-  return `${window.location.protocol}//${window.location.hostname}:8080/api/quant`;
+  return '/api/quant';
 }
 
-export const apiBaseUrl = import.meta.env.VITE_QUANT_API_URL ?? defaultApiBaseUrl();
+export const apiBaseUrl = import.meta.env.VITE_QUANT_API_URL?.trim() || defaultApiBaseUrl();
 
 export type JsonRecord = Record<string, unknown>;
 

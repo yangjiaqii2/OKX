@@ -12,7 +12,7 @@ import {
   Typography,
 } from '@mui/material';
 import { FormEvent, useEffect, useState } from 'react';
-import { Loading, useNotify } from 'react-admin';
+import { Confirm, Loading, useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { MetricCard } from '../components/MetricCard';
@@ -45,6 +45,7 @@ export function AccountBindingPage() {
   const [status, setStatus] = useState<BindingStatus>({});
   const [verification, setVerification] = useState<VerificationResult | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [unbindOpen, setUnbindOpen] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -104,6 +105,7 @@ export function AccountBindingPage() {
       notify(error instanceof Error ? error.message : '解绑失败', { type: 'error' });
     } finally {
       setSubmitting(false);
+      setUnbindOpen(false);
     }
   }
 
@@ -192,7 +194,7 @@ export function AccountBindingPage() {
                   color="warning"
                   startIcon={<LinkOffIcon />}
                   disabled={submitting || !status.bound}
-                  onClick={() => void unbind()}
+                  onClick={() => setUnbindOpen(true)}
                 >
                   解绑
                 </Button>
@@ -200,6 +202,15 @@ export function AccountBindingPage() {
             </Stack>
           </CardContent>
         </Card>
+        <Confirm
+          isOpen={unbindOpen}
+          title="解绑 OKX 账号"
+          content="解绑后前端不会再显示当前 OKX API 绑定状态，实盘相关接口需要重新绑定后才能验证。"
+          confirm="解绑"
+          cancel="返回"
+          onConfirm={() => void unbind()}
+          onClose={() => setUnbindOpen(false)}
+        />
       </Stack>
     </PageShell>
   );

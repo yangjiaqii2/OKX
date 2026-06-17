@@ -17,6 +17,8 @@ type DashboardState = {
   orders: unknown[];
   positions: Record<string, unknown>[];
   positionsError?: string;
+  contractsError?: string;
+  ordersError?: string;
 };
 
 export function Dashboard() {
@@ -31,7 +33,7 @@ export function Dashboard() {
   async function load() {
     setLoading(true);
     try {
-      const [risk, account, contracts, orders] = await Promise.all([
+      const [riskResult, accountResult, contractResult, orderResult] = await Promise.allSettled([
         quantApi.riskStatus(),
         quantApi.accountSummary(),
         quantApi.contractCandidates(),
@@ -45,14 +47,25 @@ export function Dashboard() {
       } catch (error) {
         positionsError = error instanceof Error ? error.message : '持仓接口调用失败';
       }
+      const contractsError = contractResult.status === 'rejected'
+        ? (contractResult.reason instanceof Error ? contractResult.reason.message : '合约机会池加载失败')
+        : '';
+      const ordersError = orderResult.status === 'rejected'
+        ? (orderResult.reason instanceof Error ? orderResult.reason.message : '待确认订单加载失败')
+        : '';
       setState({
-        risk: risk as Record<string, unknown>,
-        account: account as Record<string, unknown>,
-        contracts: Array.isArray(contracts) ? contracts : [],
-        orders: Array.isArray(orders) ? orders : [],
+        risk: riskResult.status === 'fulfilled' ? riskResult.value as Record<string, unknown> : {},
+        account: accountResult.status === 'fulfilled' ? accountResult.value as Record<string, unknown> : {},
+        contracts: contractResult.status === 'fulfilled' && Array.isArray(contractResult.value) ? contractResult.value : [],
+        orders: orderResult.status === 'fulfilled' && Array.isArray(orderResult.value) ? orderResult.value : [],
         positions,
         positionsError,
+        contractsError,
+        ordersError,
       });
+      if (riskResult.status === 'rejected' || accountResult.status === 'rejected') {
+        notify('核心账户或风控数据加载失败，请检查后端服务。', { type: 'warning' });
+      }
     } catch (error) {
       notify(error instanceof Error ? error.message : '加载总览失败', { type: 'error' });
     } finally {
@@ -69,7 +82,7 @@ export function Dashboard() {
       <PageShell title="量化实盘控制台">
         <Stack spacing={2}>
           <PageHeader title="量化实盘控制台" subtitle="正在同步 OKX 账户、风险状态、候选合约和待确认订单。" />
-          <Box sx={{ ...glassCard, py: 8, display: 'grid', placeItems: 'center', borderRadius: 3 }}>
+          <Box sx={{ ...glassCard, py: 8, display: 'grid', placeItems: 'center', borderRadius: 1 }}>
             <CircularProgress size={28} />
           </Box>
         </Stack>
@@ -86,7 +99,7 @@ export function Dashboard() {
       <Stack spacing={3}>
         <PageHeader
           title="量化实盘控制台"
-          subtitle="OKX合约人工确认后实盘，风控优先，A股仅分析筛选。"
+          subtitle="OKX合约信号进入待确认流程后执行，账户与风控状态优先。"
           status={<StatusChip value={accountMode} />}
           onRefresh={() => void load()}
         />
@@ -97,6 +110,8 @@ export function Dashboard() {
             OKX账户接口异常：{String(state.account?.message ?? '')}
           </Alert>
         )}
+        {state.contractsError ? <Alert severity="warning">OKX合约机会池暂不可用：{state.contractsError}</Alert> : null}
+        {state.ordersError ? <Alert severity="warning">待确认订单暂不可用：{state.ordersError}</Alert> : null}
 
         <Box
           sx={{
@@ -120,12 +135,12 @@ export function Dashboard() {
               }}
             >
               <TradeMetricCard
-                label="账户权益"
+                label="账户总览"
                 value={formatUSDT(state.account?.equity)}
                 helper={formatStatus(accountMode)}
                 accent={accountMode === 'OKX_REAL' ? 'success' : 'warning'}
               />
-              <TradeMetricCard label="可用余额" value={formatUSDT(state.account?.availableBalance)} helper="OKX账户可用权益" />
+              <TradeMetricCard label="可用余额" value={formatUSDT(state.account?.availableBalance)} helper="自动交易实际使用" />
               <TradeMetricCard
                 label="合约机会"
                 value={state.contracts.length}
@@ -174,7 +189,7 @@ export function Dashboard() {
                             p: 1.25,
                             borderLeft: '3px solid',
                             borderColor: 'warning.main',
-                            borderRadius: 2,
+                            borderRadius: 1,
                             bgcolor: 'rgba(245, 158, 11, 0.08)',
                           }}
                         >
@@ -211,7 +226,7 @@ export function Dashboard() {
                       sx={{
                         ...compactGlass,
                         p: 1.25,
-                        borderRadius: 2,
+                        borderRadius: 1,
                         bgcolor: 'rgba(15, 23, 42, 0.62)',
                       }}
                     >

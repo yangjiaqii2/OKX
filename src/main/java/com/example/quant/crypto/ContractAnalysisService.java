@@ -1,5 +1,6 @@
 package com.example.quant.crypto;
 
+import com.example.quant.agent.score.ContractCandidateScoreRecorder;
 import com.example.quant.crypto.dto.ContractAnalysisReport;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.score.ContractScoreCalculator;
@@ -8,17 +9,27 @@ import com.example.quant.score.ScoreDetail;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ContractAnalysisService {
+    private static final Logger log = LoggerFactory.getLogger(ContractAnalysisService.class);
+
     private final OkxContractScanner scanner;
     private final ContractScoreCalculator calculator;
+    private final ContractCandidateScoreRecorder scoreRecorder;
     private final AtomicReference<List<ContractCandidate>> cachedCandidates = new AtomicReference<>(List.of());
 
-    public ContractAnalysisService(OkxContractScanner scanner, ContractScoreCalculator calculator) {
+    public ContractAnalysisService(
+            OkxContractScanner scanner,
+            ContractScoreCalculator calculator,
+            ContractCandidateScoreRecorder scoreRecorder
+    ) {
         this.scanner = scanner;
         this.calculator = calculator;
+        this.scoreRecorder = scoreRecorder;
     }
 
     public List<ContractCandidate> candidates() {
@@ -26,12 +37,23 @@ public class ContractAnalysisService {
         if (!cached.isEmpty()) {
             return cached;
         }
-        return refreshCandidates();
+        List<ContractCandidate> next = scanLiveCandidates();
+        log.info("Live contract candidates refreshed on first request, recommendations={}", next.size());
+        return next;
     }
 
     public List<ContractCandidate> refreshCandidates() {
+        List<ContractCandidate> next = scanLiveCandidates();
+        log.info("Live contract candidates refreshed by scheduler, recommendations={}", next.size());
+        return next;
+    }
+
+    private List<ContractCandidate> scanLiveCandidates() {
+        Instant startedAt = Instant.now();
         List<ContractCandidate> next = scanner.scan();
+        Instant finishedAt = Instant.now();
         cachedCandidates.set(next);
+        scoreRecorder.recordLiveScan(next, startedAt, finishedAt);
         return next;
     }
 

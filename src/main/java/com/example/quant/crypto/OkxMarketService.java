@@ -22,11 +22,15 @@ public class OkxMarketService {
     }
 
     public List<ContractCandle> candles(String instId, String bar) {
+        return candles(instId, bar, 120);
+    }
+
+    public List<ContractCandle> candles(String instId, String bar, int limit) {
         String normalizedBar = normalizeBar(bar);
         JsonNode root = okxRestClient.publicGet("/api/v5/market/candles?instId="
                 + OkxRestClient.encode(instId)
                 + "&bar=" + OkxRestClient.encode(normalizedBar)
-                + "&limit=120");
+                + "&limit=" + Math.max(1, Math.min(300, limit)));
         List<ContractCandle> candles = new ArrayList<>();
         for (JsonNode item : root.path("data")) {
             if (!item.isArray() || item.size() < 6) {

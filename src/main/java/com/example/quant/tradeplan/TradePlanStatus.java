@@ -4,6 +4,7 @@ public enum TradePlanStatus {
     CREATED,
     RISK_PASSED,
     PENDING_ORDER_CREATED,
+    ORDER_SUBMITTED,
     REJECTED,
     EXPIRED
 }

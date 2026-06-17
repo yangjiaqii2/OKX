@@ -1,6 +1,7 @@
 package com.example.quant.tradeplan;
 
 import org.springframework.stereotype.Service;
+import com.example.quant.crypto.dto.ContractCandidate;
 
 @Service
 public class TradePlanService {
@@ -12,5 +13,13 @@ public class TradePlanService {
 
     public TradePlan createContractPlan(String instId) {
         return builder.buildPlan(instId);
+    }
+
+    public TradePlan createContractPlan(ContractCandidate candidate) {
+        return builder.buildPlan(candidate);
+    }
+
+    public TradePlan createNoRiskContractPlan(ContractCandidate candidate) {
+        return builder.buildNoRiskPlan(candidate);
     }
 }

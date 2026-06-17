@@ -7,8 +7,7 @@ type StatusChipProps = {
 
 export function StatusChip({ value }: StatusChipProps) {
   const text = String(value ?? 'UNKNOWN');
-  
-  // 颜色映射 - 交易终端风格
+
   const colorMap: Record<string, 'success' | 'error' | 'warning' | 'info' | 'default'> = {
     'true': 'success',
     'LOW': 'success',
@@ -18,6 +17,7 @@ export function StatusChip({ value }: StatusChipProps) {
     'false': 'error',
     'BLOCKED': 'error',
     'REJECTED': 'error',
+    'FAILED': 'error',
     'BEARISH': 'error',
     'OKX_ERROR': 'error',
     'CANCELLED': 'warning',
@@ -27,7 +27,9 @@ export function StatusChip({ value }: StatusChipProps) {
     'MEDIUM': 'warning',
     'HIGH': 'error',
     'CONFIRMED': 'info',
+    'SUBMITTED': 'info',
     'EXECUTED': 'success',
+    'SKIPPED': 'default',
   };
 
   const color = colorMap[text] ?? 'default';
@@ -43,8 +45,9 @@ export function StatusChip({ value }: StatusChipProps) {
       sx={{ 
         fontWeight: 700, 
         fontSize: '0.75rem',
-        letterSpacing: 0.5,
+        letterSpacing: 0,
         height: 24,
+        maxWidth: '100%',
       }} 
     />
   );

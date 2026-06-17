@@ -45,8 +45,8 @@ public class PositionSizingService {
         if (size.compareTo(BigDecimal.valueOf(0.0001)) < 0) {
             return rejected("仓位小于最小下单量", warnings);
         }
-        reasons.add("按账户权益最大亏损倒推仓位");
-        reasons.add("保证金受可用余额和单笔保证金比例约束");
+        reasons.add("按账户总览或可用余额最大亏损倒推仓位");
+        reasons.add("保证金优先受可用余额约束");
         BigDecimal lossRate = maxLoss.divide(request.accountEquity(), 8, RoundingMode.HALF_UP);
         return new PositionSizingResult(true, size, margin, maxLoss, lossRate, positionValue, riskReward, reasons, warnings, null);
     }
