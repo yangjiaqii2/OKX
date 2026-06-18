@@ -1,4 +1,4 @@
-import { Alert, Box, Card, CardContent, Chip, CircularProgress, Stack, Typography } from '@mui/material';
+import { Alert, Box, Card, CardContent, Chip, CircularProgress, Stack, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
@@ -26,6 +26,7 @@ type DashboardState = {
 export function Dashboard() {
   const notify = useNotify();
   const [loading, setLoading] = useState(true);
+  const [assetCurrency, setAssetCurrency] = useState<'USD' | 'RMB'>('USD');
   const [state, setState] = useState<DashboardState>({
     contracts: [],
     orders: [],
@@ -101,6 +102,7 @@ export function Dashboard() {
   const accountMode = String(state.account?.mode ?? 'OKX_UNBOUND');
   const pendingCount = state.orders.length;
   const topContracts = state.contracts.slice(0, 4) as Record<string, unknown>[];
+  const formatAsset = (value: unknown) => formatAssetMoney(value, assetCurrency);
   
   return (
     <PageShell title="量化实盘控制台">
@@ -110,6 +112,17 @@ export function Dashboard() {
           subtitle="OKX合约信号进入待确认流程后执行，账户与风控状态优先。"
           status={<StatusChip value={accountMode} />}
           onRefresh={() => void load()}
+          actions={
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={assetCurrency}
+              onChange={(_, value) => value && setAssetCurrency(value)}
+            >
+              <ToggleButton value="USD">USD</ToggleButton>
+              <ToggleButton value="RMB">RMB</ToggleButton>
+            </ToggleButtonGroup>
+          }
         />
 
         {/* 告警 */}
@@ -131,30 +144,30 @@ export function Dashboard() {
         >
           <TradeMetricCard
             label="自动交易总收益"
-            value={formatUSDT(state.profit?.totalNetPnlUsdt)}
+            value={formatAsset(state.profit?.totalNetPnlUsdt)}
             helper={String(state.profit?.dataQuality ?? 'ESTIMATED')}
             accent={Number(state.profit?.totalNetPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
             label="今日已用预算"
-            value={formatUSDT(state.profit?.todaySubmittedMarginUsdt)}
+            value={formatAsset(state.profit?.todaySubmittedMarginUsdt)}
             helper="按 Asia/Shanghai 统计"
             accent="info"
           />
           <TradeMetricCard
             label="当前浮动盈亏"
-            value={formatUSDT(state.profit?.unrealizedPnlUsdt)}
+            value={formatAsset(state.profit?.unrealizedPnlUsdt)}
             helper={`${Number(state.profit?.openPositionCount ?? 0)} 个自动交易持仓`}
             accent={Number(state.profit?.unrealizedPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
             label="预算收益率"
             value={formatPercent(state.profit?.budgetRoiPct)}
-            helper={`总预算 ${formatUSDT(state.profit?.totalBudgetUsdt)}`}
+            helper={`总预算 ${formatAsset(state.profit?.totalBudgetUsdt)}`}
           />
           <TradeMetricCard
             label="自动交易已提交"
-            value={formatUSDT(state.profit?.submittedMarginUsdt)}
+            value={formatAsset(state.profit?.submittedMarginUsdt)}
             helper={`记录 ${formatNumber(state.profit?.executedOrderCount, 0)} 笔`}
           />
         </Box>
@@ -188,11 +201,11 @@ export function Dashboard() {
             >
               <TradeMetricCard
                 label="账户总览"
-                value={formatUSDT(state.account?.equity)}
+                value={formatAsset(state.account?.equity)}
                 helper={formatStatus(accountMode)}
                 accent={accountMode === 'OKX_REAL' ? 'success' : 'warning'}
               />
-              <TradeMetricCard label="可用余额" value={formatUSDT(state.account?.availableBalance)} helper="自动交易实际使用" />
+              <TradeMetricCard label="可用余额" value={formatAsset(state.account?.availableBalance)} helper="自动交易实际使用" />
               <TradeMetricCard
                 label="合约机会"
                 value={state.contracts.length}
@@ -305,4 +318,15 @@ export function Dashboard() {
       </Stack>
     </PageShell>
   );
+}
+
+function formatAssetMoney(value: unknown, currency: 'USD' | 'RMB') {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return '-';
+  }
+  if (currency === 'RMB') {
+    return `¥${formatNumber(number * 7.2, 2)}`;
+  }
+  return formatUSDT(number);
 }

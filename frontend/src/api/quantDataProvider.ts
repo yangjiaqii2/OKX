@@ -5,6 +5,10 @@ const listEndpoints: Record<string, string> = {
   contractCandidates: '/contract/candidates',
   pendingOrders: '/orders/pending',
   positions: '/account/positions',
+  currentOkxOrders: '/okx/orders/current',
+  currentOkxAlgoOrders: '/okx/orders/algo',
+  closePositionRecords: '/account/positions/close-records',
+  autoTradeLifecycle: '/auto-trade/lifecycle',
 };
 
 function normalize(resource: string, records: unknown) {
@@ -14,6 +18,15 @@ function normalize(resource: string, records: unknown) {
     }
     if (resource === 'positions') {
       return withId(record, `${record.instId ?? 'position'}-${record.posSide ?? index}`);
+    }
+    if (resource === 'currentOkxOrders') {
+      return withId(record, String(record.ordId ?? record.clOrdId ?? index));
+    }
+    if (resource === 'currentOkxAlgoOrders') {
+      return withId(record, String(record.algoId ?? record.algoClOrdId ?? index));
+    }
+    if (resource === 'autoTradeLifecycle') {
+      return withId(record, `${record.instId ?? 'lifecycle'}-${record.posSide ?? index}-${record.entryTime ?? index}`);
     }
     return withId(record, String(record.id ?? index));
   });
@@ -25,7 +38,11 @@ export const quantDataProvider = {
     if (!endpoint) {
       return { data: [], total: 0 };
     }
-    const records = applyListParams(normalize(resource, await quantFetch(endpoint)), params);
+    const raw = await quantFetch(endpoint);
+    const recordsSource = raw && typeof raw === 'object' && Array.isArray((raw as any).items)
+      ? (raw as any).items
+      : raw;
+    const records = applyListParams(normalize(resource, recordsSource), params);
     return { data: records, total: records.length };
   },
 

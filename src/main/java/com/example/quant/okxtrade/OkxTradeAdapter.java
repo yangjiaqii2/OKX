@@ -97,8 +97,69 @@ public class OkxTradeAdapter {
                             + " 个，失败 " + protection.failed() + " 个。委托提交不代表已成交，请在OKX当前委托/持仓确认。"
                             : "OKX委托已提交，订单号 " + orderId + "，等待成交。请在OKX当前委托/持仓确认。");
         } catch (RuntimeException ex) {
+            if (isTimeout(ex)) {
+                OrderExecutionResult recovered = recoverTimedOutSubmit(order, payload, entryRecord, ex);
+                if (recovered != null) {
+                    return recovered;
+                }
+            }
             recordFailed(order, entryRecord, ex.getMessage());
             throw ex;
+        }
+    }
+
+    public OrderExecutionResult recoverUnknownSubmitStatus(PendingOrder order) {
+        Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("instId", order.instId());
+        payload.put("clOrdId", order.clientOrderId());
+        JsonNode response = okxOrderGateway.queryOrder(payload);
+        JsonNode item = firstDataItem(response);
+        if (item == null) {
+            return new OrderExecutionResult(false, true, null,
+                    "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId());
+        }
+        String ordId = item.path("ordId").asText("");
+        String state = item.path("state").asText("");
+        if (ordId.isBlank()) {
+            return new OrderExecutionResult(false, true, null,
+                    "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId());
+        }
+        return new OrderExecutionResult(true, true, ordId,
+                "OKX clOrdId recovered: clOrdId=" + order.clientOrderId() + ", state=" + state);
+    }
+
+    private OrderExecutionResult recoverTimedOutSubmit(PendingOrder order, Map<String, String> payload,
+                                                       OrderRecordPayload entryRecord, RuntimeException timeout) {
+        String clOrdId = payload.get("clOrdId");
+        if (!hasText(clOrdId)) {
+            return null;
+        }
+        Map<String, String> queryPayload = new LinkedHashMap<>();
+        queryPayload.put("instId", order.instId());
+        queryPayload.put("clOrdId", clOrdId);
+        try {
+            JsonNode response = okxOrderGateway.queryOrder(queryPayload);
+            JsonNode item = firstDataItem(response);
+            if (item == null) {
+                String message = "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + clOrdId;
+                recordFailed(order, entryRecord, message);
+                return new OrderExecutionResult(false, true, null, message);
+            }
+            String ordId = item.path("ordId").asText("");
+            String state = item.path("state").asText("");
+            if (!hasText(ordId)) {
+                String message = "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + clOrdId;
+                recordFailed(order, entryRecord, message);
+                return new OrderExecutionResult(false, true, null, message);
+            }
+            recordSubmitted(order, entryRecord.withOkxOrdId(ordId));
+            log.warn("OKX order submit timeout recovered by clOrdId instId={} clOrdId={} ordId={} state={}",
+                    order.instId(), clOrdId, ordId, state);
+            return new OrderExecutionResult(true, true, ordId,
+                    "OKX提交超时后已通过clOrdId恢复：clOrdId=" + clOrdId + "，订单号 " + ordId + "，state=" + state);
+        } catch (RuntimeException queryEx) {
+            timeout.addSuppressed(queryEx);
+            return null;
         }
     }
 
@@ -397,6 +458,19 @@ public class OkxTradeAdapter {
         } catch (NumberFormatException ex) {
             return BigDecimal.ZERO;
         }
+    }
+
+    private static JsonNode firstDataItem(JsonNode response) {
+        JsonNode data = response == null ? null : response.path("data");
+        if (data == null || !data.isArray() || data.isEmpty()) {
+            return null;
+        }
+        return data.get(0);
+    }
+
+    private static boolean isTimeout(RuntimeException ex) {
+        String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
+        return message.contains("timeout") || message.contains("timed out") || message.contains("超时");
     }
 
     private static String orderId(JsonNode response, String preferredField) {

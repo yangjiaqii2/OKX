@@ -35,6 +35,7 @@ public class AgentProperties {
     private TakeProfit takeProfit = new TakeProfit();
     private Risk risk = new Risk();
     private Monitor monitor = new Monitor();
+    private Lifecycle lifecycle = new Lifecycle();
 
     public boolean enabled() {
         return enabled;
@@ -242,6 +243,14 @@ public class AgentProperties {
 
     public void setMonitor(Monitor monitor) {
         this.monitor = monitor;
+    }
+
+    public Lifecycle lifecycle() {
+        return lifecycle;
+    }
+
+    public void setLifecycle(Lifecycle lifecycle) {
+        this.lifecycle = lifecycle == null ? new Lifecycle() : lifecycle;
     }
 
     public static class AutoTrade {
@@ -1487,6 +1496,81 @@ public class AgentProperties {
 
         public void setMaxHoldMinutes(int maxHoldMinutes) {
             this.maxHoldMinutes = maxHoldMinutes;
+        }
+    }
+
+    public static class Lifecycle {
+        private int entryTimeoutMinutes = 10;
+        private int sidewaysPositionHours = 3;
+        private BigDecimal sidewaysPnlRangePct = BigDecimal.ONE;
+        private BigDecimal sidewaysExitProfitPct = new BigDecimal("0.3");
+        private int maxHoldHours = 8;
+        private String maxHoldAction = "CLOSE_POSITION";
+        private String sidewaysAction = "TIGHTEN_TAKE_PROFIT";
+        private boolean moveStopToBreakeven = false;
+
+        public int entryTimeoutMinutes() {
+            return entryTimeoutMinutes;
+        }
+
+        public void setEntryTimeoutMinutes(int entryTimeoutMinutes) {
+            this.entryTimeoutMinutes = entryTimeoutMinutes;
+        }
+
+        public int sidewaysPositionHours() {
+            return sidewaysPositionHours;
+        }
+
+        public void setSidewaysPositionHours(int sidewaysPositionHours) {
+            this.sidewaysPositionHours = sidewaysPositionHours;
+        }
+
+        public BigDecimal sidewaysPnlRangePct() {
+            return sidewaysPnlRangePct;
+        }
+
+        public void setSidewaysPnlRangePct(BigDecimal sidewaysPnlRangePct) {
+            this.sidewaysPnlRangePct = sidewaysPnlRangePct;
+        }
+
+        public BigDecimal sidewaysExitProfitPct() {
+            return sidewaysExitProfitPct;
+        }
+
+        public void setSidewaysExitProfitPct(BigDecimal sidewaysExitProfitPct) {
+            this.sidewaysExitProfitPct = sidewaysExitProfitPct;
+        }
+
+        public int maxHoldHours() {
+            return maxHoldHours;
+        }
+
+        public void setMaxHoldHours(int maxHoldHours) {
+            this.maxHoldHours = maxHoldHours;
+        }
+
+        public String maxHoldAction() {
+            return maxHoldAction;
+        }
+
+        public void setMaxHoldAction(String maxHoldAction) {
+            this.maxHoldAction = maxHoldAction;
+        }
+
+        public String sidewaysAction() {
+            return sidewaysAction;
+        }
+
+        public void setSidewaysAction(String sidewaysAction) {
+            this.sidewaysAction = sidewaysAction;
+        }
+
+        public boolean moveStopToBreakeven() {
+            return moveStopToBreakeven;
+        }
+
+        public void setMoveStopToBreakeven(boolean moveStopToBreakeven) {
+            this.moveStopToBreakeven = moveStopToBreakeven;
         }
     }
 }

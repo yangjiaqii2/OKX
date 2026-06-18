@@ -13,8 +13,15 @@ import com.example.quant.tradeplan.TradePlanType;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class PendingOrderServiceTest {
 
@@ -88,6 +95,29 @@ class PendingOrderServiceTest {
         assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMING);
     }
 
+    @Test
+    void restoresUnfinishedPendingOrdersAndPersistsStatusTransitions() {
+        PendingOrderRepository repository = mock(PendingOrderRepository.class);
+        PendingOrderEntity saved = PendingOrderEntity.from(autoReservedOrder("AUTO_restore_abc"));
+        saved.setStatus(OrderStatus.SUBMITTED.name());
+        saved.setSubmittedAt(Instant.parse("2026-06-18T00:00:00Z"));
+        saved.setExternalOrderId("okx-ord-1");
+        when(repository.findAll()).thenReturn(List.of(saved));
+        when(repository.save(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        PendingOrderService service = new PendingOrderService(120, repository);
+
+        PendingOrder restored = service.get(UUID.fromString(saved.getId()));
+        assertThat(restored.status()).isEqualTo(OrderStatus.SUBMITTED);
+        assertThat(restored.clientOrderId()).isEqualTo("AUTO_restore_abc");
+        assertThat(restored.budgetReservationId()).isEqualTo(UUID.fromString(saved.getBudgetReservationId()));
+        assertThat(restored.externalOrderId()).isEqualTo("okx-ord-1");
+
+        restored.markEntryTimeoutCancelled("ENTRY_TIMEOUT_CANCELLED");
+
+        verify(repository, atLeast(1)).save(any(PendingOrderEntity.class));
+    }
+
     static TradePlan samplePlan() {
         return new TradePlan(
                 UUID.randomUUID(),
@@ -141,5 +171,18 @@ class PendingOrderServiceTest {
                 List.of(),
                 "test budget allocation"
         );
+    }
+
+    private static PendingOrder autoReservedOrder(String clientOrderId) {
+        PendingOrder order = new PendingOrderService(120).createAutoPendingOrder(
+                MarketType.OKX_SWAP,
+                samplePlan(),
+                new BigDecimal("22.5"),
+                UUID.randomUUID(),
+                allocation("22.5"),
+                clientOrderId
+        );
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "okx-ord-1");
+        return order;
     }
 }

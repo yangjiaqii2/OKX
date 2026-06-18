@@ -1,16 +1,21 @@
 package com.example.quant.task;
 
+import com.example.quant.account.ClosePositionRecoveryService;
 import com.example.quant.agent.budget.AutoTradeBudgetService;
 import com.example.quant.agent.budget.BudgetReservation;
 import com.example.quant.agent.budget.BudgetReservationStatus;
+import com.example.quant.agent.lifecycle.AutoTradeLifecycleService;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
+import com.example.quant.okxtrade.OkxTradeAdapter;
+import com.example.quant.order.OrderExecutionResult;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -29,12 +34,37 @@ public class AutoTradeRecoveryTask {
     private final PendingOrderService pendingOrderService;
     private final AutoTradeBudgetService budgetService;
     private final AgentProperties agentProperties;
+    private final OkxTradeAdapter okxTradeAdapter;
+    private final AutoTradeLifecycleService lifecycleService;
+    private final ClosePositionRecoveryService closePositionRecoveryService;
 
     public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
                                  AgentProperties agentProperties) {
+        this(pendingOrderService, budgetService, agentProperties, null, null, null);
+    }
+
+    @Autowired
+    public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                 AgentProperties agentProperties, OkxTradeAdapter okxTradeAdapter,
+                                 AutoTradeLifecycleService lifecycleService,
+                                 ClosePositionRecoveryService closePositionRecoveryService) {
         this.pendingOrderService = pendingOrderService;
         this.budgetService = budgetService;
         this.agentProperties = agentProperties == null ? new AgentProperties() : agentProperties;
+        this.okxTradeAdapter = okxTradeAdapter;
+        this.lifecycleService = lifecycleService;
+        this.closePositionRecoveryService = closePositionRecoveryService;
+    }
+
+    public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                 AgentProperties agentProperties, OkxTradeAdapter okxTradeAdapter) {
+        this(pendingOrderService, budgetService, agentProperties, okxTradeAdapter, null, null);
+    }
+
+    public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                 AgentProperties agentProperties, OkxTradeAdapter okxTradeAdapter,
+                                 AutoTradeLifecycleService lifecycleService) {
+        this(pendingOrderService, budgetService, agentProperties, okxTradeAdapter, lifecycleService, null);
     }
 
     @Scheduled(
@@ -48,11 +78,12 @@ public class AutoTradeRecoveryTask {
 
     public RecoveryResult runOnce() {
         if (!agentProperties.recovery().enabled()) {
-            return new RecoveryResult(0, 0, 0);
+            return new RecoveryResult(0, 0, 0, 0);
         }
         int expiredOrders = 0;
         int releasedReservations = 0;
         int attentionRequired = 0;
+        int recoveredUnknownSubmits = 0;
         Instant now = Instant.now();
         for (PendingOrder order : pendingOrderService.allOrders()) {
             if (isReservablePendingStatus(order.status()) && order.isExpired(now)) {
@@ -71,13 +102,54 @@ public class AutoTradeRecoveryTask {
                 releasedReservations += releaseAnyBudget(order, "POSITION_CLOSED");
                 continue;
             }
+            if (order.status() == OrderStatus.UNKNOWN_SUBMIT_STATUS) {
+                RecoveryDecision decision = recoverUnknownSubmit(order);
+                recoveredUnknownSubmits += decision.recovered();
+                releasedReservations += decision.released();
+                attentionRequired += decision.attentionRequired();
+                continue;
+            }
             if (order.status() == OrderStatus.PROTECTION_FAILED
                     || order.status() == OrderStatus.EMERGENCY_ATTENTION_REQUIRED
-                    || order.status() == OrderStatus.UNKNOWN_SUBMIT_STATUS) {
+            ) {
                 attentionRequired++;
             }
         }
-        return new RecoveryResult(expiredOrders, releasedReservations, attentionRequired);
+        if (lifecycleService != null) {
+            lifecycleService.runOnce(now);
+        }
+        if (closePositionRecoveryService != null) {
+            closePositionRecoveryService.runOnce(now);
+        }
+        return new RecoveryResult(expiredOrders, releasedReservations, attentionRequired, recoveredUnknownSubmits);
+    }
+
+    private RecoveryDecision recoverUnknownSubmit(PendingOrder order) {
+        if (okxTradeAdapter == null || order.clientOrderId() == null || order.clientOrderId().isBlank()) {
+            return new RecoveryDecision(0, 0, 1);
+        }
+        try {
+            OrderExecutionResult result = okxTradeAdapter.recoverUnknownSubmitStatus(order);
+            if (result.executed()) {
+                order.markSubmitted(Instant.now(), result.externalOrderId());
+                if (order.budgetReservationId() != null) {
+                    budgetService.markUsed(order.budgetReservationId());
+                }
+                log.warn("AutoTrade recovery restored unknown OKX submit: symbol={}, pendingOrderId={}, clOrdId={}, okxOrdId={}",
+                        order.instId(), order.id(), order.clientOrderId(), result.externalOrderId());
+                return new RecoveryDecision(1, 0, 0);
+            }
+            if (result.message() != null && result.message().contains("OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT")) {
+                order.markRejected(result.message());
+                int released = releaseAnyBudget(order, "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT");
+                return new RecoveryDecision(0, released, 0);
+            }
+            return new RecoveryDecision(0, 0, 1);
+        } catch (RuntimeException ex) {
+            log.warn("AutoTrade recovery could not resolve unknown submit status: symbol={}, pendingOrderId={}, clOrdId={}, message={}",
+                    order.instId(), order.id(), order.clientOrderId(), ex.getMessage());
+            return new RecoveryDecision(0, 0, 1);
+        }
     }
 
     private int releaseReservedBudget(PendingOrder order, String reason) {
@@ -113,6 +185,10 @@ public class AutoTradeRecoveryTask {
         return status == OrderStatus.PENDING_CONFIRM || status == OrderStatus.BUDGET_RESERVED;
     }
 
-    public record RecoveryResult(int expiredOrders, int releasedReservations, int attentionRequired) {
+    private record RecoveryDecision(int recovered, int released, int attentionRequired) {
+    }
+
+    public record RecoveryResult(int expiredOrders, int releasedReservations, int attentionRequired,
+                                 int recoveredUnknownSubmits) {
     }
 }

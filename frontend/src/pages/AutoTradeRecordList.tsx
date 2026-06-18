@@ -38,8 +38,15 @@ type AutoTradePage = {
 
 const pageSize = 50;
 const statusOptions = [
-  { value: '', label: '全部成功' },
+  { value: '', label: '全部状态' },
   { value: 'EXECUTED', label: '已提交委托' },
+  { value: 'SKIPPED', label: '已跳过' },
+  { value: 'REJECTED', label: '已拒绝' },
+  { value: 'FAILED', label: '失败' },
+  { value: 'UNKNOWN_SUBMIT_STATUS', label: '提交未知' },
+  { value: 'PROTECTION_FAILED', label: '保护单失败' },
+  { value: 'CLOSE_SUBMITTED', label: '平仓已提交' },
+  { value: 'CLOSED', label: '已关闭' },
 ];
 
 const emptyPage: AutoTradePage = {
@@ -118,7 +125,7 @@ export function AutoTradeRecordList() {
       <Stack spacing={2}>
         <PageHeader
           title="自动交易记录"
-          subtitle={`共 ${data.total} 条成功记录，当前页委托 ${summary.executed} 条，当前持仓浮盈亏 ${formatUSDT(summary.pnl)}`}
+          subtitle={`共 ${data.total} 条复盘记录，当前页委托 ${summary.executed} 条，当前持仓浮盈亏 ${formatUSDT(summary.pnl)}`}
           eyebrow="Auto Trade Audit"
           actions={
             <>
@@ -167,10 +174,6 @@ export function AutoTradeRecordList() {
           }
         />
 
-        <Alert severity="info">
-          这里只记录自动交易成功提交到OKX的委托；跳过、风控提示和失败只写后端日志，不进入记录表。
-        </Alert>
-
         {error ? <Alert severity="error">{error}</Alert> : null}
 
         <Box sx={{ ...glassCard }}>
@@ -198,6 +201,8 @@ export function AutoTradeRecordList() {
                     <TableCell align="right">持仓均价</TableCell>
                     <TableCell align="right">未实现盈亏</TableCell>
                     <TableCell align="right">盈亏比</TableCell>
+                    <TableCell>阶段</TableCell>
+                    <TableCell>原因</TableCell>
                     <TableCell>OKX订单号</TableCell>
                     <TableCell>说明</TableCell>
                   </TableRow>
@@ -220,6 +225,10 @@ export function AutoTradeRecordList() {
                         <TableCell align="right">{formatPrice(position?.avgPrice)}</TableCell>
                         <TableCell align="right">{formatUSDT(position?.unrealizedPnl)}</TableCell>
                         <TableCell align="right">{formatNumber(record.riskRewardRatio, 2)}</TableCell>
+                        <TableCell>{String(record.stage ?? '-')}</TableCell>
+                        <TableCell sx={{ minWidth: 180, maxWidth: 320, overflowWrap: 'anywhere' }}>
+                          {String(record.reasonCode ?? record.reasonMessage ?? '-')}
+                        </TableCell>
                         <TableCell sx={{ fontFamily: '"JetBrains Mono", monospace', maxWidth: 150, overflowWrap: 'anywhere' }}>
                           {String(record.okxOrderId ?? '-')}
                         </TableCell>

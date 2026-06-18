@@ -4,12 +4,16 @@ import LockResetIcon from '@mui/icons-material/LockReset';
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import ToggleOffIcon from '@mui/icons-material/ToggleOff';
 import ToggleOnIcon from '@mui/icons-material/ToggleOn';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import {
   Alert,
   Box,
   Button,
   Chip,
   FormControl,
+  IconButton,
+  InputAdornment,
   InputLabel,
   MenuItem,
   Paper,
@@ -63,6 +67,7 @@ export function SecurityPage() {
     role: 'USER',
     enabled: true,
   });
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
 
   async function loadUsers() {
     if (!isAdmin) {
@@ -214,25 +219,59 @@ export function SecurityPage() {
                   </Typography>
                 </Box>
               </Stack>
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: { xs: '1fr', md: 'minmax(260px, 1.2fr) minmax(320px, 1.4fr) 180px' },
+                  gap: 1.5,
+                  alignItems: 'start',
+                }}
+              >
                 <TextField
                   required
+                  fullWidth
                   label="用户名"
                   value={createForm.username}
                   autoComplete="off"
                   onChange={(event) => setCreateForm((current) => ({ ...current, username: event.target.value }))}
-                  sx={{ flex: 1 }}
+                  sx={{
+                    minWidth: 0,
+                    '& .MuiInputBase-input': {
+                      minHeight: 28,
+                      fontSize: 16,
+                    },
+                  }}
                 />
                 <TextField
                   required
+                  fullWidth
                   label="初始密码"
-                  type="password"
+                  type={showCreatePassword ? 'text' : 'password'}
                   value={createForm.password}
                   autoComplete="new-password"
                   onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))}
-                  sx={{ flex: 1 }}
+                  sx={{
+                    minWidth: 0,
+                    '& .MuiInputBase-input': {
+                      minHeight: 28,
+                      fontSize: 16,
+                    },
+                  }}
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          aria-label={showCreatePassword ? '隐藏初始密码' : '显示初始密码'}
+                          edge="end"
+                          onClick={() => setShowCreatePassword((value) => !value)}
+                        >
+                          {showCreatePassword ? <VisibilityOffIcon /> : <VisibilityIcon />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  }}
                 />
-                <FormControl sx={{ minWidth: 160 }}>
+                <FormControl fullWidth sx={{ minWidth: 0 }}>
                   <InputLabel id="role-label">角色</InputLabel>
                   <Select
                     labelId="role-label"
@@ -244,7 +283,7 @@ export function SecurityPage() {
                     <MenuItem value="ADMIN">管理员</MenuItem>
                   </Select>
                 </FormControl>
-              </Stack>
+              </Box>
               <Box>
                 <Button type="submit" variant="contained" startIcon={<PersonAddAlt1Icon />}>
                   创建用户

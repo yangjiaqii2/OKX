@@ -27,7 +27,16 @@ public record AutoTradeRecordView(
         BigDecimal askDepthUsdt,
         String marketRiskLevel,
         String message,
-        Instant createdAt
+        String scanId,
+        BigDecimal finalRankScore,
+        String signalType,
+        String riskMode,
+        String stage,
+        String reasonCode,
+        String reasonMessage,
+        Boolean fallbackAllowed,
+        Instant createdAt,
+        Instant updatedAt
 ) {
     public static AutoTradeRecordView from(AutoTradeRecordEntity entity) {
         return new AutoTradeRecordView(
@@ -54,7 +63,16 @@ public record AutoTradeRecordView(
                 entity.getAskDepthUsdt(),
                 entity.getMarketRiskLevel(),
                 entity.getMessage(),
-                entity.getCreatedAt()
+                entity.getScanId(),
+                entity.getFinalRankScore(),
+                entity.getSignalType(),
+                entity.getRiskMode(),
+                entity.getStage(),
+                entity.getReasonCode(),
+                entity.getReasonMessage(),
+                entity.getFallbackAllowed(),
+                entity.getCreatedAt(),
+                entity.getUpdatedAt()
         );
     }
 }

@@ -219,6 +219,15 @@ quant:
     monitor:
       interval-seconds: 10
       max-hold-minutes: 120
+    lifecycle:
+      entry-timeout-minutes: 10
+      sideways-position-hours: 3
+      sideways-pnl-range-pct: 1
+      sideways-exit-profit-pct: 0.3
+      max-hold-hours: 8
+      max-hold-action: CLOSE_POSITION
+      sideways-action: TIGHTEN_TAKE_PROFIT
+      move-stop-to-breakeven: false
 
 trading:
   mode: SEMI_AUTO

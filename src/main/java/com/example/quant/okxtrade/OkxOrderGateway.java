@@ -14,7 +14,23 @@ public interface OkxOrderGateway {
         return null;
     }
 
+    default JsonNode currentOrders(Map<String, String> payload) {
+        return null;
+    }
+
+    default JsonNode currentAlgoOrders(Map<String, String> payload) {
+        return null;
+    }
+
     default JsonNode placeAlgoOrder(Map<String, String> payload) {
+        return null;
+    }
+
+    default JsonNode cancelOrder(Map<String, String> payload) {
+        return null;
+    }
+
+    default JsonNode cancelAlgoOrder(Map<String, String> payload) {
         return null;
     }
 

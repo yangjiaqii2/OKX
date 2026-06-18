@@ -82,8 +82,35 @@ public class AutoTradeRecordEntity {
     @Column(name = "message", columnDefinition = "TEXT")
     private String message;
 
+    @Column(name = "scan_id", length = 64)
+    private String scanId;
+
+    @Column(name = "final_rank_score", precision = 18, scale = 8)
+    private BigDecimal finalRankScore;
+
+    @Column(name = "signal_type", length = 64)
+    private String signalType;
+
+    @Column(name = "risk_mode", length = 32)
+    private String riskMode;
+
+    @Column(name = "stage", length = 64)
+    private String stage;
+
+    @Column(name = "reason_code", length = 128)
+    private String reasonCode;
+
+    @Column(name = "reason_message", columnDefinition = "TEXT")
+    private String reasonMessage;
+
+    @Column(name = "fallback_allowed")
+    private Boolean fallbackAllowed;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
+
+    @Column(name = "updated_at")
+    private Instant updatedAt;
 
     public Long getId() {
         return id;
@@ -177,8 +204,44 @@ public class AutoTradeRecordEntity {
         return message;
     }
 
+    public String getScanId() {
+        return scanId;
+    }
+
+    public BigDecimal getFinalRankScore() {
+        return finalRankScore;
+    }
+
+    public String getSignalType() {
+        return signalType;
+    }
+
+    public String getRiskMode() {
+        return riskMode;
+    }
+
+    public String getStage() {
+        return stage;
+    }
+
+    public String getReasonCode() {
+        return reasonCode;
+    }
+
+    public String getReasonMessage() {
+        return reasonMessage;
+    }
+
+    public Boolean getFallbackAllowed() {
+        return fallbackAllowed;
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
     }
 
     public void setStatus(String status) {
@@ -269,7 +332,43 @@ public class AutoTradeRecordEntity {
         this.message = message;
     }
 
+    public void setScanId(String scanId) {
+        this.scanId = scanId;
+    }
+
+    public void setFinalRankScore(BigDecimal finalRankScore) {
+        this.finalRankScore = finalRankScore;
+    }
+
+    public void setSignalType(String signalType) {
+        this.signalType = signalType;
+    }
+
+    public void setRiskMode(String riskMode) {
+        this.riskMode = riskMode;
+    }
+
+    public void setStage(String stage) {
+        this.stage = stage;
+    }
+
+    public void setReasonCode(String reasonCode) {
+        this.reasonCode = reasonCode;
+    }
+
+    public void setReasonMessage(String reasonMessage) {
+        this.reasonMessage = reasonMessage;
+    }
+
+    public void setFallbackAllowed(Boolean fallbackAllowed) {
+        this.fallbackAllowed = fallbackAllowed;
+    }
+
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public void setUpdatedAt(Instant updatedAt) {
+        this.updatedAt = updatedAt;
     }
 }

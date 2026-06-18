@@ -46,6 +46,12 @@ public class AccountController {
         return positionCloseService.closePosition(instId, posSide, marginMode);
     }
 
+    @GetMapping("/positions/close-records")
+    public Object closeRecords(@RequestParam(defaultValue = "0") int page,
+                               @RequestParam(defaultValue = "50") int size) {
+        return positionCloseService.closeRecords(page, size);
+    }
+
     @GetMapping("/binding-status")
     public Object bindingStatus() {
         return okxAccountBindingService.status();

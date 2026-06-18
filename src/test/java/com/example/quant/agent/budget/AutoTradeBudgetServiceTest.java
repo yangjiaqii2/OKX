@@ -11,8 +11,73 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class AutoTradeBudgetServiceTest {
+
+    @Test
+    void persistsReservationAndRestoresReservedBudgetInFreshServiceInstance() {
+        BudgetReservationRepository repository = mock(BudgetReservationRepository.class);
+        when(repository.findByStatusIn(java.util.List.of("RESERVED", "USED"))).thenReturn(java.util.List.of());
+        when(repository.save(any(BudgetReservationEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties(), repository);
+
+        BudgetReservation reservation = service.reserveBudget(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                "BTC-USDT-SWAP",
+                new BigDecimal("20"),
+                new BigDecimal("50")
+        );
+
+        ArgumentCaptor<BudgetReservationEntity> captor = ArgumentCaptor.forClass(BudgetReservationEntity.class);
+        verify(repository).save(captor.capture());
+        BudgetReservationEntity saved = captor.getValue();
+        assertThat(reservation.status()).isEqualTo(BudgetReservationStatus.RESERVED);
+        assertThat(saved.getReservationId()).isEqualTo(reservation.reservationId().toString());
+        assertThat(saved.getStatus()).isEqualTo("RESERVED");
+        assertThat(saved.getAmount()).isEqualByComparingTo("20");
+
+        when(repository.findByStatusIn(java.util.List.of("RESERVED", "USED"))).thenReturn(java.util.List.of(saved));
+        AutoTradeBudgetService restarted = new AutoTradeBudgetService(new AgentProperties(), repository);
+
+        assertThat(restarted.reservedBudget()).isEqualByComparingTo("20");
+        assertThat(restarted.snapshot(new BigDecimal("50"), 3, java.util.List.of()).remainingBudgetUsdt())
+                .isEqualByComparingTo("30");
+    }
+
+    @Test
+    void persistedMarkUsedAndReleaseAreIdempotent() {
+        BudgetReservationEntity entity = new BudgetReservationEntity();
+        entity.setReservationId(UUID.randomUUID().toString());
+        entity.setPlanId(UUID.randomUUID().toString());
+        entity.setPendingOrderId(UUID.randomUUID().toString());
+        entity.setSymbol("BTC-USDT-SWAP");
+        entity.setAmount(new BigDecimal("15"));
+        entity.setStatus("RESERVED");
+        entity.setReason("RESERVED");
+        entity.setCreatedAt(java.time.Instant.now());
+        entity.setUpdatedAt(java.time.Instant.now());
+        BudgetReservationRepository repository = mock(BudgetReservationRepository.class);
+        when(repository.findByReservationId(entity.getReservationId())).thenReturn(java.util.Optional.of(entity));
+        when(repository.save(any(BudgetReservationEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties(), repository);
+
+        BudgetReservation used = service.markUsed(UUID.fromString(entity.getReservationId()));
+        BudgetReservation released = service.release(UUID.fromString(entity.getReservationId()), "POSITION_CLOSED");
+        BudgetReservation releasedAgain = service.release(UUID.fromString(entity.getReservationId()), "SECOND_CALL");
+
+        assertThat(used.status()).isEqualTo(BudgetReservationStatus.USED);
+        assertThat(released.status()).isEqualTo(BudgetReservationStatus.RELEASED);
+        assertThat(releasedAgain.status()).isEqualTo(BudgetReservationStatus.RELEASED);
+        assertThat(entity.getStatus()).isEqualTo("RELEASED");
+        assertThat(entity.getReason()).isEqualTo("POSITION_CLOSED");
+    }
 
     @Test
     void treatsInputMarginAsTotalBudgetAndComputesTargetUtilization() {

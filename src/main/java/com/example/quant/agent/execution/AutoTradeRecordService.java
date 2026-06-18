@@ -30,10 +30,11 @@ public class AutoTradeRecordService {
 
     @Transactional
     public void record(AutoTradeResult result, int candidateCount, ContractCandidate candidate) {
-        if (!"EXECUTED".equals(result.status())) {
+        if (repository == null || result == null) {
             return;
         }
         try {
+            Instant now = result.createdAt() == null ? Instant.now() : result.createdAt();
             AutoTradeRecordEntity entity = new AutoTradeRecordEntity();
             entity.setStatus(result.status());
             entity.setUserName(currentUsername());
@@ -57,9 +58,16 @@ public class AutoTradeRecordService {
                 entity.setBidDepthUsdt(candidate.bidDepthUsdt());
                 entity.setAskDepthUsdt(candidate.askDepthUsdt());
                 entity.setMarketRiskLevel(candidate.marketRiskLevel() == null ? null : candidate.marketRiskLevel().name());
+                entity.setFinalRankScore(candidate.finalRankScore());
+                entity.setSignalType(candidate.signalType() == null ? null : candidate.signalType().name());
             }
             entity.setMessage(result.message());
-            entity.setCreatedAt(result.createdAt() == null ? Instant.now() : result.createdAt());
+            entity.setReasonCode(reasonCode(result.message()));
+            entity.setReasonMessage(result.message());
+            entity.setStage(stageFor(result.status()));
+            entity.setFallbackAllowed(fallbackAllowed(result.status()));
+            entity.setCreatedAt(now);
+            entity.setUpdatedAt(now);
             repository.save(entity);
         } catch (RuntimeException ex) {
             log.warn("Failed to persist auto trade record status={} instId={} message={}",
@@ -86,8 +94,6 @@ public class AutoTradeRecordService {
             List<Predicate> predicates = new ArrayList<>();
             if (hasText(status)) {
                 predicates.add(builder.equal(root.get("status"), status.trim()));
-            } else {
-                predicates.add(builder.equal(root.get("status"), "EXECUTED"));
             }
             predicates.add(builder.equal(root.get("userName"), currentUsername()));
             if (hasText(instId)) {
@@ -99,6 +105,38 @@ public class AutoTradeRecordService {
 
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private static String reasonCode(String message) {
+        if (!hasText(message)) {
+            return null;
+        }
+        String compact = message.trim();
+        int colon = compact.indexOf(':');
+        if (colon > 0) {
+            compact = compact.substring(0, colon);
+        }
+        return compact.length() > 128 ? compact.substring(0, 128) : compact;
+    }
+
+    private static String stageFor(String status) {
+        if (!hasText(status)) {
+            return "UNKNOWN";
+        }
+        return switch (status) {
+            case "EXECUTED" -> "SUBMIT";
+            case "SKIPPED" -> "SCAN";
+            case "REJECTED" -> "CONFIRM";
+            case "UNKNOWN_SUBMIT_STATUS" -> "OKX_SUBMIT";
+            default -> "AUTO_TRADE";
+        };
+    }
+
+    private static Boolean fallbackAllowed(String status) {
+        if (!hasText(status)) {
+            return null;
+        }
+        return "SKIPPED".equals(status) || "REJECTED".equals(status);
     }
 
     private static String currentUsername() {

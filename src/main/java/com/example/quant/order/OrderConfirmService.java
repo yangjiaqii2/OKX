@@ -156,7 +156,7 @@ public class OrderConfirmService {
         }
         OrderBookLiquiditySnapshot liquidity = currentLiquidity(order);
         String liquidityDenyReason = hardLiquidityDenyReason(liquidity);
-        if (!noRiskAutoMode && !liquidityDenyReason.isBlank()) {
+        if (!liquidityDenyReason.isBlank()) {
             String reason = "实时订单簿流动性不足：" + liquidityDenyReason;
             rejectBeforeSubmit(order, reason, autoFixedMargin, "LIQUIDITY_REJECTED");
             log.warn("Confirm order rejected by live liquidity id={} instId={} spreadBps={} bidDepth={} askDepth={} reason={}",

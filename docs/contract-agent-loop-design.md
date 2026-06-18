@@ -900,3 +900,96 @@ Immediate safe changes:
 - Add persistent order state before auto trading.
 
 Auto trading should remain disabled until backtest and monitor modules exist.
+
+## 18. 2026-06-18 真实交易闭环第一阶段
+
+本次改造把自动交易从“提交 OKX 委托”推进到可恢复、可追踪、可复盘的第一阶段闭环。核心边界如下：
+
+- 自动交易运行态持久化到 `system_control_state`，包括紧急停止、自动交易开关、owner、风险模式、总预算、无风控最低分数和最低杠杆。
+- 自动交易预算持久化到 `auto_trade_budget_reservation`，`RESERVED` 表示未成交入场委托或待确认占用，`USED` 表示已进入实际入场风险敞口，`RELEASED` 表示预算释放。
+- OKX 提交超时后通过稳定 `clOrdId` 查询 `/api/v5/trade/order`，查到订单则恢复本地 `SUBMITTED` 并保持预算占用；确认查不到时才释放预算。
+- `AutoTradeRecoveryTask` 增强为恢复和同步入口：处理过期/失败预算释放、`UNKNOWN_SUBMIT_STATUS` 恢复，并调用生命周期检查。
+- 平仓请求写入 `close_position_record`，初始状态为 `CLOSE_SUBMITTED`，后续由同步任务确认最终 `CLOSED` 和预算释放。
+- 当前 OKX 普通委托和算法保护单通过 `/api/quant/okx/orders/current`、`/api/quant/okx/orders/algo` 暴露给前端。
+- 自动交易复盘记录不再只保存 `EXECUTED`，也保存 `SKIPPED`、`REJECTED`、`FAILED`、`UNKNOWN_SUBMIT_STATUS` 等状态及 `reasonCode`、`stage`、`fallbackAllowed`。
+- NO_RISK 仍保留交易所级硬门槛，极端 spread 会被拒绝，不再绕过。
+
+### 生命周期处理
+
+新增 `quant.agent.lifecycle` 配置：
+
+```yaml
+quant:
+  agent:
+    lifecycle:
+      entry-timeout-minutes: 10
+      sideways-position-hours: 3
+      sideways-pnl-range-pct: 1
+      sideways-exit-profit-pct: 0.3
+      max-hold-hours: 8
+      max-hold-action: CLOSE_POSITION
+      sideways-action: TIGHTEN_TAKE_PROFIT
+      move-stop-to-breakeven: false
+```
+
+生命周期同步行为：
+
+- 入场委托超过 10 分钟仍完全未成交：撤销 OKX 入场委托，标记 `ENTRY_TIMEOUT_CANCELLED`，释放预算。
+- 入场委托部分成交：撤销剩余未成交部分，按实际 `avgPx` 和 `filledSize` 提交 reduceOnly 止损和 TP1/TP2/TP3 保护单，并保持预算为 `USED`。
+- 自动交易持仓超过 3 小时且浮盈亏在 -1% 到 +1%：标记 `SIDEWAYS_TIMEOUT_TP_ADJUSTED`，提交小盈利退出 TP；多单 TP 高于均价，空单 TP 低于均价。
+- 自动交易持仓超过 8 小时：提交 OKX close-position，状态变为 `CLOSE_SUBMITTED`；若提交失败则进入 `EMERGENCY_ATTENTION_REQUIRED`。
+
+### 前端展示
+
+新增或增强页面：
+
+- “自动交易复盘”：显示所有状态、阶段、原因和 fallback 信息。
+- “交易生命周期”：显示 `instId`、`posSide`、入场状态、保护单状态、持仓时长、浮盈亏、预算占用、生命周期状态和下一步动作。
+- “当前委托/保护单”：分开展示 OKX 当前普通委托和算法保护单，保护单标识为 STOP_LOSS/TP。
+- “平仓记录”：显示每次平仓请求的 `CLOSE_SUBMITTED` 等状态。
+- 控制台资产支持 USD/RMB 显示切换；当前前端使用固定 7.2 汇率作为展示回退，交易逻辑仍使用 USDT。
+
+### 剩余边界
+
+- 当前已预留成交、手续费、资金费字段，但完整净收益仍需接入 OKX 成交流水、手续费流水和资金费流水后计算。
+- 平仓 `CLOSED` 的最终确认已支持基于 OKX 当前持仓归零的本地同步；后续仍需接入 OKX close order/fill 明细来补全 `avgPx`、手续费、资金费和精确已实现盈亏。
+- 保护单在平仓完成后会本地标记 `INVALID`，后续仍需增加 OKX 算法单批量撤销确认和失败重试。
+
+## 19. 2026-06-18 第二阶段闭环补强
+
+本次补强聚焦第一阶段剩余的恢复和账号安全缺口：
+
+- `PendingOrder` 新增 `pending_order_state` 表持久化，自动交易入场订单、预算预占用、`clientOrderId`、OKX 订单号、提交时间、拒绝原因和生命周期状态会在状态变化时保存。
+- `PendingOrderService` 启动时恢复未闭环订单，`SUBMITTED`、`UNKNOWN_SUBMIT_STATUS`、`PROTECTION_SUBMITTED`、`CLOSE_SUBMITTED` 等状态可继续被恢复任务和生命周期任务处理。
+- 开启自动交易前，`SystemControlController` 必须调用 OKX 私有账户验证；未绑定、签名失败、权限/IP/时间戳等验证失败时不会打开自动交易开关。
+- 新增 `ClosePositionRecoveryService`，定时任务确认 OKX 当前持仓已归零后，将平仓记录标记为 `CLOSED`，对应本地 PendingOrder 标记为 `CLOSED`，释放自动交易预算，并将 reduceOnly 保护单本地标记为 `INVALID`。
+- 登录页移除默认管理员账号/密码提示和用户名预填；账号安全页创建用户输入区加宽，并支持查看初始密码。
+
+### 第二阶段剩余边界
+
+- OKX 算法单撤销目前是本地失效标记，仍需对接 `/api/v5/trade/cancel-algos` 做实盘撤销确认。
+- 平仓完成后的精确收益仍需 OKX 成交流水、手续费流水和资金费流水。
+- 自动交易扫描容量判断已能利用本地恢复订单和预算记录，但还需要继续把 OKX 当前普通委托/算法委托状态同步回 `trade_order` 的最终状态。
+
+## Change Log
+
+### 2026-06-18 - 自动交易闭环第二阶段补强
+
+- 变更摘要：补齐 PendingOrder 持久化恢复、开启自动交易前 OKX Key 验证、平仓完成同步释放预算和保护单本地失效。
+- 影响文件：`src/main/java/com/example/quant/order/PendingOrder.java`、`src/main/java/com/example/quant/order/PendingOrderService.java`、`src/main/java/com/example/quant/order/PendingOrderEntity.java`、`src/main/java/com/example/quant/order/PendingOrderRepository.java`、`src/main/java/com/example/quant/controller/SystemControlController.java`、`src/main/java/com/example/quant/account/ClosePositionRecoveryService.java`、`src/main/java/com/example/quant/task/AutoTradeRecoveryTask.java`、`src/main/resources/db/migration/V12__pending_order_state.sql`、`frontend/src/pages/LoginPage.tsx`、`frontend/src/pages/SecurityPage.tsx`。
+- 影响：服务重启后未闭环 PendingOrder 可恢复；自动交易开关不会在 OKX 私有接口验证失败时打开；平仓确认后释放预算并将本地保护单标记为 `INVALID`；登录页不再暴露默认管理员。
+- 验证：`mvn test` 通过，162 个测试 0 失败；`npm --prefix frontend run build` 通过并有 Vite chunk size 警告。
+
+### 2026-06-18 - 登录与账号安全前端优化
+
+- 变更摘要：登录页移除默认管理员账号/密码提示和用户名预填；账号安全页创建用户表单改为更宽输入区，并支持初始密码显示/隐藏。
+- 影响文件：`frontend/src/pages/LoginPage.tsx`、`frontend/src/pages/SecurityPage.tsx`。
+- 影响：登录页不再暴露 `admin / admin123`；管理员创建新用户时用户名和密码输入框更宽，长账号或长密码可正常查看。
+- 验证：`npm --prefix frontend run build` 通过，仍有 Vite chunk size 警告。
+
+### 2026-06-18 - 自动交易真实闭环第一阶段
+
+- 变更摘要：新增运行态/预算持久化、OKX clOrdId 超时恢复、平仓记录、当前委托/保护单接口、自动交易复盘原因、生命周期超时处理和前端展示入口。
+- 影响文件：`src/main/java/com/example/quant/system/SystemControlService.java`、`src/main/java/com/example/quant/agent/budget/AutoTradeBudgetService.java`、`src/main/java/com/example/quant/okxtrade/OkxTradeAdapter.java`、`src/main/java/com/example/quant/task/AutoTradeRecoveryTask.java`、`src/main/java/com/example/quant/agent/lifecycle/AutoTradeLifecycleService.java`、`src/main/java/com/example/quant/account/PositionCloseService.java`、`src/main/resources/db/migration/V11__auto_trade_real_loop_phase1.sql`、`frontend/src/pages/CurrentOkxOrderList.tsx`、`frontend/src/pages/ClosePositionRecordList.tsx`、`frontend/src/pages/AutoTradeLifecycleList.tsx`、`frontend/src/pages/AutoTradeRecordList.tsx`、`frontend/src/pages/Dashboard.tsx`。
+- 影响：新增数据库表 `system_control_state`、`auto_trade_budget_reservation`、`close_position_record`；新增 OKX 当前委托/算法委托接口；新增生命周期状态 `ENTRY_TIMEOUT_CANCELLED`、`SIDEWAYS_TIMEOUT_TP_ADJUSTED`、`MAX_HOLD_TIMEOUT`、`CLOSE_SUBMITTED`；NO_RISK 保留极端 spread 硬拦截。
+- 验证：`mvn test -Dtest=SystemControlServiceTest,AutoTradeBudgetServiceTest,OkxTradeAdapterTest,AutoTradeRecoveryTaskTest,AutoTradeRecordServiceTest,PositionCloseServiceTest,OkxCurrentOrderServiceTest,AutoTradeLifecycleServiceTest,OrderConfirmServiceTest` 通过；`npm --prefix frontend run build` 通过并有 Vite chunk size 警告。

@@ -9,6 +9,11 @@ export const quantApi = {
   accountBindingStatus: () => quantFetch('/account/binding-status'),
   verifyOkxAccount: () => quantFetch('/account/verify', { method: 'POST' }),
   positions: () => quantFetch('/account/positions'),
+  currentOkxOrders: () => quantFetch('/okx/orders/current'),
+  currentOkxAlgoOrders: () => quantFetch('/okx/orders/algo'),
+  closePositionRecords: (params: { page?: number; size?: number } = {}) =>
+    quantFetch(`/account/positions/close-records?page=${params.page ?? 0}&size=${params.size ?? 50}`),
+  autoTradeLifecycle: () => quantFetch('/auto-trade/lifecycle'),
   closePosition: (payload: { instId: string; posSide?: string; marginMode?: string }) =>
     quantFetch('/account/positions/close', {
       method: 'POST',

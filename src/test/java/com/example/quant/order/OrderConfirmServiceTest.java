@@ -166,7 +166,7 @@ class OrderConfirmServiceTest {
     }
 
     @Test
-    void noRiskAutoConfirmationBypassesLiveSpreadAndRuleRisk() {
+    void noRiskAutoConfirmationStillRejectsExtremeSpreadButBypassesRuleRisk() {
         Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
         PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
         PendingOrder order = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
@@ -188,9 +188,10 @@ class OrderConfirmServiceTest {
 
         OrderExecutionResult result = confirmService.confirmAuto(order.id(), BigDecimal.valueOf(20));
 
-        assertThat(result.executed()).isTrue();
+        assertThat(result.executed()).isFalse();
+        assertThat(result.message()).contains("spread_bps_above");
         assertThat(riskService.calls).isZero();
-        assertThat(pendingOrderService.get(order.id()).status()).isEqualTo(OrderStatus.SUBMITTED);
+        assertThat(pendingOrderService.get(order.id()).status()).isEqualTo(OrderStatus.REJECTED);
     }
 
     @Test
@@ -205,7 +206,7 @@ class OrderConfirmServiceTest {
                 pendingOrderService,
                 new RejectingRiskService(),
                 new OkxTradeAdapter(gateway),
-                new FixedLiquidityService(spread(BigDecimal.valueOf(200))),
+                new FixedLiquidityService(spread(BigDecimal.valueOf(2))),
                 new AgentProperties(),
                 null,
                 systemControlService,

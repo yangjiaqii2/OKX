@@ -8,11 +8,13 @@ import java.time.Instant;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
 public class SystemControlService {
     private static final Logger log = LoggerFactory.getLogger(SystemControlService.class);
+    private static final String CONTROL_ID = "GLOBAL";
     private static final int DEFAULT_NO_RISK_MIN_SCORE = 70;
     private static final int MIN_NO_RISK_SCORE = 60;
     private static final int MAX_NO_RISK_SCORE = 100;
@@ -28,9 +30,17 @@ public class SystemControlService {
     private volatile int autoTradeMinLeverage = DEFAULT_AUTO_TRADE_MIN_LEVERAGE;
     private volatile String autoTradeOwnerUsername = OkxCredentialStore.SYSTEM_USER;
     private volatile Instant updatedAt = Instant.now();
+    private final SystemControlRepository repository;
 
     public SystemControlService(TradingProperties tradingProperties) {
+        this(tradingProperties, null);
+    }
+
+    @Autowired
+    public SystemControlService(TradingProperties tradingProperties, SystemControlRepository repository) {
+        this.repository = repository;
         this.emergencyStop = new AtomicBoolean(tradingProperties.emergencyStop());
+        loadPersistedState();
     }
 
     public SystemStatus status() {
@@ -70,6 +80,7 @@ public class SystemControlService {
         emergencyStop.set(true);
         autoTradeEnabled.set(false);
         updatedAt = Instant.now();
+        persist();
         log.warn("System emergency stop enabled; auto trade disabled");
         return status();
     }
@@ -77,6 +88,7 @@ public class SystemControlService {
     public SystemStatus resume() {
         emergencyStop.set(false);
         updatedAt = Instant.now();
+        persist();
         log.info("System emergency stop cleared");
         return status();
     }
@@ -128,6 +140,7 @@ public class SystemControlService {
         autoTradeOwnerUsername = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
         autoTradeEnabled.set(true);
         updatedAt = Instant.now();
+        persist();
         log.warn("Auto trade runtime switch enabled by user action, totalBudgetUsdt={}, budgetMode=TARGET_UTILIZATION, riskMode={}, noRiskMinScore={}, minLeverage={}",
                 autoTradeMarginUsdt, autoTradeRiskMode, noRiskMinScore, autoTradeMinLeverage);
         return status();
@@ -136,8 +149,65 @@ public class SystemControlService {
     public SystemStatus disableAutoTrade() {
         autoTradeEnabled.set(false);
         updatedAt = Instant.now();
+        persist();
         log.info("Auto trade runtime switch disabled by user action");
         return status();
+    }
+
+    private void loadPersistedState() {
+        if (repository == null) {
+            return;
+        }
+        repository.findById(CONTROL_ID).ifPresent(entity -> {
+            emergencyStop.set(entity.isEmergencyStop());
+            autoTradeEnabled.set(entity.isAutoTradeEnabled());
+            autoTradeOwnerUsername = hasText(entity.getAutoTradeOwnerUsername())
+                    ? entity.getAutoTradeOwnerUsername()
+                    : OkxCredentialStore.SYSTEM_USER;
+            autoTradeRiskMode = parseRiskMode(entity.getAutoTradeRiskMode());
+            autoTradeMarginUsdt = entity.getAutoTradeMarginUsdt() == null
+                    ? BigDecimal.ZERO
+                    : entity.getAutoTradeMarginUsdt();
+            noRiskMinScore = entity.getNoRiskMinScore() <= 0
+                    ? DEFAULT_NO_RISK_MIN_SCORE
+                    : entity.getNoRiskMinScore();
+            autoTradeMinLeverage = entity.getAutoTradeMinLeverage() <= 0
+                    ? DEFAULT_AUTO_TRADE_MIN_LEVERAGE
+                    : entity.getAutoTradeMinLeverage();
+            updatedAt = entity.getUpdatedAt() == null ? Instant.now() : entity.getUpdatedAt();
+        });
+    }
+
+    private void persist() {
+        if (repository == null) {
+            return;
+        }
+        SystemControlEntity entity = repository.findById(CONTROL_ID).orElseGet(SystemControlEntity::new);
+        entity.setId(CONTROL_ID);
+        entity.setEmergencyStop(emergencyStop.get());
+        entity.setAutoTradeEnabled(autoTradeEnabled.get());
+        entity.setAutoTradeOwnerUsername(autoTradeOwnerUsername);
+        entity.setAutoTradeRiskMode(autoTradeRiskMode.name());
+        entity.setAutoTradeMarginUsdt(autoTradeMarginUsdt);
+        entity.setNoRiskMinScore(noRiskMinScore);
+        entity.setAutoTradeMinLeverage(autoTradeMinLeverage);
+        entity.setUpdatedAt(updatedAt);
+        repository.save(entity);
+    }
+
+    private static AutoTradeRiskMode parseRiskMode(String value) {
+        if (!hasText(value)) {
+            return AutoTradeRiskMode.STRICT;
+        }
+        try {
+            return AutoTradeRiskMode.valueOf(value.trim());
+        } catch (IllegalArgumentException ex) {
+            return AutoTradeRiskMode.STRICT;
+        }
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
     }
 
     public record SystemStatus(

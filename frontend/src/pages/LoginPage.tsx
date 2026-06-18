@@ -1,6 +1,5 @@
 import LockIcon from '@mui/icons-material/Lock';
 import LoginIcon from '@mui/icons-material/Login';
-import ShieldIcon from '@mui/icons-material/Shield';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import {
@@ -22,7 +21,7 @@ export function LoginPage() {
   const login = useLogin();
   const notify = useNotify();
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({ username: 'admin', password: '' });
+  const [form, setForm] = useState({ username: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -121,24 +120,6 @@ export function LoginPage() {
               账号已改为数据库用户体系，密码以 PBKDF2 哈希保存。首次进入后可在“账号安全”里修改管理员密码。
             </Typography>
           </Box>
-
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="center"
-            sx={{
-              px: 1.25,
-              py: 1,
-              borderRadius: 1,
-              bgcolor: 'rgba(20, 184, 166, 0.08)',
-              border: '1px solid rgba(20, 184, 166, 0.16)',
-            }}
-          >
-            <ShieldIcon fontSize="small" color="success" />
-            <Typography variant="caption" color="text.secondary" fontWeight={700}>
-              默认管理员：admin / admin123
-            </Typography>
-          </Stack>
         </Stack>
 
         <Stack spacing={2.25} sx={{ p: { xs: 3, md: 4 } }}>
@@ -151,9 +132,6 @@ export function LoginPage() {
             </Typography>
           </Box>
 
-          <Alert severity="info" sx={{ alignItems: 'center' }}>
-            初始管理员仅用于首次进入系统，登录后请尽快修改密码。
-          </Alert>
           {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
 
           <TextField

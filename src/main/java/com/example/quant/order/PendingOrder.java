@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 public class PendingOrder {
+    private transient Runnable changeListener = () -> {};
     private final UUID id;
     private final MarketType marketType;
     private final String instId;
@@ -109,6 +110,29 @@ public class PendingOrder {
     public Instant createdAt() { return createdAt; }
     public Instant expireAt() { return expireAt; }
 
+    void onChange(Runnable changeListener) {
+        this.changeListener = changeListener == null ? () -> {} : changeListener;
+    }
+
+    void restoreState(BigDecimal size, BigDecimal maxLossAmount, BigDecimal marginAmount,
+                      UUID budgetReservationId, String budgetAllocationJson, String clientOrderId,
+                      OrderStatus status, boolean userConfirmed, Instant confirmedAt, Instant submittedAt,
+                      Instant executedAt, String externalOrderId, String rejectReason) {
+        this.size = size;
+        this.maxLossAmount = maxLossAmount;
+        this.marginAmount = marginAmount;
+        this.budgetReservationId = budgetReservationId;
+        this.budgetAllocationJson = budgetAllocationJson;
+        this.clientOrderId = clientOrderId;
+        this.status = status == null ? OrderStatus.PENDING_CONFIRM : status;
+        this.userConfirmed = userConfirmed;
+        this.confirmedAt = confirmedAt;
+        this.submittedAt = submittedAt;
+        this.executedAt = executedAt;
+        this.externalOrderId = externalOrderId;
+        this.rejectReason = rejectReason;
+    }
+
     public boolean isExpired(Instant now) {
         return now.isAfter(expireAt);
     }
@@ -116,12 +140,14 @@ public class PendingOrder {
     public void markExpired() {
         this.status = OrderStatus.EXPIRED;
         this.rejectReason = "订单已过期";
+        changed();
     }
 
     public void markConfirmed(Instant now) {
         this.status = OrderStatus.CONFIRMED;
         this.userConfirmed = true;
         this.confirmedAt = now;
+        changed();
     }
 
     public void applyMarginAmount(BigDecimal amount) {
@@ -137,6 +163,7 @@ public class PendingOrder {
         this.maxLossAmount = price.subtract(stopLossPrice).abs()
                 .multiply(size)
                 .setScale(4, RoundingMode.HALF_UP);
+        changed();
     }
 
     public synchronized void applyBudgetReservation(BigDecimal orderMarginUsdt, UUID reservationId,
@@ -146,6 +173,7 @@ public class PendingOrder {
         this.budgetAllocationJson = allocationJson;
         this.clientOrderId = clientOrderId;
         this.status = OrderStatus.BUDGET_RESERVED;
+        changed();
     }
 
     public synchronized boolean transition(OrderStatus expectedStatus, OrderStatus newStatus) {
@@ -153,6 +181,7 @@ public class PendingOrder {
             return false;
         }
         this.status = newStatus;
+        changed();
         return true;
     }
 
@@ -160,6 +189,7 @@ public class PendingOrder {
         for (OrderStatus expectedStatus : expectedStatuses) {
             if (this.status == expectedStatus) {
                 this.status = newStatus;
+                changed();
                 return true;
             }
         }
@@ -173,33 +203,83 @@ public class PendingOrder {
         this.leverage = leverage;
         if (marginAmount != null && marginAmount.signum() > 0) {
             applyMarginAmount(marginAmount);
+        } else {
+            changed();
         }
     }
 
     public void markExecuted(Instant now) {
         this.status = OrderStatus.EXECUTED;
         this.executedAt = now;
+        changed();
     }
 
     public void markSubmitted(Instant now, String externalOrderId) {
         this.status = OrderStatus.SUBMITTED;
         this.submittedAt = now;
         this.externalOrderId = externalOrderId;
+        changed();
     }
 
     public void markUnknownSubmitStatus(String reason) {
         this.status = OrderStatus.UNKNOWN_SUBMIT_STATUS;
         this.rejectReason = reason;
+        changed();
     }
 
     public void markProtectionFailed(String reason) {
         this.status = OrderStatus.PROTECTION_FAILED;
         this.rejectReason = reason;
+        changed();
+    }
+
+    public void markEntryTimeoutCancelled(String reason) {
+        this.status = OrderStatus.ENTRY_TIMEOUT_CANCELLED;
+        this.rejectReason = reason;
+        changed();
+    }
+
+    public void markProtectionSubmitted(String reason) {
+        this.status = OrderStatus.PROTECTION_SUBMITTED;
+        this.rejectReason = reason;
+        changed();
+    }
+
+    public void markSidewaysTimeoutTpAdjusted(String reason) {
+        this.status = OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED;
+        this.rejectReason = reason;
+        changed();
+    }
+
+    public void markMaxHoldTimeout(String reason) {
+        this.status = OrderStatus.MAX_HOLD_TIMEOUT;
+        this.rejectReason = reason;
+        changed();
+    }
+
+    public void markCloseSubmitted(String externalOrderId, String reason) {
+        this.status = OrderStatus.CLOSE_SUBMITTED;
+        this.externalOrderId = externalOrderId;
+        this.rejectReason = reason;
+        changed();
+    }
+
+    public void markEmergencyAttentionRequired(String reason) {
+        this.status = OrderStatus.EMERGENCY_ATTENTION_REQUIRED;
+        this.rejectReason = reason;
+        changed();
+    }
+
+    public void markClosed(String reason) {
+        this.status = OrderStatus.CLOSED;
+        this.rejectReason = reason;
+        changed();
     }
 
     public void markRejected(String reason) {
         this.status = OrderStatus.REJECTED;
         this.rejectReason = reason;
+        changed();
     }
 
     public void markRetryableRejected(String reason) {
@@ -207,10 +287,16 @@ public class PendingOrder {
         this.userConfirmed = false;
         this.confirmedAt = null;
         this.rejectReason = reason;
+        changed();
     }
 
     public void markCancelled(String reason) {
         this.status = OrderStatus.CANCELLED;
         this.rejectReason = reason;
+        changed();
+    }
+
+    private void changed() {
+        changeListener.run();
     }
 }

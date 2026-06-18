@@ -235,6 +235,37 @@ class OkxTradeAdapterTest {
         assertThat(gateway.payload).containsEntry("clOrdId", "AUTO_plan1234_order5678");
     }
 
+    @Test
+    void submitTimeoutQueriesOkxByClientOrderIdAndRecoversExistingOrder() {
+        TimeoutThenFoundGateway gateway = new TimeoutThenFoundGateway();
+        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
+        PendingOrder order = order();
+        order.applyBudgetReservation(new BigDecimal("22.5"), UUID.randomUUID(), "{}", "AUTOrecover123456");
+
+        OrderExecutionResult result = adapter.placeOrder(order);
+
+        assertThat(result.executed()).isTrue();
+        assertThat(result.externalOrderId()).isEqualTo("recovered-ord-1");
+        assertThat(result.message()).contains("clOrdId");
+        assertThat(gateway.queryOrderPayload)
+                .containsEntry("instId", "BTC-USDT-SWAP")
+                .containsEntry("clOrdId", "AUTOrecover123456");
+    }
+
+    @Test
+    void submitTimeoutReturnsRejectedWhenOkxConfirmsClientOrderIdMissing() {
+        TimeoutThenMissingGateway gateway = new TimeoutThenMissingGateway();
+        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
+        PendingOrder order = order();
+        order.applyBudgetReservation(new BigDecimal("22.5"), UUID.randomUUID(), "{}", "AUTOmissing123456");
+
+        OrderExecutionResult result = adapter.placeOrder(order);
+
+        assertThat(result.executed()).isFalse();
+        assertThat(result.message()).contains("OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT");
+        assertThat(gateway.queryOrderPayload).containsEntry("clOrdId", "AUTOmissing123456");
+    }
+
     private static PendingOrder order() {
         return new PendingOrder(
                 UUID.randomUUID(),
@@ -296,13 +327,13 @@ class OkxTradeAdapterTest {
     }
 
     private static class CapturingGateway implements OkxOrderGateway {
-        private Map<String, String> leveragePayload;
-        private Map<String, String> payload;
-        private Map<String, String> queryOrderPayload;
-        private Map<String, String> closePayload;
-        private final List<Map<String, String>> algoPayloads = new ArrayList<>();
-        private BigDecimal fillAvgPx;
-        private BigDecimal fillSize;
+        protected Map<String, String> leveragePayload;
+        protected Map<String, String> payload;
+        protected Map<String, String> queryOrderPayload;
+        protected Map<String, String> closePayload;
+        protected final List<Map<String, String>> algoPayloads = new ArrayList<>();
+        protected BigDecimal fillAvgPx;
+        protected BigDecimal fillSize;
 
         @Override
         public JsonNode setLeverage(Map<String, String> payload) {
@@ -361,6 +392,39 @@ class OkxTradeAdapterTest {
             item.put("sCode", "51008");
             item.put("sMsg", "Order failed");
             return root;
+        }
+    }
+
+    private static class TimeoutThenFoundGateway extends CapturingGateway {
+        @Override
+        public JsonNode placeOrder(Map<String, String> payload) {
+            this.payload = payload;
+            throw new IllegalStateException("OKX request timed out");
+        }
+
+        @Override
+        public JsonNode queryOrder(Map<String, String> payload) {
+            this.queryOrderPayload = payload;
+            ObjectNode root = new ObjectMapper().createObjectNode();
+            ObjectNode item = root.putArray("data").addObject();
+            item.put("ordId", "recovered-ord-1");
+            item.put("clOrdId", payload.get("clOrdId"));
+            item.put("state", "live");
+            return root;
+        }
+    }
+
+    private static class TimeoutThenMissingGateway extends CapturingGateway {
+        @Override
+        public JsonNode placeOrder(Map<String, String> payload) {
+            this.payload = payload;
+            throw new IllegalStateException("OKX request timed out");
+        }
+
+        @Override
+        public JsonNode queryOrder(Map<String, String> payload) {
+            this.queryOrderPayload = payload;
+            return new ObjectMapper().createObjectNode().putArray("data");
         }
     }
 }

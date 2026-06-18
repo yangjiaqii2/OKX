@@ -5,8 +5,11 @@ import { authProvider } from './api/authProvider';
 import { AppLayout, appIcons } from './layout';
 import { AccountBindingPage } from './pages/AccountBindingPage';
 import { AccountRiskPage } from './pages/AccountRiskPage';
+import { AutoTradeLifecycleList } from './pages/AutoTradeLifecycleList';
 import { AutoTradeRecordList } from './pages/AutoTradeRecordList';
+import { ClosePositionRecordList } from './pages/ClosePositionRecordList';
 import { ContractCandidateList } from './pages/ContractCandidateList';
+import { CurrentOkxOrderList } from './pages/CurrentOkxOrderList';
 import { Dashboard } from './pages/Dashboard';
 import { LoginPage } from './pages/LoginPage';
 import { PendingOrderList } from './pages/PendingOrderList';
@@ -42,7 +45,25 @@ export default function App() {
         name="autoTradeRecords"
         list={AutoTradeRecordList}
         icon={appIcons.autoTrade}
-        options={{ label: '自动交易记录' }}
+        options={{ label: '自动交易复盘' }}
+      />
+      <Resource
+        name="autoTradeLifecycle"
+        list={AutoTradeLifecycleList}
+        icon={appIcons.lifecycle}
+        options={{ label: '交易生命周期' }}
+      />
+      <Resource
+        name="currentOkxOrders"
+        list={CurrentOkxOrderList}
+        icon={appIcons.okxOrders}
+        options={{ label: '当前委托/保护单' }}
+      />
+      <Resource
+        name="closePositionRecords"
+        list={ClosePositionRecordList}
+        icon={appIcons.pending}
+        options={{ label: '平仓记录' }}
       />
       <CustomRoutes>
         <Route path="/account-binding" element={<AccountBindingPage />} />

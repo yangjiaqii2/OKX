@@ -10,15 +10,24 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AutoTradeBudgetService {
     private final AgentProperties agentProperties;
     private final Map<UUID, BudgetReservation> reservations = new LinkedHashMap<>();
+    private final BudgetReservationRepository repository;
 
     public AutoTradeBudgetService(AgentProperties agentProperties) {
+        this(agentProperties, null);
+    }
+
+    @Autowired
+    public AutoTradeBudgetService(AgentProperties agentProperties, BudgetReservationRepository repository) {
         this.agentProperties = agentProperties == null ? new AgentProperties() : agentProperties;
+        this.repository = repository;
+        loadActiveReservations();
     }
 
     public synchronized BudgetAllocation allocate(BudgetAllocationRequest request) {
@@ -92,14 +101,32 @@ public class AutoTradeBudgetService {
         BudgetReservation reservation = new BudgetReservation(id, planId, pendingOrderId, symbol, normalized,
                 BudgetReservationStatus.RESERVED, now, now, "RESERVED");
         reservations.put(id, reservation);
+        save(reservation);
         return reservation;
     }
 
     public synchronized Optional<BudgetReservation> reservation(UUID reservationId) {
-        return Optional.ofNullable(reservations.get(reservationId));
+        if (reservationId == null) {
+            return Optional.empty();
+        }
+        BudgetReservation current = reservations.get(reservationId);
+        if (current != null) {
+            return Optional.of(current);
+        }
+        if (repository == null) {
+            return Optional.empty();
+        }
+        return findEntity(reservationId).map(this::fromEntity);
     }
 
     public synchronized Optional<BudgetReservation> reservationByPendingOrder(UUID pendingOrderId) {
+        if (pendingOrderId == null) {
+            return Optional.empty();
+        }
+        if (repository != null) {
+            Optional<BudgetReservationEntity> row = repository.findFirstByPendingOrderId(pendingOrderId.toString());
+            return row == null ? Optional.empty() : row.map(this::fromEntity);
+        }
         return reservations.values().stream()
                 .filter(item -> pendingOrderId != null && pendingOrderId.equals(item.pendingOrderId()))
                 .findFirst();
@@ -113,7 +140,7 @@ public class AutoTradeBudgetService {
     }
 
     public synchronized BudgetReservation markUsed(UUID reservationId) {
-        BudgetReservation current = reservations.get(reservationId);
+        BudgetReservation current = reservation(reservationId).orElse(null);
         if (current == null || current.status() == BudgetReservationStatus.USED) {
             return current;
         }
@@ -122,17 +149,19 @@ public class AutoTradeBudgetService {
         }
         BudgetReservation updated = withStatus(current, BudgetReservationStatus.USED, "USED");
         reservations.put(reservationId, updated);
+        save(updated);
         return updated;
     }
 
     public synchronized BudgetReservation release(UUID reservationId, String reason) {
-        BudgetReservation current = reservations.get(reservationId);
+        BudgetReservation current = reservation(reservationId).orElse(null);
         if (current == null || current.status() == BudgetReservationStatus.RELEASED) {
             return current;
         }
         BudgetReservation updated = withStatus(current, BudgetReservationStatus.RELEASED,
                 reason == null || reason.isBlank() ? "RELEASED" : reason);
         reservations.put(reservationId, updated);
+        save(updated);
         return updated;
     }
 
@@ -176,24 +205,106 @@ public class AutoTradeBudgetService {
     }
 
     public synchronized BigDecimal reservedBudget() {
-        return reservations.values().stream()
+        return activeReservations().stream()
                 .filter(item -> item.status() == BudgetReservationStatus.RESERVED)
                 .map(BudgetReservation::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     public synchronized BigDecimal usedBudget() {
-        return reservations.values().stream()
+        return activeReservations().stream()
                 .filter(item -> item.status() == BudgetReservationStatus.USED)
                 .map(BudgetReservation::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private int activeReservationCount() {
-        return (int) reservations.values().stream()
+        return (int) activeReservations().stream()
                 .filter(item -> item.status() == BudgetReservationStatus.RESERVED
                         || item.status() == BudgetReservationStatus.USED)
                 .count();
+    }
+
+    private List<BudgetReservation> activeReservations() {
+        if (repository == null) {
+            return new ArrayList<>(reservations.values());
+        }
+        List<BudgetReservationEntity> rows = repository.findByStatusIn(List.of("RESERVED", "USED"));
+        if (rows == null) {
+            return new ArrayList<>(reservations.values());
+        }
+        List<BudgetReservation> active = rows.stream()
+                .map(this::fromEntity)
+                .toList();
+        for (BudgetReservation reservation : active) {
+            reservations.put(reservation.reservationId(), reservation);
+        }
+        return active;
+    }
+
+    private void loadActiveReservations() {
+        if (repository == null) {
+            return;
+        }
+        for (BudgetReservation reservation : activeReservations()) {
+            reservations.put(reservation.reservationId(), reservation);
+        }
+    }
+
+    private void save(BudgetReservation reservation) {
+        if (repository == null || reservation == null) {
+            return;
+        }
+        BudgetReservationEntity entity = findEntity(reservation.reservationId()).orElseGet(BudgetReservationEntity::new);
+        entity.setReservationId(reservation.reservationId().toString());
+        entity.setPlanId(reservation.planId() == null ? null : reservation.planId().toString());
+        entity.setPendingOrderId(reservation.pendingOrderId() == null ? null : reservation.pendingOrderId().toString());
+        entity.setSymbol(reservation.symbol());
+        entity.setAmount(reservation.amount());
+        entity.setStatus(reservation.status().name());
+        entity.setReason(reservation.reason());
+        entity.setCreatedAt(reservation.createdAt());
+        entity.setUpdatedAt(reservation.updatedAt());
+        repository.save(entity);
+    }
+
+    private Optional<BudgetReservationEntity> findEntity(UUID reservationId) {
+        Optional<BudgetReservationEntity> row = repository.findByReservationId(reservationId.toString());
+        return row == null ? Optional.empty() : row;
+    }
+
+    private BudgetReservation fromEntity(BudgetReservationEntity entity) {
+        BudgetReservation reservation = new BudgetReservation(
+                UUID.fromString(entity.getReservationId()),
+                uuid(entity.getPlanId()),
+                uuid(entity.getPendingOrderId()),
+                entity.getSymbol(),
+                entity.getAmount() == null ? BigDecimal.ZERO : entity.getAmount(),
+                status(entity.getStatus()),
+                entity.getCreatedAt(),
+                entity.getUpdatedAt(),
+                entity.getReason()
+        );
+        reservations.put(reservation.reservationId(), reservation);
+        return reservation;
+    }
+
+    private static UUID uuid(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return UUID.fromString(value);
+    }
+
+    private static BudgetReservationStatus status(String value) {
+        if (value == null || value.isBlank()) {
+            return BudgetReservationStatus.RELEASED;
+        }
+        try {
+            return BudgetReservationStatus.valueOf(value.trim());
+        } catch (IllegalArgumentException ex) {
+            return BudgetReservationStatus.RELEASED;
+        }
     }
 
     private BudgetReservation rejected(UUID planId, UUID pendingOrderId, String symbol, BigDecimal amount, String reason) {

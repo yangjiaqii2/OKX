@@ -23,28 +23,41 @@ public class PendingOrderService {
     private final int expireSeconds;
     private final Clock clock;
     private final TradePlanRecordService tradePlanRecordService;
+    private final PendingOrderRepository pendingOrderRepository;
 
     @Autowired
-    public PendingOrderService(TradingProperties tradingProperties, TradePlanRecordService tradePlanRecordService) {
-        this(tradingProperties.orderExpireSeconds(), Clock.systemUTC(), tradePlanRecordService);
+    public PendingOrderService(TradingProperties tradingProperties, TradePlanRecordService tradePlanRecordService,
+                               PendingOrderRepository pendingOrderRepository) {
+        this(tradingProperties.orderExpireSeconds(), Clock.systemUTC(), tradePlanRecordService, pendingOrderRepository);
     }
 
     public PendingOrderService(TradingProperties tradingProperties) {
-        this(tradingProperties.orderExpireSeconds(), Clock.systemUTC(), null);
+        this(tradingProperties.orderExpireSeconds(), Clock.systemUTC(), null, null);
     }
 
     public PendingOrderService(int expireSeconds) {
-        this(expireSeconds, Clock.systemUTC(), null);
+        this(expireSeconds, Clock.systemUTC(), null, null);
+    }
+
+    public PendingOrderService(int expireSeconds, PendingOrderRepository pendingOrderRepository) {
+        this(expireSeconds, Clock.systemUTC(), null, pendingOrderRepository);
     }
 
     public PendingOrderService(int expireSeconds, Clock clock) {
-        this(expireSeconds, clock, null);
+        this(expireSeconds, clock, null, null);
     }
 
     public PendingOrderService(int expireSeconds, Clock clock, TradePlanRecordService tradePlanRecordService) {
+        this(expireSeconds, clock, tradePlanRecordService, null);
+    }
+
+    public PendingOrderService(int expireSeconds, Clock clock, TradePlanRecordService tradePlanRecordService,
+                               PendingOrderRepository pendingOrderRepository) {
         this.expireSeconds = expireSeconds;
         this.clock = clock;
         this.tradePlanRecordService = tradePlanRecordService;
+        this.pendingOrderRepository = pendingOrderRepository;
+        restorePendingOrders();
     }
 
     public PendingOrder createPendingOrder(MarketType marketType, TradePlan plan) {
@@ -58,7 +71,9 @@ public class PendingOrderService {
         String side = plan.action() == TradePlanType.OPEN_SHORT ? "sell" : "buy";
         String posSide = plan.action() == TradePlanType.OPEN_SHORT ? "short" : "long";
         PendingOrder order = buildPendingOrder(UUID.randomUUID(), marketType, plan, now);
+        attach(order);
         orders.put(order.id(), order);
+        persist(order);
         if (tradePlanRecordService != null) {
             tradePlanRecordService.markPendingOrderCreated(plan.id());
         }
@@ -77,7 +92,9 @@ public class PendingOrderService {
         Instant now = clock.instant();
         PendingOrder order = buildPendingOrder(pendingOrderId, marketType, plan, now);
         order.applyBudgetReservation(orderMarginUsdt, budgetReservationId, budgetAllocationJson(allocation), clientOrderId);
+        attach(order);
         orders.put(order.id(), order);
+        persist(order);
         if (tradePlanRecordService != null) {
             tradePlanRecordService.markPendingOrderCreated(plan.id());
         }
@@ -141,6 +158,40 @@ public class PendingOrderService {
 
     public void cancel(UUID id) {
         get(id).markCancelled("用户取消");
+    }
+
+    private void restorePendingOrders() {
+        if (pendingOrderRepository == null) {
+            return;
+        }
+        for (PendingOrderEntity entity : pendingOrderRepository.findAll()) {
+            PendingOrder order = entity.toDomain();
+            if (isTerminal(order.status())) {
+                continue;
+            }
+            attach(order);
+            orders.put(order.id(), order);
+        }
+    }
+
+    private PendingOrder attach(PendingOrder order) {
+        order.onChange(() -> persist(order));
+        return order;
+    }
+
+    private void persist(PendingOrder order) {
+        if (pendingOrderRepository != null) {
+            pendingOrderRepository.save(PendingOrderEntity.from(order));
+        }
+    }
+
+    private static boolean isTerminal(OrderStatus status) {
+        return status == OrderStatus.CANCELLED
+                || status == OrderStatus.EXPIRED
+                || status == OrderStatus.REJECTED
+                || status == OrderStatus.FAILED
+                || status == OrderStatus.ENTRY_TIMEOUT_CANCELLED
+                || status == OrderStatus.CLOSED;
     }
 
     private static String budgetAllocationJson(BudgetAllocation allocation) {

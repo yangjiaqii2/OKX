@@ -130,6 +130,10 @@ public class TradeOrderEntity {
         this.status = status;
     }
 
+    public String getStatus() {
+        return status;
+    }
+
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
     }
