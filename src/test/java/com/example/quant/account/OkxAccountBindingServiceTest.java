@@ -1,7 +1,10 @@
 package com.example.quant.account;
 
 import com.example.quant.account.dto.OkxAccountBindRequest;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.TradingProperties;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -56,6 +59,28 @@ class OkxAccountBindingServiceTest {
     }
 
     @Test
+    void bindsCredentialsOnlyForCurrentUser() {
+        InMemoryOkxCredentialStore store = new InMemoryOkxCredentialStore();
+        OkxAccountBindingService service = newService(store);
+
+        AuthUserContext.runAs("alice", () -> service.bind(new OkxAccountBindRequest(
+                "alice123456789",
+                "alice-secret",
+                "alice-passphrase"
+        )));
+
+        AuthUserContext.runAs("bob", () -> {
+            assertFalse(service.status().bound());
+            assertFalse(service.credentials().isPresent());
+        });
+        AuthUserContext.runAs("alice", () -> {
+            assertTrue(service.status().bound());
+            assertEquals("alic****6789", service.status().maskedApiKey());
+            assertEquals("alice123456789", service.credentials().orElseThrow().apiKey());
+        });
+    }
+
+    @Test
     void unbindClearsStoredCredentials() {
         InMemoryOkxCredentialStore store = new InMemoryOkxCredentialStore();
         OkxAccountBindingService service = newService(store);
@@ -77,21 +102,21 @@ class OkxAccountBindingServiceTest {
     }
 
     private static final class InMemoryOkxCredentialStore implements OkxCredentialStore {
-        private StoredOkxCredential credential;
+        private final Map<String, StoredOkxCredential> rows = new HashMap<>();
 
         @Override
-        public Optional<StoredOkxCredential> findActive() {
-            return Optional.ofNullable(credential);
+        public Optional<StoredOkxCredential> findActive(String username) {
+            return Optional.ofNullable(rows.get(username));
         }
 
         @Override
-        public void saveActive(StoredOkxCredential credential) {
-            this.credential = credential;
+        public void saveActive(String username, StoredOkxCredential credential) {
+            rows.put(username, credential);
         }
 
         @Override
-        public void deleteActive() {
-            this.credential = null;
+        public void deleteActive(String username) {
+            rows.remove(username);
         }
     }
 }

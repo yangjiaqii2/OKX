@@ -2,6 +2,7 @@ import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import EmergencyIcon from '@mui/icons-material/Emergency';
 import KeyIcon from '@mui/icons-material/Key';
+import ManageAccountsIcon from '@mui/icons-material/ManageAccounts';
 import PendingActionsIcon from '@mui/icons-material/PendingActions';
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import StackedLineChartIcon from '@mui/icons-material/StackedLineChart';
@@ -37,6 +38,7 @@ const AppMenu = () => (
       <Menu.ResourceItem name="autoTradeRecords" />
       <Menu.Item to="/account-risk" primaryText="账户与风控" leftIcon={<AccountBalanceWalletIcon />} />
       <Menu.Item to="/account-binding" primaryText="账号绑定" leftIcon={<KeyIcon />} />
+      <Menu.Item to="/security" primaryText="账号安全" leftIcon={<ManageAccountsIcon />} />
       <Menu.Item to="/system-control" primaryText="系统控制" leftIcon={<EmergencyIcon />} />
     </Menu>
   </Box>

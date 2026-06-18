@@ -93,10 +93,6 @@ public class SmartEntryModeResolver {
             reasons.add("5m入场节奏未就绪：" + candidate.klineAnalysis().entryTiming5m());
             return new SmartEntryModeDecision(SmartEntryMode.WAIT_RETEST, false, reasons);
         }
-        if (!"LOW".equals(newsRiskLevel)) {
-            reasons.add("新闻风险不是LOW，等待确认：" + newsRiskLevel);
-            return new SmartEntryModeDecision(SmartEntryMode.WAIT_BREAKOUT, false, reasons);
-        }
         if (candidate.fundingRate() != null
                 && candidate.fundingRate().abs().compareTo(agentProperties.market().maxFundingAbs()) > 0) {
             reasons.add("资金费率拥挤，不做市价追单：" + candidate.fundingRate());

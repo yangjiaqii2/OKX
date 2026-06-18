@@ -54,6 +54,7 @@ export const quantApi = {
     search.set('size', String(params.size ?? 50));
     return quantFetch(`/auto-trade/records?${search.toString()}`);
   },
+  autoTradeProfitSummary: () => quantFetch('/auto-trade/profit/summary'),
   emergencyStop: () => quantFetch('/system/emergency-stop', { method: 'POST' }),
   resume: () => quantFetch('/system/resume', { method: 'POST' }),
   enableAutoTrade: (

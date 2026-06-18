@@ -9,6 +9,7 @@ import com.example.quant.agent.budget.BudgetAllocation;
 import com.example.quant.agent.budget.BudgetAllocationRequest;
 import com.example.quant.agent.budget.BudgetReservation;
 import com.example.quant.agent.gate.ContractTradeGate;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.market.MarketType;
@@ -96,6 +97,14 @@ public class AutoTradeService {
     }
 
     public AutoTradeResult evaluateAndExecute(List<ContractCandidate> candidates) {
+        String ownerUsername = systemControlService.autoTradeOwnerUsername();
+        if (ownerUsername != null && !ownerUsername.isBlank()) {
+            return AuthUserContext.callAs(ownerUsername, () -> evaluateAndExecuteInternal(candidates));
+        }
+        return evaluateAndExecuteInternal(candidates);
+    }
+
+    private AutoTradeResult evaluateAndExecuteInternal(List<ContractCandidate> candidates) {
         if (!agentProperties.autoTrade().enabled()) {
             return AutoTradeResult.skipped("auto_trade_disabled_by_config");
         }
@@ -191,6 +200,13 @@ public class AutoTradeService {
                     lastAttemptSkipReason = "SYMBOL_ALREADY_IN_FLIGHT";
                     log.warn("AutoTrade candidate skipped scanId={} symbol={} reason=SYMBOL_ALREADY_IN_FLIGHT classification={} fallback=true",
                             scanId, candidate.instId(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
+                    continue;
+                }
+                String hardNewsBlockReason = hardNewsBlockReason(candidate);
+                if (hardNewsBlockReason != null) {
+                    lastAttemptSkipReason = hardNewsBlockReason;
+                    log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=NEWS_RISK reason={} classification={} fallback=true",
+                            scanId, candidate.instId(), hardNewsBlockReason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
                     continue;
                 }
                 if (noRiskMode) {
@@ -481,6 +497,19 @@ public class AutoTradeService {
 
     private static BigDecimal displayedScore(ContractCandidate candidate) {
         return BigDecimal.valueOf(candidate.score());
+    }
+
+    private static String hardNewsBlockReason(ContractCandidate candidate) {
+        if (candidate.newsAnalysis() == null) {
+            return null;
+        }
+        if ("CRITICAL".equals(candidate.newsAnalysis().newsRiskLevel())) {
+            return "news_risk_critical";
+        }
+        if ("HIGH".equals(candidate.newsAnalysis().newsRiskLevel())) {
+            return "news_risk_high";
+        }
+        return null;
     }
 
     private int noRiskMinScore() {

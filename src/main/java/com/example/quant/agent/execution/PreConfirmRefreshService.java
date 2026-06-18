@@ -38,10 +38,6 @@ public class PreConfirmRefreshService {
         if (config.rejectIfBtcReverse() && btcEthReversed(candidate)) {
             reasons.add("BTC_ETH_REVERSE");
         }
-        if (config.rejectIfNewsRiskUpgraded()
-                && !"LOW".equals(candidate.newsAnalysis().newsRiskLevel())) {
-            reasons.add("NEWS_RISK_UPGRADED_" + candidate.newsAnalysis().newsRiskLevel());
-        }
         if (candidate.fundingRate() != null
                 && candidate.fundingRate().abs().compareTo(agentProperties.market().maxFundingAbs()) > 0) {
             reasons.add("FUNDING_CROWDED_" + candidate.fundingRate());

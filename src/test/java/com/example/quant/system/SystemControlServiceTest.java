@@ -3,6 +3,7 @@ package com.example.quant.system;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.TradingProperties;
 import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
@@ -55,6 +56,17 @@ class SystemControlServiceTest {
 
         assertThat(status.autoTradeMinLeverage()).isEqualTo(5);
         assertThat(service.autoTradeMinLeverage()).isEqualTo(5);
+    }
+
+    @Test
+    void remembersUserWhoEnabledAutoTrade() {
+        SystemControlService service = new SystemControlService(tradingProperties());
+
+        SystemControlService.SystemStatus status = AuthUserContext.callAs("alice", () ->
+                service.enableAutoTrade(BigDecimal.valueOf(50), AutoTradeRiskMode.NO_RISK, 65, 3));
+
+        assertThat(status.autoTradeOwnerUsername()).isEqualTo("alice");
+        assertThat(service.autoTradeOwnerUsername()).isEqualTo("alice");
     }
 
     @Test

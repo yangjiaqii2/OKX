@@ -17,15 +17,32 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
-        if ("OPTIONS".equalsIgnoreCase(request.getMethod()) || request.getRequestURI().startsWith("/api/quant/auth/")) {
+        if ("OPTIONS".equalsIgnoreCase(request.getMethod()) || isPublicAuthEndpoint(request)) {
+            AuthUserContext.clear();
             return true;
         }
         String token = bearerToken(request.getHeader(HttpHeaders.AUTHORIZATION));
-        if (authSessionService.isAuthenticated(token)) {
+        var username = authSessionService.currentUsername(token);
+        if (username.isPresent()) {
+            AuthUserContext.setCurrentUsername(username.orElseThrow());
             return true;
         }
+        AuthUserContext.clear();
         response.setStatus(HttpStatus.UNAUTHORIZED.value());
         return false;
+    }
+
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
+        AuthUserContext.clear();
+    }
+
+    private static boolean isPublicAuthEndpoint(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        if ("/api/quant/auth/login".equals(uri)) {
+            return true;
+        }
+        return "GET".equalsIgnoreCase(request.getMethod()) && "/api/quant/auth/session".equals(uri);
     }
 
     private static String bearerToken(String header) {

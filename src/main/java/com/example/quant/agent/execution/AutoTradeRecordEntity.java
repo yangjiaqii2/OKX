@@ -19,6 +19,9 @@ public class AutoTradeRecordEntity {
     @Column(name = "status", nullable = false, length = 32)
     private String status;
 
+    @Column(name = "user_name", nullable = false, length = 128)
+    private String userName;
+
     @Column(name = "trigger_type", nullable = false, length = 32)
     private String triggerType;
 
@@ -88,6 +91,10 @@ public class AutoTradeRecordEntity {
 
     public String getStatus() {
         return status;
+    }
+
+    public String getUserName() {
+        return userName;
     }
 
     public String getTriggerType() {
@@ -176,6 +183,10 @@ public class AutoTradeRecordEntity {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public void setUserName(String userName) {
+        this.userName = userName;
     }
 
     public void setTriggerType(String triggerType) {

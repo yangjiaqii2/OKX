@@ -8,11 +8,11 @@ OKX USDT 永续合约量化实盘控制台。当前系统主流程聚焦 OKX 合
 - AI 交易计划：基于候选合约生成开仓方向、入场价、止损、止盈、杠杆、置信度和风险说明。
 - 待确认订单：手动计划先进入人工审核台，填写保证金并复核后才提交 OKX 实盘。
 - 自动交易：可在系统控制页开启总预算、严格风控/无风控模式、最低分数和最低杠杆。
-- 风控与账户：查看 OKX 总权益、可用余额、持仓快照、风险等级、拒绝原因和建议杠杆。
+- 风控与账户：查看 OKX 总权益、可用余额、持仓快照、风险等级、拒绝原因、建议杠杆和自动交易收益概览。
 - 持仓操作：支持从控制台提交 OKX 平仓请求。
-- 账号绑定：绑定 OKX API Key、Secret、Passphrase 到数据库，支持验证、解绑和脱敏回显。
-- 审计记录：记录自动交易成功提交到 OKX 的委托，便于追踪成交链路。
-- 登录保护：本地单用户登录后进入量化实盘控制台。
+- 账号绑定：每个登录用户独立绑定 OKX API Key、Secret、Passphrase 到数据库，支持验证、解绑和脱敏回显。
+- 审计记录：按登录用户记录自动交易成功提交到 OKX 的委托，便于追踪成交链路。
+- 登录保护：数据库用户登录后进入量化实盘控制台，密码使用 PBKDF2-SHA256 哈希保存。
 
 ## 技术栈
 
@@ -55,7 +55,7 @@ MYSQL_USERNAME=root
 MYSQL_PASSWORD=<password>
 
 QUANT_AUTH_USERNAME=admin
-QUANT_AUTH_PASSWORD=<strong-password>
+QUANT_AUTH_PASSWORD=admin123
 
 OKX_API_KEY=<optional>
 OKX_API_SECRET=<optional>
@@ -66,7 +66,7 @@ AI_BASE_URL=https://api.moonshot.cn/v1
 AI_MODEL=kimi-k2.6
 ```
 
-也可以在前端“OKX账号绑定”页面录入 OKX API 信息。绑定后数据会写入 `quant_okx_credential`，接口只返回脱敏 API Key，不回显 Secret 和 Passphrase。
+也可以在前端“OKX账号绑定”页面录入 OKX API 信息。绑定后数据会按当前登录用户写入 `quant_okx_credential`，接口只返回脱敏 API Key，不回显 Secret 和 Passphrase。谁开启自动交易，后续定时自动交易执行就使用谁绑定的 OKX API。
 
 ## 启动
 
@@ -101,7 +101,7 @@ http://<this-machine-ip>:5173
 admin / admin123
 ```
 
-生产环境必须设置 `QUANT_AUTH_USERNAME` 和 `QUANT_AUTH_PASSWORD`。
+首次启动会用 `QUANT_AUTH_USERNAME` 和 `QUANT_AUTH_PASSWORD` 初始化管理员账号；初始化后登录校验走数据库用户表 `quant_auth_user`，修改密码不会再依赖环境变量。
 
 ### 手动启动
 
@@ -140,12 +140,13 @@ http://<this-machine-ip>:8080/api/quant
 
 ## 页面入口
 
-- 量化实盘控制台：账户、风控、持仓、机会池和待确认动作总览。
+- 量化实盘控制台：账户、风控、持仓、自动交易收益、机会池和待确认动作总览。
 - OKX合约：查看当前 OKX 持仓和合约行情，生成 AI 计划，提交平仓。
 - 待确认订单：人工复核计划并提交 OKX 实盘。
-- 自动交易记录：查看自动交易成功提交到 OKX 的委托记录。
+- 自动交易记录：查看当前登录用户自动交易成功提交到 OKX 的委托记录。
 - 账户与风控：查看 OKX 账户余额、持仓快照和风控解释。
 - OKX账号绑定：绑定、验证、解绑 OKX API。
+- 账号安全：修改当前账号密码，管理员可创建用户、查看用户列表和启停用户。
 - 系统控制：紧急停止、恢复运行、开启/关闭自动交易。
 
 ## 怎么使用
@@ -153,18 +154,20 @@ http://<this-machine-ip>:8080/api/quant
 ### 首次使用
 
 1. 启动后端和前端，打开 `http://<this-machine-ip>:5173`。
-2. 用默认账号 `admin / admin123` 登录；生产环境先改 `QUANT_AUTH_USERNAME` 和 `QUANT_AUTH_PASSWORD`。
-3. 进入“OKX账号绑定”，填写 `API Key`、`Secret`、`Passphrase`。
-4. 点击“验证接口”，确认 OKX 返回可用余额和账户模式。
-5. 进入“账户与风控”，确认账户余额、持仓、风险状态正常。
-6. 进入“OKX合约”，等待自动刷新或手动触发扫描，查看候选、评分、方向、风险标签和当前持仓。
-7. 想手动下单时，点击生成 AI 计划，计划会进入“待确认订单”。
-8. 进入“待确认订单”，填写本次保证金，复核方向、杠杆、入场价、止损、止盈和风险说明后点击“实盘确认”。
-9. 成交和持仓状态以 OKX 为准；前端“账户与风控”和“OKX合约”用于同步查看。
+2. 用默认账号 `admin / admin123` 登录。
+3. 进入“账号安全”，修改管理员密码；需要多人登录时由管理员创建新用户。
+4. 进入“OKX账号绑定”，填写 `API Key`、`Secret`、`Passphrase`。
+5. 点击“验证接口”，确认当前登录用户绑定的 OKX API 返回可用余额和账户模式。
+6. 进入“账户与风控”，确认账户余额、持仓、风险状态正常。
+7. 进入“OKX合约”，等待自动刷新或手动触发扫描，查看候选、评分、方向、风险标签和当前持仓。
+8. 想手动下单时，点击生成 AI 计划，计划会进入“待确认订单”。
+9. 进入“待确认订单”，填写本次保证金，复核方向、杠杆、入场价、止损、止盈和风险说明后点击“实盘确认”。
+10. 成交和持仓状态以 OKX 为准；前端“账户与风控”和“OKX合约”用于同步查看。
 
 ### 日常使用
 
 - 先看“量化实盘控制台”：确认账户模式不是 `OKX_UNBOUND` 或 `OKX_ERROR`。
+- 控制台顶部会展示自动交易收益概览；当前版本收益为估算口径：已实现收益暂按 0，未实现收益来自 OKX 当前持仓浮盈，完整净收益后续需接成交、手续费和资金费流水。
 - 再看“OKX合约”：优先看高分、`AUTO_TRADE_ALLOWED`、低风险标签、盈亏比足够的候选。
 - 手动交易走“生成 AI 计划 -> 待确认订单 -> 填保证金 -> 实盘确认”。
 - 自动交易前先进入“系统控制”：设置总预算，选择严格风控，确认紧急停止未开启。
@@ -349,7 +352,7 @@ AI 必须返回严格 JSON：
 10. 按总预算、仓位槽位、候选评分、风险上限、账户可用余额计算本单保证金。
 11. 预占预算，生成自动待确认订单。
 12. 调用自动确认，提交 OKX 实盘订单。
-13. 成功提交后记录到“自动交易记录”；跳过和失败主要写后端日志。
+13. 成功提交后按当前自动交易所属用户记录到“自动交易记录”；跳过和失败主要写后端日志。
 
 ### 仓位数量和质量
 
@@ -461,6 +464,15 @@ AI 必须返回严格 JSON：
 ## 常用 API
 
 ```http
+POST /api/quant/auth/login
+POST /api/quant/auth/logout
+GET  /api/quant/auth/session
+GET  /api/quant/auth/users
+POST /api/quant/auth/users
+POST /api/quant/auth/password/change
+POST /api/quant/auth/users/{username}/password
+POST /api/quant/auth/users/{username}/enabled
+
 GET  /api/quant/contract/candidates
 GET  /api/quant/contract/candles?instId=BTC-USDT-SWAP&bar=15m
 POST /api/quant/contract/scan
@@ -486,6 +498,7 @@ POST /api/quant/system/resume
 POST /api/quant/system/auto-trade/enable
 POST /api/quant/system/auto-trade/disable
 GET  /api/quant/auto-trade/records?page=0&size=50
+GET  /api/quant/auto-trade/profit/summary
 ```
 
 ## 测试与构建
@@ -519,3 +532,19 @@ npm run build
 - API 权限需要包含读取和交易，不要开启提现权限。
 - 如果返回 401，优先检查 API 三件套、交易权限和 IP 白名单。
 - 如果账户或持仓为空，先在“OKX账号绑定”页面点击“验证接口”，再检查 OKX 账户模式和资金账户余额。
+
+## 变更日志
+
+### 2026-06-18 - 用户维度 OKX Key 与自动交易收益概览
+
+- 变更摘要：OKX API 绑定改为按当前登录用户隔离，自动交易开启时记录所属用户，定时自动交易会使用该用户绑定的 OKX Key；控制台新增自动交易收益概览卡片，并优化登录页、OKX 绑定页和账号安全页的移动端交互。
+- 影响文件：`src/main/java/com/example/quant/auth/AuthUserContext.java`、`src/main/java/com/example/quant/auth/AuthInterceptor.java`、`src/main/java/com/example/quant/account/*`、`src/main/java/com/example/quant/agent/execution/AutoTradeProfitService.java`、`src/main/java/com/example/quant/agent/execution/AutoTradeRecordEntity.java`、`src/main/java/com/example/quant/controller/AutoTradeRecordController.java`、`src/main/resources/db/migration/V9__user_scoped_okx_credentials.sql`、`src/main/resources/db/migration/V10__user_scoped_auto_trade_records.sql`、`frontend/src/pages/Dashboard.tsx`、`frontend/src/pages/LoginPage.tsx`、`frontend/src/pages/AccountBindingPage.tsx`、`frontend/src/pages/SecurityPage.tsx`、`frontend/src/api/quantApi.ts`、`README.md`
+- 影响：新增 `GET /api/quant/auto-trade/profit/summary`；`quant_okx_credential` 增加用户维度索引；`auto_trade_record` 新增 `user_name` 字段和索引；账号绑定、自动交易记录列表和收益汇总按当前登录用户隔离。收益概览当前为 `ESTIMATED_UNREALIZED_ONLY` 口径，已实现收益暂按 0，未实现收益来自 OKX 当前持仓。
+- 验证：`mvn test` 通过，140 个后端测试 0 失败；`npm run build` 通过，Vite 仅提示 bundle 大小警告。
+
+### 2026-06-18 - 数据库用户登录和账号安全页
+
+- 变更摘要：登录从配置文件明文账号改为数据库用户，默认 `admin/admin123` 仅用于首次初始化，新增 PBKDF2-SHA256 密码哈希、创建用户、改密码和用户启停能力，并优化登录页。
+- 影响文件：`src/main/java/com/example/quant/auth/*`、`src/main/java/com/example/quant/controller/AuthController.java`、`src/main/resources/db/migration/V8__auth_users.sql`、`frontend/src/pages/LoginPage.tsx`、`frontend/src/pages/SecurityPage.tsx`、`frontend/src/api/auth.ts`、`README.md`
+- 影响：新增 `quant_auth_user` 表；`POST /api/quant/auth/login` 仍保持不变；新增 `/api/quant/auth/users`、`/api/quant/auth/password/change`、`/api/quant/auth/users/{username}/password`、`/api/quant/auth/users/{username}/enabled`；`/api/quant/auth/users/**` 需要有效登录 token。
+- 验证：`mvn test` 通过，135 个后端测试 0 失败；`npm run build` 通过，前端产物已生成到 `frontend/dist`。

@@ -397,8 +397,7 @@ public class ContractTradePlanBuilder {
                 com.example.quant.crypto.dto.ContractSignalType.REVERSAL_SHORT
         ).contains(candidate.signalType())
                 || "HIGH".equals(candidate.newsAnalysis().newsRiskLevel())
-                || "CRITICAL".equals(candidate.newsAnalysis().newsRiskLevel())
-                || "UNKNOWN".equals(candidate.newsAnalysis().newsRiskLevel());
+                || "CRITICAL".equals(candidate.newsAnalysis().newsRiskLevel());
     }
 
     private static PlanDraft watchDraft(ContractCandidate candidate) {
@@ -511,7 +510,7 @@ public class ContractTradePlanBuilder {
         payload.put("stopLossPrice", draft.stopLossPrice());
         payload.put("takeProfitPrice", draft.takeProfitPrice());
         payload.put("gateWarnings", gateWarnings);
-        payload.put("scoreWeights", "trend=25, volume=25, liquidity=15, volatility=10, oiFunding=10, marketEnv=8, newsRisk=7");
+        payload.put("scoreWeights", "trend=23, volume=22, liquidity=25, volatility=10, oiFunding=10, marketEnv=5, newsRisk=5");
         return payload;
     }
 
@@ -521,7 +520,7 @@ public class ContractTradePlanBuilder {
                 只分析输入的这一个合约，不要推荐其他合约。
                 必须输出严格JSON，不要Markdown，不要解释。
                 若方向和价格结构可交易，输出OPEN_LONG或OPEN_SHORT；只有明显不可交易才输出WAIT。
-                禁止为WAIT_OVERHEATED、WAIT_OVERSOLD、NEUTRAL、NO_TRADE、新闻HIGH/CRITICAL/UNKNOWN候选输出开仓。
+                禁止为WAIT_OVERHEATED、WAIT_OVERSOLD、NEUTRAL、NO_TRADE、新闻HIGH/CRITICAL候选输出开仓。
                 杠杆leverage必须结合波动率、资金费率、止损距离和清算风险，不得超过系统建议杠杆上限。
                 输出字段：
                 action: OPEN_LONG | OPEN_SHORT | WAIT

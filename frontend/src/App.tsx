@@ -10,6 +10,7 @@ import { ContractCandidateList } from './pages/ContractCandidateList';
 import { Dashboard } from './pages/Dashboard';
 import { LoginPage } from './pages/LoginPage';
 import { PendingOrderList } from './pages/PendingOrderList';
+import { SecurityPage } from './pages/SecurityPage';
 import { SystemControlPage } from './pages/SystemControlPage';
 import { theme } from './theme';
 
@@ -46,6 +47,7 @@ export default function App() {
       <CustomRoutes>
         <Route path="/account-binding" element={<AccountBindingPage />} />
         <Route path="/account-risk" element={<AccountRiskPage />} />
+        <Route path="/security" element={<SecurityPage />} />
         <Route path="/system-control" element={<SystemControlPage />} />
       </CustomRoutes>
     </Admin>

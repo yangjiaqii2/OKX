@@ -78,8 +78,6 @@ public final class ContractTradeGate {
             reasons.add("news_risk_critical");
         } else if ("HIGH".equals(candidate.newsAnalysis().newsRiskLevel())) {
             reasons.add("news_risk_high");
-        } else if ("UNKNOWN".equals(candidate.newsAnalysis().newsRiskLevel())) {
-            reasons.add("news_risk_unknown_wait_confirm_only");
         }
         if (candidate.spreadBps().compareTo(agentProperties.market().maxSpreadBps()) > 0) {
             reasons.add("spread_bps_above_" + agentProperties.market().maxSpreadBps());

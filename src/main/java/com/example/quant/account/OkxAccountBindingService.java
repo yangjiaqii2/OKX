@@ -2,6 +2,7 @@ package com.example.quant.account;
 
 import com.example.quant.account.dto.OkxAccountBindRequest;
 import com.example.quant.account.dto.OkxAccountBindingStatus;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.TradingProperties;
 import java.util.Objects;
 import java.util.Optional;
@@ -31,7 +32,7 @@ public class OkxAccountBindingService {
     public OkxAccountBindingStatus bind(OkxAccountBindRequest request) {
         validate(request);
         String apiKey = request.apiKey().trim();
-        credentialStore.saveActive(new StoredOkxCredential(
+        credentialStore.saveActive(currentUsername(), new StoredOkxCredential(
                 credentialCodec.encode(apiKey),
                 credentialCodec.encode(request.secret().trim()),
                 credentialCodec.encode(request.passphrase().trim()),
@@ -41,18 +42,18 @@ public class OkxAccountBindingService {
     }
 
     public OkxAccountBindingStatus status() {
-        return credentialStore.findActive()
+        return credentialStore.findActive(currentUsername())
                 .map(value -> new OkxAccountBindingStatus(true, value.maskedApiKey(), liveTradingEnabled))
                 .orElseGet(() -> OkxAccountBindingStatus.unbound(liveTradingEnabled));
     }
 
     public OkxAccountBindingStatus unbind() {
-        credentialStore.deleteActive();
+        credentialStore.deleteActive(currentUsername());
         return status();
     }
 
     public Optional<OkxCredentials> credentials() {
-        return credentialStore.findActive()
+        return credentialStore.findActive(currentUsername())
                 .map(value -> new OkxCredentials(
                         credentialCodec.decode(value.encodedApiKey()),
                         credentialCodec.decode(value.encodedSecret()),
@@ -78,6 +79,10 @@ public class OkxAccountBindingService {
             return "****";
         }
         return apiKey.substring(0, 4) + "****" + apiKey.substring(apiKey.length() - 4);
+    }
+
+    private static String currentUsername() {
+        return AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
     }
 
     public record OkxCredentials(String apiKey, String secret, String passphrase) {

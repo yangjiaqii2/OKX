@@ -1,5 +1,7 @@
 package com.example.quant.system;
 
+import com.example.quant.account.OkxCredentialStore;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.TradingProperties;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -24,6 +26,7 @@ public class SystemControlService {
     private volatile AutoTradeRiskMode autoTradeRiskMode = AutoTradeRiskMode.STRICT;
     private volatile int noRiskMinScore = DEFAULT_NO_RISK_MIN_SCORE;
     private volatile int autoTradeMinLeverage = DEFAULT_AUTO_TRADE_MIN_LEVERAGE;
+    private volatile String autoTradeOwnerUsername = OkxCredentialStore.SYSTEM_USER;
     private volatile Instant updatedAt = Instant.now();
 
     public SystemControlService(TradingProperties tradingProperties) {
@@ -32,7 +35,7 @@ public class SystemControlService {
 
     public SystemStatus status() {
         return new SystemStatus(emergencyStop.get(), autoTradeEnabled.get(), autoTradeMarginUsdt,
-                autoTradeRiskMode, noRiskMinScore, autoTradeMinLeverage, updatedAt);
+                autoTradeRiskMode, noRiskMinScore, autoTradeMinLeverage, autoTradeOwnerUsername, updatedAt);
     }
 
     public boolean emergencyStopEnabled() {
@@ -57,6 +60,10 @@ public class SystemControlService {
 
     public int autoTradeMinLeverage() {
         return autoTradeMinLeverage;
+    }
+
+    public String autoTradeOwnerUsername() {
+        return autoTradeOwnerUsername;
     }
 
     public SystemStatus emergencyStop() {
@@ -118,6 +125,7 @@ public class SystemControlService {
             autoTradeMinLeverage = requestedAutoTradeMinLeverage;
         }
         autoTradeRiskMode = riskMode;
+        autoTradeOwnerUsername = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
         autoTradeEnabled.set(true);
         updatedAt = Instant.now();
         log.warn("Auto trade runtime switch enabled by user action, totalBudgetUsdt={}, budgetMode=TARGET_UTILIZATION, riskMode={}, noRiskMinScore={}, minLeverage={}",
@@ -139,6 +147,7 @@ public class SystemControlService {
             AutoTradeRiskMode autoTradeRiskMode,
             int noRiskMinScore,
             int autoTradeMinLeverage,
+            String autoTradeOwnerUsername,
             Instant updatedAt
     ) {
     }

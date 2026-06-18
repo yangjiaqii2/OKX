@@ -29,13 +29,17 @@ public record ContractNewsRiskAnalysis(
     }
 
     public static ContractNewsRiskAnalysis unknown(String reason) {
+        return unknown(reason, 20);
+    }
+
+    public static ContractNewsRiskAnalysis unknown(String reason, int score) {
         return new ContractNewsRiskAnalysis(
-                60,
+                Math.max(0, Math.min(100, score)),
                 "UNKNOWN",
                 List.of("DATA_UNAVAILABLE"),
                 List.of(),
                 List.of(reason),
-                ContractNewsRiskDecision.waitOnly(reason)
+                ContractNewsRiskDecision.allow(reason)
         );
     }
 

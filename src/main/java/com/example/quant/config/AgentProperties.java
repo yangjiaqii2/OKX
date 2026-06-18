@@ -25,6 +25,7 @@ public class AgentProperties {
     private PositionQuality positionQuality = new PositionQuality();
     private Exposure exposure = new Exposure();
     private PreConfirmRefresh preConfirmRefresh = new PreConfirmRefresh();
+    private NewsRisk newsRisk = new NewsRisk();
     private Concurrency concurrency = new Concurrency();
     private Timeout timeout = new Timeout();
     private Idempotency idempotency = new Idempotency();
@@ -161,6 +162,14 @@ public class AgentProperties {
 
     public void setPreConfirmRefresh(PreConfirmRefresh preConfirmRefresh) {
         this.preConfirmRefresh = preConfirmRefresh;
+    }
+
+    public NewsRisk newsRisk() {
+        return newsRisk;
+    }
+
+    public void setNewsRisk(NewsRisk newsRisk) {
+        this.newsRisk = newsRisk == null ? new NewsRisk() : newsRisk;
     }
 
     public Concurrency concurrency() {
@@ -315,7 +324,7 @@ public class AgentProperties {
         private int minTrendScore = 18;
         private int minVolumeScore = 17;
         private int minLiquidityScore = 10;
-        private int minNewsRiskScore = 7;
+        private int minNewsRiskScore = 0;
 
         public int minTotalScore() {
             return minTotalScore;
@@ -1052,6 +1061,18 @@ public class AgentProperties {
 
         public void setRejectIfNewsRiskUpgraded(boolean rejectIfNewsRiskUpgraded) {
             this.rejectIfNewsRiskUpgraded = rejectIfNewsRiskUpgraded;
+        }
+    }
+
+    public static class NewsRisk {
+        private int missingDataScore = 20;
+
+        public int missingDataScore() {
+            return missingDataScore;
+        }
+
+        public void setMissingDataScore(int missingDataScore) {
+            this.missingDataScore = Math.max(0, Math.min(100, missingDataScore));
         }
     }
 

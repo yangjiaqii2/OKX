@@ -82,11 +82,12 @@ public class OkxContractScanner {
                     change24h, range24h, spreadPct));
         }
         return snapshots.stream()
+                .sorted(Comparator.comparing(TickerSnapshot::change24h, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(TickerSnapshot::volume24h, Comparator.nullsLast(Comparator.reverseOrder())))
+                .limit(30)
                 .filter(snapshot -> snapshot.volume24h().compareTo(agentProperties.market().minVolume24hUsdt()) >= 0)
                 .filter(snapshot -> snapshot.range24hPct().signum() == 0
                         || snapshot.range24hPct().compareTo(agentProperties.market().max24hRangePct()) <= 0)
-                .sorted(Comparator.comparing(TickerSnapshot::volume24h, Comparator.nullsLast(Comparator.reverseOrder())))
-                .limit(30)
                 .map(snapshot -> analyzeSnapshot(snapshot, environment))
                 .sorted(Comparator.comparing((ContractCandidate candidate) -> firstPlaceEligible(candidate) ? 1 : 0)
                         .reversed()
@@ -215,7 +216,14 @@ public class OkxContractScanner {
         }
         int depthScore = liquidity.availableDepthUsdt().compareTo(BigDecimal.valueOf(500_000)) >= 0 ? 95
                 : liquidity.availableDepthUsdt().compareTo(agentProperties.market().minDepthUsdt()) >= 0 ? 80 : 25;
-        return Math.max(0, Math.min(100, (int) Math.round(volumeScore * 0.40 + spreadScore * 0.30 + depthScore * 0.30)));
+        int rawScore = Math.max(0, Math.min(100, (int) Math.round(volumeScore * 0.40 + spreadScore * 0.30 + depthScore * 0.30)));
+        if (turnover24h.compareTo(BigDecimal.valueOf(100_000_000L)) < 0) {
+            return Math.min(rawScore, 45);
+        }
+        if (turnover24h.compareTo(BigDecimal.valueOf(500_000_000L)) < 0) {
+            return Math.min(rawScore, 70);
+        }
+        return rawScore;
     }
 
     private ContractKlineSet safeKlines(String instId) {
@@ -266,14 +274,14 @@ public class OkxContractScanner {
 
     private BigDecimal finalRankScore(int adjustedScore, ContractScoreBreakdown scoreBreakdown, ContractSignal signal,
                                       OrderBookLiquiditySnapshot liquidity) {
-        BigDecimal rrScore = signal.riskRewardRatio().compareTo(BigDecimal.valueOf(2)) >= 0 ? BigDecimal.valueOf(100)
-                : signal.riskRewardRatio().multiply(BigDecimal.valueOf(50)).min(BigDecimal.valueOf(100));
-        BigDecimal finalScore = BigDecimal.valueOf(adjustedScore).multiply(new BigDecimal("0.70"))
-                .add(rrScore.multiply(new BigDecimal("0.10")))
-                .add(BigDecimal.valueOf(scoreBreakdown.liquidity()).multiply(new BigDecimal("0.08")))
-                .add(BigDecimal.valueOf(scoreBreakdown.volume()).multiply(new BigDecimal("0.07")))
-                .add(BigDecimal.valueOf(scoreBreakdown.market()).multiply(new BigDecimal("0.05")));
+        BigDecimal finalScore = BigDecimal.valueOf(adjustedScore);
         if (!liquidity.tradable() || !isTradableSignal(signal.signalType())) {
+            finalScore = finalScore.min(BigDecimal.valueOf(60));
+        }
+        if (scoreBreakdown.liquidity() < 50) {
+            finalScore = finalScore.min(BigDecimal.valueOf(55));
+        }
+        if (scoreBreakdown.volume() < 50) {
             finalScore = finalScore.min(BigDecimal.valueOf(60));
         }
         if (signal.signalType() == ContractSignalType.WAIT_OVERHEATED
@@ -287,9 +295,6 @@ public class OkxContractScanner {
                                   OrderBookLiquiditySnapshot liquidity, BigDecimal finalRankScore) {
         if (!liquidity.tradable() || "CRITICAL".equals(newsRisk.newsRiskLevel()) || "HIGH".equals(newsRisk.newsRiskLevel())) {
             return "NO_TRADE";
-        }
-        if ("UNKNOWN".equals(newsRisk.newsRiskLevel()) || "MEDIUM".equals(newsRisk.newsRiskLevel())) {
-            return "WAIT_CONFIRM";
         }
         if (finalRankScore.compareTo(BigDecimal.valueOf(agentProperties.ranking().minFinalRankScore())) < 0) {
             return "WAIT";

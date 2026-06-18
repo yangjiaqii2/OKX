@@ -421,9 +421,6 @@ public class ContractSignalAnalyzer {
                 || signalType == ContractSignalType.NEUTRAL) {
             return "WAIT";
         }
-        if ("UNKNOWN".equals(newsRisk.newsRiskLevel()) || "MEDIUM".equals(newsRisk.newsRiskLevel())) {
-            return "WAIT_CONFIRM";
-        }
         if (score >= 80 && "READY".equals(entryTiming5m)) {
             return "AUTO_TRADE_ALLOWED";
         }

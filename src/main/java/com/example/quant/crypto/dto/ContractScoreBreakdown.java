@@ -21,25 +21,25 @@ public record ContractScoreBreakdown(
 
     public int weightedTotal() {
         return clamp((int) Math.round(
-                trend * 0.25
-                        + volume * 0.25
-                        + liquidity * 0.15
+                trend * 0.23
+                        + volume * 0.22
+                        + liquidity * 0.25
                         + volatility * 0.10
                         + oiFunding * 0.10
-                        + market * 0.08
-                        + newsRisk * 0.07
+                        + market * 0.05
+                        + newsRisk * 0.05
         ));
     }
 
     public ContractFactorScore weightedFactorScore() {
         return new ContractFactorScore(
-                weighted(trend, 25),
-                weighted(volume, 25),
+                weighted(trend, 23),
+                weighted(volume, 22),
                 weighted(volatility, 10),
-                weighted(liquidity, 15),
+                weighted(liquidity, 25),
                 weighted(oiFunding, 10),
-                weighted(market, 8),
-                weighted(newsRisk, 7)
+                weighted(market, 5),
+                weighted(newsRisk, 5)
         );
     }
 

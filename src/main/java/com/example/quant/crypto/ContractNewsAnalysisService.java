@@ -2,6 +2,7 @@ package com.example.quant.crypto;
 
 import com.example.quant.crypto.dto.ContractNewsRiskAnalysis;
 import com.example.quant.crypto.dto.ContractNewsRiskDecision;
+import com.example.quant.config.AgentProperties;
 import com.example.quant.market.MarketType;
 import com.example.quant.news.NewsSearchService;
 import com.example.quant.news.dto.NewsItem;
@@ -13,9 +14,11 @@ import org.springframework.stereotype.Service;
 @Service
 public class ContractNewsAnalysisService {
     private final NewsSearchService newsSearchService;
+    private final AgentProperties agentProperties;
 
-    public ContractNewsAnalysisService(NewsSearchService newsSearchService) {
+    public ContractNewsAnalysisService(NewsSearchService newsSearchService, AgentProperties agentProperties) {
         this.newsSearchService = newsSearchService;
+        this.agentProperties = agentProperties;
     }
 
     public String status() {
@@ -34,11 +37,13 @@ public class ContractNewsAnalysisService {
                     24
             );
             if (items == null || items.isEmpty()) {
-                return ContractNewsRiskAnalysis.unknown("新闻数据源无返回，action最高只能WAIT_CONFIRM");
+                return ContractNewsRiskAnalysis.unknown("新闻数据源无返回，新闻风险按低分处理",
+                        agentProperties.newsRisk().missingDataScore());
             }
             return classify(items);
         } catch (RuntimeException ex) {
-            return ContractNewsRiskAnalysis.unknown("新闻数据源不可用：" + compact(ex.getMessage()));
+            return ContractNewsRiskAnalysis.unknown("新闻数据源不可用：" + compact(ex.getMessage()),
+                    agentProperties.newsRisk().missingDataScore());
         }
     }
 
@@ -91,7 +96,7 @@ public class ContractNewsAnalysisService {
         }
         if (score < 80) {
             return new ContractNewsRiskAnalysis(score, "MEDIUM", eventTypes, positives, negatives,
-                    ContractNewsRiskDecision.waitOnly("新闻或社交事件存在不确定性，降级WAIT_CONFIRM"));
+                    ContractNewsRiskDecision.allow("新闻或社交事件存在不确定性，仅降低新闻分，不直接禁止交易"));
         }
         return new ContractNewsRiskAnalysis(score, "LOW", eventTypes, positives, negatives,
                 ContractNewsRiskDecision.allow("无重大负面新闻风险"));

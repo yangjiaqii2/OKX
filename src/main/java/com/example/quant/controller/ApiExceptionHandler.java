@@ -14,6 +14,12 @@ public class ApiExceptionHandler {
         return Result.fail(ex.getMessage());
     }
 
+    @ExceptionHandler(SecurityException.class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    public Result<Void> handleForbidden(SecurityException ex) {
+        return Result.fail(ex.getMessage());
+    }
+
     @ExceptionHandler(IllegalStateException.class)
     @ResponseStatus(HttpStatus.BAD_GATEWAY)
     public Result<Void> handleUpstreamError(IllegalStateException ex) {

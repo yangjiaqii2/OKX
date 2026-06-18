@@ -111,17 +111,17 @@ class OkxRestClientTest {
 
     private static final class FixedOkxCredentialStore implements OkxCredentialStore {
         @Override
-        public Optional<StoredOkxCredential> findActive() {
+        public Optional<StoredOkxCredential> findActive(String username) {
             return Optional.of(new StoredOkxCredential("key", "secret", "passphrase", "key"));
         }
 
         @Override
-        public void saveActive(StoredOkxCredential credential) {
+        public void saveActive(String username, StoredOkxCredential credential) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public void deleteActive() {
+        public void deleteActive(String username) {
             throw new UnsupportedOperationException();
         }
     }

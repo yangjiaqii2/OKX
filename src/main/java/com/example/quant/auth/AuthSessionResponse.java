@@ -4,9 +4,10 @@ public record AuthSessionResponse(
         boolean authenticated,
         String token,
         String username,
-        long expiresAtEpochMillis
+        long expiresAtEpochMillis,
+        String role
 ) {
     public static AuthSessionResponse unauthenticated() {
-        return new AuthSessionResponse(false, "", "", 0);
+        return new AuthSessionResponse(false, "", "", 0, "");
     }
 }

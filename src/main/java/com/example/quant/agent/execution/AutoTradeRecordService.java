@@ -1,6 +1,8 @@
 package com.example.quant.agent.execution;
 
 import com.example.quant.agent.execution.AutoTradeService.AutoTradeResult;
+import com.example.quant.account.OkxCredentialStore;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.common.PageResult;
 import com.example.quant.crypto.dto.ContractCandidate;
 import jakarta.persistence.criteria.Predicate;
@@ -34,6 +36,7 @@ public class AutoTradeRecordService {
         try {
             AutoTradeRecordEntity entity = new AutoTradeRecordEntity();
             entity.setStatus(result.status());
+            entity.setUserName(currentUsername());
             entity.setTriggerType("SCHEDULER");
             entity.setInstId(result.instId() != null ? result.instId() : candidate == null ? null : candidate.instId());
             entity.setTradePlanId(result.tradePlanId());
@@ -86,6 +89,7 @@ public class AutoTradeRecordService {
             } else {
                 predicates.add(builder.equal(root.get("status"), "EXECUTED"));
             }
+            predicates.add(builder.equal(root.get("userName"), currentUsername()));
             if (hasText(instId)) {
                 predicates.add(builder.like(builder.lower(root.get("instId")), "%" + instId.trim().toLowerCase() + "%"));
             }
@@ -95,5 +99,9 @@ public class AutoTradeRecordService {
 
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private static String currentUsername() {
+        return AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
     }
 }

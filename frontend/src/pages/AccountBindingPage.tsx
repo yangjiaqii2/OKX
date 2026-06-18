@@ -1,18 +1,23 @@
 import LinkOffIcon from '@mui/icons-material/LinkOff';
 import SaveIcon from '@mui/icons-material/Save';
 import VerifiedIcon from '@mui/icons-material/Verified';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import {
   Alert,
   Box,
   Button,
   Card,
   CardContent,
+  IconButton,
+  InputAdornment,
   Stack,
   TextField,
   Typography,
 } from '@mui/material';
 import { FormEvent, useEffect, useState } from 'react';
 import { Confirm, Loading, useNotify } from 'react-admin';
+import { getAuthUser } from '../api/auth';
 import { quantApi } from '../api/quantApi';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { MetricCard } from '../components/MetricCard';
@@ -46,6 +51,8 @@ export function AccountBindingPage() {
   const [verification, setVerification] = useState<VerificationResult | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [unbindOpen, setUnbindOpen] = useState(false);
+  const [showSecrets, setShowSecrets] = useState(false);
+  const username = getAuthUser() || '当前用户';
 
   async function load() {
     setLoading(true);
@@ -118,7 +125,7 @@ export function AccountBindingPage() {
       <Stack spacing={2.5} maxWidth={980}>
         <PageHeader
           title="OKX账号绑定"
-          subtitle="API Key会保存到后端数据库，后端重启后仍可恢复绑定状态。Secret和Passphrase不会回显；绑定后请立即验证接口，确认读取权限和IP白名单正确。"
+          subtitle={`当前绑定对象：${username}。API Key会保存到后端数据库并按登录用户隔离；Secret和Passphrase不会回显。绑定后请立即验证接口，确认读取权限、交易权限和IP白名单正确。`}
           eyebrow="Credential Vault"
           status={<StatusChip value={Boolean(status.bound)} />}
         />
@@ -162,21 +169,34 @@ export function AccountBindingPage() {
               <TextField
                 required
                 label="Secret"
-                type="password"
+                type={showSecrets ? 'text' : 'password'}
                 value={form.secret}
                 autoComplete="new-password"
                 onChange={(event) => setForm((current) => ({ ...current, secret: event.target.value }))}
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        aria-label={showSecrets ? '隐藏密钥' : '显示密钥'}
+                        edge="end"
+                        onClick={() => setShowSecrets((value) => !value)}
+                      >
+                        {showSecrets ? <VisibilityOffIcon /> : <VisibilityIcon />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                }}
               />
               <TextField
                 required
                 label="Passphrase"
-                type="password"
+                type={showSecrets ? 'text' : 'password'}
                 value={form.passphrase}
                 autoComplete="new-password"
                 onChange={(event) => setForm((current) => ({ ...current, passphrase: event.target.value }))}
               />
               <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
-                <Button type="submit" variant="contained" startIcon={<SaveIcon />} disabled={submitting}>
+                <Button type="submit" variant="contained" startIcon={<SaveIcon />} disabled={submitting} sx={{ width: { xs: '100%', sm: 'auto' } }}>
                   绑定账号
                 </Button>
                 <Button
@@ -185,6 +205,7 @@ export function AccountBindingPage() {
                   startIcon={<VerifiedIcon />}
                   disabled={submitting || !status.bound}
                   onClick={() => void verify()}
+                  sx={{ width: { xs: '100%', sm: 'auto' } }}
                 >
                   验证接口
                 </Button>
@@ -195,6 +216,7 @@ export function AccountBindingPage() {
                   startIcon={<LinkOffIcon />}
                   disabled={submitting || !status.bound}
                   onClick={() => setUnbindOpen(true)}
+                  sx={{ width: { xs: '100%', sm: 'auto' } }}
                 >
                   解绑
                 </Button>

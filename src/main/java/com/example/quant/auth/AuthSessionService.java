@@ -7,37 +7,41 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AuthSessionService {
+    private final AuthUserService authUserService;
     private final AuthProperties authProperties;
     private final Clock clock;
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
 
     @Autowired
-    public AuthSessionService(AuthProperties authProperties) {
-        this(authProperties, Clock.systemUTC());
+    public AuthSessionService(AuthUserService authUserService, AuthProperties authProperties) {
+        this(authUserService, authProperties, Clock.systemUTC());
     }
 
-    AuthSessionService(AuthProperties authProperties, Clock clock) {
+    AuthSessionService(AuthUserService authUserService, AuthProperties authProperties, Clock clock) {
+        this.authUserService = authUserService;
         this.authProperties = authProperties;
         this.clock = clock;
     }
 
     public AuthSessionResponse login(AuthLoginRequest request) {
-        if (request == null || !authProperties.effectiveUsername().equals(trim(request.username()))
-                || !authProperties.effectivePassword().equals(request.password())) {
+        if (request == null) {
             throw new IllegalArgumentException("用户名或密码错误");
         }
+        AuthUserEntity user = authUserService.authenticate(request.username(), request.password())
+                .orElseThrow(() -> new IllegalArgumentException("用户名或密码错误"));
         cleanupExpired();
         String token = newToken();
         Instant expiresAt = clock.instant().plusSeconds(authProperties.effectiveSessionTtlMinutes() * 60L);
-        sessions.put(token, new Session(authProperties.effectiveUsername(), expiresAt));
-        return new AuthSessionResponse(true, token, authProperties.effectiveUsername(), expiresAt.toEpochMilli());
+        sessions.put(token, new Session(user.getUsername(), user.getRole(), expiresAt));
+        return new AuthSessionResponse(true, token, user.getUsername(), expiresAt.toEpochMilli(), user.getRole().name());
     }
 
     public AuthSessionResponse session(String token) {
@@ -45,11 +49,16 @@ public class AuthSessionService {
         if (session == null) {
             return AuthSessionResponse.unauthenticated();
         }
-        return new AuthSessionResponse(true, token, session.username(), session.expiresAt().toEpochMilli());
+        return new AuthSessionResponse(true, token, session.username(), session.expiresAt().toEpochMilli(), session.role().name());
     }
 
     public boolean isAuthenticated(String token) {
         return validSession(token) != null;
+    }
+
+    public Optional<String> currentUsername(String token) {
+        Session session = validSession(token);
+        return session == null ? Optional.empty() : Optional.of(session.username());
     }
 
     public void logout(String token) {
@@ -89,10 +98,6 @@ public class AuthSessionService {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
-    private static String trim(String value) {
-        return value == null ? "" : value.trim();
-    }
-
-    private record Session(String username, Instant expiresAt) {
+    private record Session(String username, AuthRole role, Instant expiresAt) {
     }
 }

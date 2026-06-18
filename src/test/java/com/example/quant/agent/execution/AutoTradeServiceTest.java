@@ -302,6 +302,61 @@ class AutoTradeServiceTest {
     }
 
     @Test
+    void noRiskModeStillBlocksCriticalNewsRisk() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20), AutoTradeRiskMode.NO_RISK, 70);
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new NoRiskCandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidateWithNewsRisk(
+                candidate("DELIST-USDT-SWAP", 85, RiskLevel.LOW, DirectionBias.BEARISH, DirectionBias.BEARISH,
+                        BigDecimal.TEN, BigDecimal.ONE),
+                ContractNewsRiskAnalysis.critical("退市/暂停交易重大新闻")
+        )));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("news_risk_critical");
+        assertThat(confirmService.confirmCount).isZero();
+    }
+
+    @Test
+    void strictModeDoesNotBlockUnknownNewsRiskWhenScoreIsQualified() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidateWithNewsRisk(
+                candidate("PENGU-USDT-SWAP", 95, RiskLevel.LOW, DirectionBias.BULLISH, DirectionBias.BULLISH,
+                        BigDecimal.valueOf(2), BigDecimal.ONE),
+                ContractNewsRiskAnalysis.unknown("新闻源不可用", 20)
+        )));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+    }
+
+    @Test
     void noRiskModeUsesDisplayedScoreInsteadOfFinalRankScoreForMinimumGateAndBudget() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());

@@ -6,6 +6,7 @@ import java.time.Instant;
 public record AutoTradeRecordView(
         Long id,
         String status,
+        String userName,
         String triggerType,
         String instId,
         String tradePlanId,
@@ -32,6 +33,7 @@ public record AutoTradeRecordView(
         return new AutoTradeRecordView(
                 entity.getId(),
                 entity.getStatus(),
+                entity.getUserName(),
                 entity.getTriggerType(),
                 entity.getInstId(),
                 entity.getTradePlanId(),

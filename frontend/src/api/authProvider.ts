@@ -1,5 +1,5 @@
 import type { AuthProvider } from 'react-admin';
-import { clearAuthSession, getAuthToken, getAuthUser, setAuthSession, type AuthSession } from './auth';
+import { clearAuthSession, getAuthRole, getAuthToken, getAuthUser, setAuthSession, type AuthSession } from './auth';
 import { apiBaseUrl } from './http';
 
 async function authFetch(path: string, options: RequestInit = {}) {
@@ -16,7 +16,16 @@ async function authFetch(path: string, options: RequestInit = {}) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `HTTP ${response.status}`);
+    let message = text || `HTTP ${response.status}`;
+    try {
+      const payload = JSON.parse(text);
+      if (payload && typeof payload === 'object' && 'message' in payload) {
+        message = String(payload.message);
+      }
+    } catch {
+      // Keep the original response text.
+    }
+    throw new Error(message);
   }
   return (await response.json()) as AuthSession;
 }
@@ -79,6 +88,6 @@ export const authProvider: AuthProvider = {
   },
 
   async getPermissions() {
-    return [];
+    return getAuthRole();
   },
 };

@@ -13,12 +13,14 @@ import { formatLeverage, formatNumber, formatPercent, formatPrice, formatStatus,
 type DashboardState = {
   risk?: Record<string, unknown>;
   account?: Record<string, unknown>;
+  profit?: Record<string, unknown>;
   contracts: unknown[];
   orders: unknown[];
   positions: Record<string, unknown>[];
   positionsError?: string;
   contractsError?: string;
   ordersError?: string;
+  profitError?: string;
 };
 
 export function Dashboard() {
@@ -33,9 +35,10 @@ export function Dashboard() {
   async function load() {
     setLoading(true);
     try {
-      const [riskResult, accountResult, contractResult, orderResult] = await Promise.allSettled([
+      const [riskResult, accountResult, profitResult, contractResult, orderResult] = await Promise.allSettled([
         quantApi.riskStatus(),
         quantApi.accountSummary(),
+        quantApi.autoTradeProfitSummary(),
         quantApi.contractCandidates(),
         quantApi.pendingOrders(),
       ]);
@@ -53,15 +56,20 @@ export function Dashboard() {
       const ordersError = orderResult.status === 'rejected'
         ? (orderResult.reason instanceof Error ? orderResult.reason.message : '待确认订单加载失败')
         : '';
+      const profitError = profitResult.status === 'rejected'
+        ? (profitResult.reason instanceof Error ? profitResult.reason.message : '自动交易收益加载失败')
+        : '';
       setState({
         risk: riskResult.status === 'fulfilled' ? riskResult.value as Record<string, unknown> : {},
         account: accountResult.status === 'fulfilled' ? accountResult.value as Record<string, unknown> : {},
+        profit: profitResult.status === 'fulfilled' ? profitResult.value as Record<string, unknown> : {},
         contracts: contractResult.status === 'fulfilled' && Array.isArray(contractResult.value) ? contractResult.value : [],
         orders: orderResult.status === 'fulfilled' && Array.isArray(orderResult.value) ? orderResult.value : [],
         positions,
         positionsError,
         contractsError,
         ordersError,
+        profitError,
       });
       if (riskResult.status === 'rejected' || accountResult.status === 'rejected') {
         notify('核心账户或风控数据加载失败，请检查后端服务。', { type: 'warning' });
@@ -112,6 +120,50 @@ export function Dashboard() {
         )}
         {state.contractsError ? <Alert severity="warning">OKX合约机会池暂不可用：{state.contractsError}</Alert> : null}
         {state.ordersError ? <Alert severity="warning">待确认订单暂不可用：{state.ordersError}</Alert> : null}
+        {state.profitError ? <Alert severity="warning">自动交易收益暂不可用：{state.profitError}</Alert> : null}
+
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(5, minmax(0, 1fr))' },
+            gap: 2,
+          }}
+        >
+          <TradeMetricCard
+            label="自动交易总收益"
+            value={formatUSDT(state.profit?.totalNetPnlUsdt)}
+            helper={String(state.profit?.dataQuality ?? 'ESTIMATED')}
+            accent={Number(state.profit?.totalNetPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
+          />
+          <TradeMetricCard
+            label="今日已用预算"
+            value={formatUSDT(state.profit?.todaySubmittedMarginUsdt)}
+            helper="按 Asia/Shanghai 统计"
+            accent="info"
+          />
+          <TradeMetricCard
+            label="当前浮动盈亏"
+            value={formatUSDT(state.profit?.unrealizedPnlUsdt)}
+            helper={`${Number(state.profit?.openPositionCount ?? 0)} 个自动交易持仓`}
+            accent={Number(state.profit?.unrealizedPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
+          />
+          <TradeMetricCard
+            label="预算收益率"
+            value={formatPercent(state.profit?.budgetRoiPct)}
+            helper={`总预算 ${formatUSDT(state.profit?.totalBudgetUsdt)}`}
+          />
+          <TradeMetricCard
+            label="自动交易已提交"
+            value={formatUSDT(state.profit?.submittedMarginUsdt)}
+            helper={`记录 ${formatNumber(state.profit?.executedOrderCount, 0)} 笔`}
+          />
+        </Box>
+
+        {state.profit?.message ? (
+          <Alert severity="info">
+            {String(state.profit.message)}
+          </Alert>
+        ) : null}
 
         <Box
           sx={{

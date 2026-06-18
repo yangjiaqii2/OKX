@@ -90,6 +90,26 @@ class ContractTradePlanBuilderTest {
         assertThat(plan.reasonList()).anyMatch(reason -> reason.contains("无风控模式"));
     }
 
+    @Test
+    void unknownNewsRiskDoesNotForceWatchPlan() {
+        ContractTradePlanBuilder builder = new ContractTradePlanBuilder(
+                null,
+                new LimitOrderAiAnalysisService(),
+                new FixedAccountSnapshotService(),
+                new PositionSizingService(),
+                new LeverageDecisionService(),
+                passingRiskService(),
+                new AgentProperties(),
+                new NoopTradePlanRecordService()
+        );
+
+        TradePlan plan = builder.buildPlan(candidateWithNews(autoTradeCandidate(),
+                ContractNewsRiskAnalysis.unknown("新闻源无返回", 20)));
+
+        assertThat(plan.action()).isEqualTo(TradePlanType.OPEN_LONG);
+        assertThat(plan.orderType()).isEqualTo("MARKET");
+    }
+
     private static RiskService passingRiskService() {
         return request -> new RiskCheckResult(
                 true,
@@ -202,6 +222,52 @@ class ContractTradePlanBuilderTest {
                 new ContractScoreBreakdown(70, 70, 70, 70, 70, 70, 70),
                 base.klineAnalysis(),
                 base.newsAnalysis()
+        );
+    }
+
+    private static ContractCandidate candidateWithNews(ContractCandidate base, ContractNewsRiskAnalysis newsRisk) {
+        return new ContractCandidate(
+                base.marketType(),
+                base.instId(),
+                base.baseCurrency(),
+                base.quoteCurrency(),
+                base.lastPrice(),
+                base.changePercent24h(),
+                base.changePercent5m(),
+                base.volume24h(),
+                base.volumeSpikeRatio(),
+                base.fundingRate(),
+                base.openInterest(),
+                base.openInterestChange(),
+                base.trendDirection(),
+                base.volatility(),
+                base.score(),
+                base.factorScore(),
+                base.entryPrice(),
+                base.stopLossPrice(),
+                base.takeProfitPrice(),
+                base.suggestedLeverage(),
+                base.riskRewardRatio(),
+                base.spreadBps(),
+                base.bidDepthUsdt(),
+                base.askDepthUsdt(),
+                base.estimatedSlippageBps(),
+                base.btcTrend(),
+                base.ethTrend(),
+                base.marketRiskLevel(),
+                base.candidateReasonList(),
+                base.riskTagList(),
+                base.createdAt(),
+                base.signalType(),
+                base.action(),
+                base.entryType(),
+                base.todayChangePct(),
+                base.atrPct20m(),
+                base.stopLossPct(),
+                base.finalRankScore(),
+                base.scoreBreakdown(),
+                base.klineAnalysis(),
+                newsRisk
         );
     }
 
