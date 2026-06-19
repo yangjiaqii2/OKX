@@ -79,37 +79,31 @@ public class OkxTradeAdapter {
             log.info("OKX trade order accepted instId={} ordId={} clOrdId={}", order.instId(), orderId, payload.get("clOrdId"));
             recordSubmitted(order, entryRecord.withOkxOrdId(orderId));
             if (!"market".equalsIgnoreCase(order.orderType())) {
-                return new OrderExecutionResult(true, true, orderId,
-                        "入场委托已提交，等待成交",
-                        true, false, false, false);
+                return OrderExecutionResult.submitted(orderId, "入场委托已提交，等待成交");
             }
             ProtectionPlanResult protectionPlan = protectionPlan(order, rules, positionMode, orderId, new BigDecimal(payload.get("sz")));
             if (!protectionPlan.valid()) {
                 String reason = protectionPlan.failureReason();
                 if ("ENTRY_FILL_NOT_CONFIRMED".equals(reason)) {
-                    return new OrderExecutionResult(true, true, orderId,
+                    return OrderExecutionResult.submitted(orderId,
                             "ENTRY_FILL_UNCONFIRMED: OKX委托已提交，订单号 " + orderId
-                                    + "，但成交数量未确认，等待生命周期恢复查询。",
-                            true, false, false, false);
+                                    + "，但成交数量未确认，等待生命周期恢复查询。");
                 }
                 log.error("OKX protection plan invalid instId={} ordId={} reason={}", order.instId(), orderId, reason);
                 if ("CLOSE_POSITION".equalsIgnoreCase(agentProperties.protection().protectionFailAction())) {
                     closePosition(order.instId(), order.posSide(), order.tdMode());
-                    return new OrderExecutionResult(true, true, orderId,
-                            "OKX委托已成交，订单号 " + orderId + "；保护单未提交：" + reason + "，已请求平仓保护。",
-                            true, true, false, false);
+                    return OrderExecutionResult.filled(orderId,
+                            "OKX委托已成交，订单号 " + orderId + "；保护单未提交：" + reason + "，已请求平仓保护。");
                 }
-                return new OrderExecutionResult(true, true, orderId,
-                        "OKX委托已成交，订单号 " + orderId + "；保护单未提交：" + reason + "，需要人工处理。",
-                        true, true, false, false);
+                return OrderExecutionResult.filled(orderId,
+                        "OKX委托已成交，订单号 " + orderId + "；保护单未提交：" + reason + "，需要人工处理。");
             }
             ProtectionSubmitResult protection = placeProtectionOrders(order, protectionPlan.payloads());
-            return new OrderExecutionResult(true, true, orderId,
+            return OrderExecutionResult.filled(orderId,
                     protection.submitted() > 0 || protection.failed() > 0
                             ? "OKX委托已成交，订单号 " + orderId + "；保护单已提交 " + protection.submitted()
                             + " 个，失败 " + protection.failed() + " 个。"
-                            : "OKX委托已成交，订单号 " + orderId + "，未生成保护单，请人工确认。",
-                    true, true, false, false);
+                            : "OKX委托已成交，订单号 " + orderId + "，未生成保护单，请人工确认。");
         } catch (RuntimeException ex) {
             if (isTimeout(ex)) {
                 OrderExecutionResult recovered = recoverTimedOutSubmit(order, payload, entryRecord, ex);
@@ -131,13 +125,15 @@ public class OkxTradeAdapter {
         JsonNode item = firstDataItem(response);
         if (item == null) {
             return new OrderExecutionResult(false, true, null,
-                    "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId());
+                    "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId(),
+                    false, false, false, false);
         }
         String ordId = item.path("ordId").asText("");
         String state = item.path("state").asText("");
         if (ordId.isBlank()) {
             return new OrderExecutionResult(false, true, null,
-                    "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId());
+                    "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId(),
+                    false, false, false, false);
         }
         BigDecimal filledSize = decimal(item, "accFillSz");
         boolean filled = filledSize.signum() > 0 && "filled".equalsIgnoreCase(state);
@@ -195,7 +191,7 @@ public class OkxTradeAdapter {
                 payload.get("instId"), payload.getOrDefault("posSide", ""), positionMode, payload.get("mgnMode"));
         JsonNode response = okxOrderGateway.closePosition(payload);
         String closeId = closePositionId(response, instId, payload.getOrDefault("posSide", ""));
-        return new OrderExecutionResult(true, true, closeId,
+        return OrderExecutionResult.submitted(closeId,
                 "OKX一键平仓请求已提交：" + instId + " " + payload.getOrDefault("posSide", "net")
                         + "。请在OKX当前委托/持仓确认最终成交。");
     }

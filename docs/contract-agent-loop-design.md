@@ -1054,6 +1054,13 @@ quant:
 
 ## Change Log
 
+### 2026-06-19 - 自动交易恢复测试与执行结果桩语义修正
+
+- 变更摘要：修复恢复任务过期预算测试的非确定性构造，并收紧 `OrderExecutionResult` 测试桩，避免 4 参数构造把“已提交”误当成“已成交”。
+- 影响文件：`src/main/java/com/example/quant/order/OrderExecutionResult.java`、`src/main/java/com/example/quant/order/OrderConfirmService.java`、`src/main/java/com/example/quant/order/OrderExecutionService.java`、`src/main/java/com/example/quant/okxtrade/OkxTradeAdapter.java`、`src/test/java/com/example/quant/task/AutoTradeRecoveryTaskTest.java`、`src/test/java/com/example/quant/agent/execution/AutoTradeServiceTest.java`。
+- 影响：`OrderExecutionResult` 新增 `submitted/filled/partiallyFilled/rejected/unknown` 工厂方法，4 参数构造标记为兼容旧路径；恢复测试使用固定过去时间构造真实过期的 `BUDGET_RESERVED` 订单；自动交易测试中已成交桩改为显式 `filled`，待成交桩改为显式 `submitted`，拒绝桩改为显式 `rejected`。
+- 验证：定向测试 `mvn -Dtest=AutoTradeRecoveryTaskTest#marksExpiredReservedPendingOrderAndReleasesBudget test` 通过，1 个测试 0 失败；`mvn -Dtest=AutoTradeServiceTest,AutoTradeRecoveryTaskTest,OrderConfirmServiceTest test` 通过，54 个测试 0 失败；`mvn test` 通过，196 个测试 0 失败。
+
 ### 2026-06-19 - 编译修复与 LIMIT 入场状态语义收敛
 
 - 变更摘要：全项目 Java/TS/TSX 乱码与缺失引号扫描未发现当前编译失败点；后端测试和前端 build 均可通过。本次不新增复杂功能，集中把入场“提交成功”和“真实成交”拆开。

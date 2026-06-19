@@ -550,8 +550,8 @@ class AutoTradeServiceTest {
     @Test
     void continuesToSecondCandidateWhenFirstFailsWithFallbackAllowedReason() {
         SequencedOrderConfirmService confirmService = new SequencedOrderConfirmService(List.of(
-                new OrderExecutionResult(false, false, null, "实时订单簿流动性不足：spread_bps_above_8"),
-                new OrderExecutionResult(true, true, "okx-order-2", "submitted")
+                OrderExecutionResult.rejected("实时订单簿流动性不足：spread_bps_above_8"),
+                OrderExecutionResult.filled("okx-order-2", "入场已成交")
         ));
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
@@ -776,8 +776,8 @@ class AutoTradeServiceTest {
     @Test
     void doesNotRetrySameSymbolInOneFallbackRound() {
         SequencedOrderConfirmService confirmService = new SequencedOrderConfirmService(List.of(
-                new OrderExecutionResult(false, false, null, "实时订单簿流动性不足：spread_bps_above_8"),
-                new OrderExecutionResult(true, true, "okx-order-2", "submitted")
+                OrderExecutionResult.rejected("实时订单簿流动性不足：spread_bps_above_8"),
+                OrderExecutionResult.filled("okx-order-2", "入场已成交")
         ));
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
@@ -1177,7 +1177,7 @@ class AutoTradeServiceTest {
             this.capturedMargin = marginAmount;
             this.confirmCount++;
             this.capturedMargins.add(marginAmount);
-            return new OrderExecutionResult(true, true, "okx-order-1", "submitted");
+            return OrderExecutionResult.filled("okx-order-1", "入场已成交");
         }
     }
 
@@ -1214,7 +1214,7 @@ class AutoTradeServiceTest {
             this.confirmCount++;
             this.capturedMargins.add(marginAmount);
             if (results.isEmpty()) {
-                return new OrderExecutionResult(false, false, null, "no_result_configured");
+                return OrderExecutionResult.rejected("no_result_configured");
             }
             return results.remove(0);
         }
@@ -1235,7 +1235,7 @@ class AutoTradeServiceTest {
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
             }
-            return new OrderExecutionResult(true, true, "okx-order-1", "submitted");
+            return OrderExecutionResult.filled("okx-order-1", "入场已成交");
         }
     }
 
@@ -1255,8 +1255,7 @@ class AutoTradeServiceTest {
             this.capturedMargin = marginAmount;
             this.confirmCount++;
             this.capturedMargins.add(marginAmount);
-            return new OrderExecutionResult(true, true, "okx-order-1", "入场委托已提交，等待成交",
-                    true, false, false, false);
+            return OrderExecutionResult.submitted("okx-order-1", "入场委托已提交，等待成交");
         }
     }
 

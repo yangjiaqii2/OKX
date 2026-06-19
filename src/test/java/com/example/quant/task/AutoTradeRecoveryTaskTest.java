@@ -28,7 +28,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -288,7 +290,11 @@ class AutoTradeRecoveryTaskTest {
     void marksExpiredReservedPendingOrderAndReleasesBudget() {
         AgentProperties properties = new AgentProperties();
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
-        PendingOrderService pendingOrderService = new PendingOrderService(0);
+        Instant createdAt = Instant.parse("2020-01-01T00:00:00Z");
+        PendingOrderService pendingOrderService = new PendingOrderService(
+                1,
+                Clock.fixed(createdAt, ZoneOffset.UTC)
+        );
         BudgetAllocation allocation = budgetService.allocate(request());
         UUID pendingOrderId = UUID.randomUUID();
         BudgetReservation reservation = budgetService.reserveBudget(
@@ -307,6 +313,13 @@ class AutoTradeRecoveryTaskTest {
                 allocation,
                 "AUTO_plan_pending_expired"
         );
+
+        assertThat(order.status()).isEqualTo(OrderStatus.BUDGET_RESERVED);
+        assertThat(order.isExpired(Instant.parse("2020-01-01T00:00:02Z"))).isTrue();
+        assertThat(budgetService.reservation(reservation.reservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.RESERVED);
 
         AutoTradeRecoveryTask task = new AutoTradeRecoveryTask(pendingOrderService, budgetService, properties);
         AutoTradeRecoveryTask.RecoveryResult result = task.runOnce();
@@ -448,7 +461,7 @@ class AutoTradeRecoveryTaskTest {
         @Override
         public OrderExecutionResult recoverUnknownSubmitStatus(PendingOrder order) {
             username = currentUsername();
-            return new OrderExecutionResult(true, true, "owner-okx-order", "recovered");
+            return OrderExecutionResult.filled("owner-okx-order", "recovered filled order");
         }
     }
 

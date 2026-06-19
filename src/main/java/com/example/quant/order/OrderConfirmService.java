@@ -113,19 +113,19 @@ public class OrderConfirmService {
         if (!confirmable(order, autoFixedMargin)) {
             log.warn("Confirm order rejected id={} instId={} reason=status_not_allowed status={}",
                     order.id(), order.instId(), order.status());
-            return new OrderExecutionResult(false, false, null, "订单状态不允许确认");
+            return OrderExecutionResult.rejected("订单状态不允许确认");
         }
         if (order.isExpired(now)) {
             order.markExpired();
             log.warn("Confirm order rejected id={} instId={} reason=expired expireAt={} now={}",
                     order.id(), order.instId(), order.expireAt(), now);
             releaseBudget(order, "ORDER_EXPIRED");
-            return new OrderExecutionResult(false, false, null, "待确认订单已过期");
+            return OrderExecutionResult.rejected("待确认订单已过期");
         }
         if (!order.transitionFromAny(OrderStatus.CONFIRMING, OrderStatus.PENDING_CONFIRM, OrderStatus.BUDGET_RESERVED)) {
             log.warn("Confirm order rejected id={} instId={} reason=confirming_or_submitted status={}",
                     order.id(), order.instId(), order.status());
-            return new OrderExecutionResult(false, false, null, "订单状态不允许重复确认");
+            return OrderExecutionResult.rejected("订单状态不允许重复确认");
         }
         BigDecimal effectiveMargin = autoFixedMargin && order.marginAmount() != null && order.marginAmount().signum() > 0
                 ? order.marginAmount()
@@ -136,7 +136,7 @@ public class OrderConfirmService {
             order.markRejected("自动交易预算未处于RESERVED状态");
             log.warn("Confirm order rejected id={} instId={} reason=budget_not_reserved reservationId={}",
                     order.id(), order.instId(), order.budgetReservationId());
-            return new OrderExecutionResult(false, false, null, "自动交易预算未预占用或已释放");
+            return OrderExecutionResult.rejected("自动交易预算未预占用或已释放");
         }
         try {
             order.applyMarginAmount(effectiveMargin);
@@ -144,7 +144,7 @@ public class OrderConfirmService {
         } catch (IllegalArgumentException ex) {
             log.warn("Confirm order rejected id={} instId={} reason={}", order.id(), order.instId(), ex.getMessage());
             releaseBudget(order, "MARGIN_INVALID");
-            return new OrderExecutionResult(false, false, null, ex.getMessage());
+            return OrderExecutionResult.rejected(ex.getMessage());
         }
         boolean noRiskAutoMode = noRiskAutoMode(autoFixedMargin);
         if (noRiskAutoMode && systemControlService != null && systemControlService.emergencyStopEnabled()) {
@@ -152,7 +152,7 @@ public class OrderConfirmService {
             order.markRejected(reason);
             releaseBudget(order, "EMERGENCY_STOP");
             log.warn("Confirm order rejected id={} instId={} reason=emergency_stop_no_risk_auto", order.id(), order.instId());
-            return new OrderExecutionResult(false, false, null, reason);
+            return OrderExecutionResult.rejected(reason);
         }
         OrderBookLiquiditySnapshot liquidity = currentLiquidity(order);
         String liquidityDenyReason = hardLiquidityDenyReason(liquidity);
@@ -162,7 +162,7 @@ public class OrderConfirmService {
             log.warn("Confirm order rejected by live liquidity id={} instId={} spreadBps={} bidDepth={} askDepth={} reason={}",
                     order.id(), order.instId(), liquidity.spreadBps(), liquidity.bidDepthUsdt(),
                     liquidity.askDepthUsdt(), liquidityDenyReason);
-            return new OrderExecutionResult(false, false, null, reason);
+            return OrderExecutionResult.rejected(reason);
         }
         if (noRiskAutoMode) {
             log.warn("No-risk auto confirmation bypassed live liquidity and rule risk checks id={} instId={} spreadBps={}",
@@ -185,7 +185,7 @@ public class OrderConfirmService {
                 rejectBeforeSubmit(order, risk.rejectReason(), autoFixedMargin, "RISK_REJECTED");
                 log.warn("Confirm order rejected by risk id={} instId={} reason={} riskLevel={}",
                         order.id(), order.instId(), risk.rejectReason(), risk.riskLevel());
-                return new OrderExecutionResult(false, false, null, risk.rejectReason());
+                return OrderExecutionResult.rejected(risk.rejectReason());
             }
         }
         order.markConfirmed(now);
