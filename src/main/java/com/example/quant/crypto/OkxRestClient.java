@@ -78,6 +78,14 @@ public class OkxRestClient {
     }
 
     public JsonNode privatePost(String requestPath, Map<String, String> payload) {
+        return privatePostJson(requestPath, payload);
+    }
+
+    public JsonNode privatePost(String requestPath, Object payload) {
+        return privatePostJson(requestPath, payload);
+    }
+
+    private JsonNode privatePostJson(String requestPath, Object payload) {
         OkxAccountBindingService.OkxCredentials credentials = credentials()
                 .orElseThrow(() -> new IllegalStateException("OKX account is not bound"));
         try {

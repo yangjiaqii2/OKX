@@ -108,7 +108,7 @@ export function SystemControlPage() {
     }
     const score = Number(noRiskMinScore);
     if (autoTradeRiskMode === 'NO_RISK' && (!Number.isInteger(score) || score < 60 || score > 100)) {
-      notify('无风控最低自动交易分数必须是60到100之间的整数', { type: 'warning' });
+      notify('放宽策略模式最低自动交易分数必须是60到100之间的整数', { type: 'warning' });
       return;
     }
     const minLeverage = Number(autoTradeMinLeverage);
@@ -183,7 +183,7 @@ export function SystemControlPage() {
                   <Chip
                     size="small"
                     color={status.autoTradeRiskMode === 'NO_RISK' ? 'error' : 'success'}
-                    label={status.autoTradeRiskMode === 'NO_RISK' ? '无风控' : '严格风控'}
+                    label={status.autoTradeRiskMode === 'NO_RISK' ? '放宽策略门槛' : '严格风控'}
                   />
                   {status.autoTradeRiskMode === 'NO_RISK' ? (
                     <Chip
@@ -240,12 +240,12 @@ export function SystemControlPage() {
                   }}
                 >
                   <ToggleButton value="STRICT">严格风控</ToggleButton>
-                  <ToggleButton value="NO_RISK" color="error">无风控</ToggleButton>
+                  <ToggleButton value="NO_RISK" color="error">放宽策略</ToggleButton>
                 </ToggleButtonGroup>
                 {autoTradeRiskMode === 'NO_RISK' ? (
                   <TextField
                     size="small"
-                    label="无风控最低分"
+                    label="放宽模式最低分"
                     value={noRiskMinScore}
                     onChange={(event) => setNoRiskMinScore(event.target.value.replace(/[^\d]/g, '').slice(0, 3))}
                     disabled={submitting || Boolean(status.autoTradeEnabled)}
@@ -306,7 +306,7 @@ export function SystemControlPage() {
         <Confirm
           isOpen={autoEnableOpen}
           title="开启自动交易"
-          content={`确认后，${autoTradeMarginUsdt || '--'} USDT 会作为自动交易总预算。当前模式为 ${autoTradeRiskMode === 'NO_RISK' ? `无风控：${noRiskMinScore || '--'}分以上可忽略AUTO_TRADE_ALLOWED直接尝试交易` : '严格风控：保持当前AUTO_TRADE_ALLOWED门槛'}。最低杠杆为 ${autoTradeMinLeverage || '--'}x，AI计划低于该倍数时会提升到该倍数。`}
+          content={`确认后，${autoTradeMarginUsdt || '--'} USDT 会作为自动交易总预算。当前模式为 ${autoTradeRiskMode === 'NO_RISK' ? `放宽策略门槛：${noRiskMinScore || '--'}分以上可放宽AUTO_TRADE_ALLOWED和部分策略等待，但仍保留OKX Key、余额、最小下单、重复开仓、重大恶性新闻和交易所错误等硬门槛` : '严格风控：保持当前AUTO_TRADE_ALLOWED门槛'}。最低杠杆为 ${autoTradeMinLeverage || '--'}x，AI计划低于该倍数时会提升到该倍数。`}
           confirm="开启"
           cancel="返回"
           onConfirm={() => void enableAutoTrade()}

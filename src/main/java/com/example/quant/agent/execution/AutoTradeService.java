@@ -16,6 +16,7 @@ import com.example.quant.market.MarketType;
 import com.example.quant.order.OrderExecutionResult;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
+import com.example.quant.okxtrade.OkxCurrentOrderSyncService;
 import com.example.quant.system.AutoTradeRiskMode;
 import com.example.quant.system.SystemControlService;
 import com.example.quant.tradeplan.TradePlan;
@@ -52,6 +53,7 @@ public class AutoTradeService {
     private final AccountSnapshotService accountSnapshotService;
     private final PositionSnapshotService positionSnapshotService;
     private final AutoTradeBudgetService budgetService;
+    private final OkxCurrentOrderSyncService currentOrderSyncService;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Map<String, Instant> inFlightUntilByInstId = new ConcurrentHashMap<>();
 
@@ -68,7 +70,24 @@ public class AutoTradeService {
     ) {
         this(agentProperties, systemControlService, tradeOrderRecordService, autoTradeRecordService,
                 tradePlanService, pendingOrderService, orderConfirmService, accountSnapshotService,
-                positionSnapshotService, new AutoTradeBudgetService(agentProperties));
+                positionSnapshotService, new AutoTradeBudgetService(agentProperties), null);
+    }
+
+    public AutoTradeService(
+            AgentProperties agentProperties,
+            SystemControlService systemControlService,
+            TradeOrderRecordService tradeOrderRecordService,
+            AutoTradeRecordService autoTradeRecordService,
+            TradePlanService tradePlanService,
+            PendingOrderService pendingOrderService,
+            com.example.quant.order.OrderConfirmService orderConfirmService,
+            AccountSnapshotService accountSnapshotService,
+            PositionSnapshotService positionSnapshotService,
+            AutoTradeBudgetService budgetService
+    ) {
+        this(agentProperties, systemControlService, tradeOrderRecordService, autoTradeRecordService,
+                tradePlanService, pendingOrderService, orderConfirmService, accountSnapshotService,
+                positionSnapshotService, budgetService, null);
     }
 
     @Autowired
@@ -82,7 +101,8 @@ public class AutoTradeService {
             com.example.quant.order.OrderConfirmService orderConfirmService,
             AccountSnapshotService accountSnapshotService,
             PositionSnapshotService positionSnapshotService,
-            AutoTradeBudgetService budgetService
+            AutoTradeBudgetService budgetService,
+            OkxCurrentOrderSyncService currentOrderSyncService
     ) {
         this.agentProperties = agentProperties;
         this.systemControlService = systemControlService;
@@ -94,6 +114,7 @@ public class AutoTradeService {
         this.accountSnapshotService = accountSnapshotService;
         this.positionSnapshotService = positionSnapshotService;
         this.budgetService = budgetService == null ? new AutoTradeBudgetService(agentProperties) : budgetService;
+        this.currentOrderSyncService = currentOrderSyncService;
     }
 
     public AutoTradeResult evaluateAndExecute(List<ContractCandidate> candidates) {
@@ -105,11 +126,13 @@ public class AutoTradeService {
     }
 
     private AutoTradeResult evaluateAndExecuteInternal(List<ContractCandidate> candidates) {
+        List<ContractCandidate> safeCandidates = candidates == null ? List.of() : candidates;
+        int candidateCount = safeCandidates.size();
         if (!agentProperties.autoTrade().enabled()) {
-            return AutoTradeResult.skipped("auto_trade_disabled_by_config");
+            return recordAndReturn(AutoTradeResult.skipped("auto_trade_disabled_by_config"), candidateCount, null);
         }
         if (!systemControlService.autoTradeEnabled()) {
-            return AutoTradeResult.skipped("auto_trade_runtime_switch_off");
+            return recordAndReturn(AutoTradeResult.skipped("auto_trade_runtime_switch_off"), candidateCount, null);
         }
         boolean executionLockEnabled = agentProperties.concurrency().autoTradeLockEnabled();
         boolean executionLockAcquired = false;
@@ -117,20 +140,36 @@ public class AutoTradeService {
             executionLockAcquired = running.compareAndSet(false, true);
             if (!executionLockAcquired) {
                 log.warn("AutoTrade skipped: reason=AUTO_TRADE_EXECUTION_ALREADY_RUNNING");
-                return AutoTradeResult.skipped("AUTO_TRADE_EXECUTION_ALREADY_RUNNING");
+                return recordAndReturn(AutoTradeResult.skipped("AUTO_TRADE_EXECUTION_ALREADY_RUNNING"),
+                        candidateCount, topCandidate(safeCandidates).orElse(null));
             }
         }
-        List<ContractCandidate> safeCandidates = candidates == null ? List.of() : candidates;
-        int candidateCount = safeCandidates.size();
         String scanId = UUID.randomUUID().toString();
         try {
             AutoTradeRiskMode riskMode = systemControlService.autoTradeRiskMode();
             boolean noRiskMode = riskMode != null && riskMode.noRisk();
             int noRiskMinScore = noRiskMinScore();
             pruneInFlightOrders();
+            if (tradeOrderRecordService.hasActiveEntryOrder()) {
+                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
+                log.warn("AutoTrade round stopped scanId={} stage=LOCAL_ENTRY_DEDUPE reason=local_active_entry_order fallback=false",
+                        scanId);
+                return recordAndReturn(AutoTradeResult.skipped("local_active_entry_order"), candidateCount, top);
+            }
             List<PositionSummary> positions = activePositions();
             Set<String> heldInstIds = positions.stream()
                     .map(PositionSummary::instId)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            OkxCurrentOrderSyncService.SyncResult currentOrderSyncResult = syncCurrentOrders();
+            if (currentOrderSyncResult.failed()) {
+                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
+                log.warn("AutoTrade round stopped scanId={} stage=OKX_CURRENT_ORDER_SYNC reason={} fallback=false",
+                        scanId, currentOrderSyncResult.errorMessage());
+                return recordAndReturn(AutoTradeResult.skipped("okx_current_orders_unavailable: "
+                        + currentOrderSyncResult.errorMessage()), candidateCount, top);
+            }
+            Set<String> okxCurrentOrderInstIds = currentOrderSyncResult.activeInstIds().stream()
+                    .filter(instId -> instId != null && !instId.isBlank())
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
             PositionQualityPolicy positionQualityPolicy = new PositionQualityPolicy(agentProperties);
             CorrelationExposureGuard exposureGuard = new CorrelationExposureGuard(agentProperties);
@@ -140,12 +179,14 @@ public class AutoTradeService {
             int dynamicMaxPositions = noRiskMode || topForPolicy == null
                     ? maxOpenPositions()
                     : positionQualityPolicy.allowedMaxPositionsFor(topForPolicy);
-            int openOrPendingCount = heldInstIds.size() + symbolLockCount();
+            Set<String> occupiedInstIds = new LinkedHashSet<>(heldInstIds);
+            occupiedInstIds.addAll(okxCurrentOrderInstIds);
+            int openOrPendingCount = occupiedInstIds.size() + symbolLockCount();
             int initialOpenOrPendingCount = openOrPendingCount;
             int initialInFlightCount = symbolLockCount();
             int capacity = dynamicMaxPositions - openOrPendingCount;
-            log.warn("AutoTrade round start scanId={} held={} inFlight={} candidateCount={} marketRegime={} dynamicMaxPositions={} minScore={} minFinalRankScore={} riskMode={}",
-                    scanId, heldInstIds.size(), symbolLockCount(), candidateCount,
+            log.warn("AutoTrade round start scanId={} held={} okxCurrentOrders={} inFlight={} candidateCount={} marketRegime={} dynamicMaxPositions={} minScore={} minFinalRankScore={} riskMode={}",
+                    scanId, heldInstIds.size(), okxCurrentOrderInstIds.size(), symbolLockCount(), candidateCount,
                     positionQualityPolicy.marketRegimeFor(topForPolicy), dynamicMaxPositions,
                     noRiskMode ? noRiskMinScore
                             : positionQualityPolicy.minScoreFor(openOrPendingCount, topForPolicy),
@@ -156,7 +197,8 @@ public class AutoTradeService {
                 ContractCandidate top = topCandidate(safeCandidates).orElse(null);
                 log.warn("AutoTrade round stopped scanId={} stage=POSITION_CAPACITY reason=capacity_full fallback=false", scanId);
                 return recordAndReturn(AutoTradeResult.skipped("position_capacity_full: held="
-                                + heldInstIds.size() + ", inFlight=" + symbolLockCount()
+                                + heldInstIds.size() + ", okxCurrentOrders=" + okxCurrentOrderInstIds.size()
+                                + ", inFlight=" + symbolLockCount()
                                 + ", dynamicMax=" + dynamicMaxPositions),
                         candidateCount, top);
             }
@@ -165,7 +207,8 @@ public class AutoTradeService {
                 ContractCandidate top = topCandidate(safeCandidates).orElse(null);
                 log.warn("AutoTrade round stopped scanId={} stage=POSITION_TARGET reason=target_satisfied fallback=false", scanId);
                 return recordAndReturn(AutoTradeResult.skipped("position_target_satisfied: held="
-                                + heldInstIds.size() + ", inFlight=" + symbolLockCount()
+                                + heldInstIds.size() + ", okxCurrentOrders=" + okxCurrentOrderInstIds.size()
+                                + ", inFlight=" + symbolLockCount()
                                 + ", target=" + targetOpenPositions()),
                         candidateCount, top);
             }
@@ -195,11 +238,15 @@ public class AutoTradeService {
                     continue;
                 }
                 if (heldInstIds.contains(candidate.instId())
+                        || okxCurrentOrderInstIds.contains(candidate.instId())
                         || (agentProperties.concurrency().symbolLockEnabled()
                         && inFlightUntilByInstId.containsKey(candidate.instId()))) {
-                    lastAttemptSkipReason = "SYMBOL_ALREADY_IN_FLIGHT";
-                    log.warn("AutoTrade candidate skipped scanId={} symbol={} reason=SYMBOL_ALREADY_IN_FLIGHT classification={} fallback=true",
-                            scanId, candidate.instId(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
+                    lastAttemptSkipReason = okxCurrentOrderInstIds.contains(candidate.instId())
+                            ? "okx_current_active_order"
+                            : "SYMBOL_ALREADY_IN_FLIGHT";
+                    log.warn("AutoTrade candidate skipped scanId={} symbol={} reason={} classification={} fallback=true",
+                            scanId, candidate.instId(), lastAttemptSkipReason,
+                            FailureClassification.NEXT_CANDIDATE_ALLOWED);
                     continue;
                 }
                 String hardNewsBlockReason = hardNewsBlockReason(candidate);
@@ -428,9 +475,7 @@ public class AutoTradeService {
     }
 
     private void recordExecution(AutoTradeResult result, int candidateCount, ContractCandidate candidate) {
-        if ("EXECUTED".equals(result.status())) {
-            autoTradeRecordService.record(result, candidateCount, candidate);
-        }
+        autoTradeRecordService.record(result, candidateCount, candidate);
     }
 
     private AutoTradeResult aggregateExecutedResults(List<AutoTradeResult> executedResults, String message) {
@@ -532,6 +577,16 @@ public class AutoTradeService {
 
     private List<String> autoGate(ContractCandidate candidate) {
         return ContractTradeGate.autoDenyReasons(candidate, agentProperties);
+    }
+
+    private OkxCurrentOrderSyncService.SyncResult syncCurrentOrders() {
+        if (currentOrderSyncService == null) {
+            return new OkxCurrentOrderSyncService.SyncResult(0, 0, 0, false, null, List.of());
+        }
+        OkxCurrentOrderSyncService.SyncResult result = currentOrderSyncService.syncOnce();
+        return result == null
+                ? new OkxCurrentOrderSyncService.SyncResult(0, 0, 0, false, null, List.of())
+                : result;
     }
 
     private List<PositionSummary> activePositions() {

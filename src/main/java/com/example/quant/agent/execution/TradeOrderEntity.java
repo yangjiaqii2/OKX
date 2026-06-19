@@ -74,56 +74,112 @@ public class TradeOrderEntity {
         this.tradePlanId = tradePlanId;
     }
 
+    public String getTradePlanId() {
+        return tradePlanId;
+    }
+
     public void setPendingOrderId(String pendingOrderId) {
         this.pendingOrderId = pendingOrderId;
+    }
+
+    public String getPendingOrderId() {
+        return pendingOrderId;
     }
 
     public void setOrderRole(String orderRole) {
         this.orderRole = orderRole;
     }
 
+    public String getOrderRole() {
+        return orderRole;
+    }
+
     public void setInstId(String instId) {
         this.instId = instId;
+    }
+
+    public String getInstId() {
+        return instId;
     }
 
     public void setSide(String side) {
         this.side = side;
     }
 
+    public String getSide() {
+        return side;
+    }
+
     public void setPosSide(String posSide) {
         this.posSide = posSide;
+    }
+
+    public String getPosSide() {
+        return posSide;
     }
 
     public void setOrdType(String ordType) {
         this.ordType = ordType;
     }
 
+    public String getOrdType() {
+        return ordType;
+    }
+
     public void setTdMode(String tdMode) {
         this.tdMode = tdMode;
+    }
+
+    public String getTdMode() {
+        return tdMode;
     }
 
     public void setSize(BigDecimal size) {
         this.size = size;
     }
 
+    public BigDecimal getSize() {
+        return size;
+    }
+
     public void setPrice(BigDecimal price) {
         this.price = price;
+    }
+
+    public BigDecimal getPrice() {
+        return price;
     }
 
     public void setReduceOnly(boolean reduceOnly) {
         this.reduceOnly = reduceOnly;
     }
 
+    public boolean isReduceOnly() {
+        return reduceOnly;
+    }
+
     public void setClOrdId(String clOrdId) {
         this.clOrdId = clOrdId;
+    }
+
+    public String getClOrdId() {
+        return clOrdId;
     }
 
     public void setOkxOrdId(String okxOrdId) {
         this.okxOrdId = okxOrdId;
     }
 
+    public String getOkxOrdId() {
+        return okxOrdId;
+    }
+
     public void setOkxState(String okxState) {
         this.okxState = okxState;
+    }
+
+    public String getOkxState() {
+        return okxState;
     }
 
     public void setStatus(String status) {
@@ -138,11 +194,23 @@ public class TradeOrderEntity {
         this.errorMessage = errorMessage;
     }
 
+    public String getErrorMessage() {
+        return errorMessage;
+    }
+
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
     }
 
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
     }
 }

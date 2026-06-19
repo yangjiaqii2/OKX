@@ -2,6 +2,7 @@ package com.example.quant.agent.budget;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -23,7 +24,8 @@ class AutoTradeBudgetServiceTest {
     @Test
     void persistsReservationAndRestoresReservedBudgetInFreshServiceInstance() {
         BudgetReservationRepository repository = mock(BudgetReservationRepository.class);
-        when(repository.findByStatusIn(java.util.List.of("RESERVED", "USED"))).thenReturn(java.util.List.of());
+        when(repository.findByUserNameAndStatusIn("local-admin", java.util.List.of("RESERVED", "USED")))
+                .thenReturn(java.util.List.of());
         when(repository.save(any(BudgetReservationEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties(), repository);
 
@@ -40,10 +42,12 @@ class AutoTradeBudgetServiceTest {
         BudgetReservationEntity saved = captor.getValue();
         assertThat(reservation.status()).isEqualTo(BudgetReservationStatus.RESERVED);
         assertThat(saved.getReservationId()).isEqualTo(reservation.reservationId().toString());
+        assertThat(saved.getUserName()).isEqualTo("local-admin");
         assertThat(saved.getStatus()).isEqualTo("RESERVED");
         assertThat(saved.getAmount()).isEqualByComparingTo("20");
 
-        when(repository.findByStatusIn(java.util.List.of("RESERVED", "USED"))).thenReturn(java.util.List.of(saved));
+        when(repository.findByUserNameAndStatusIn("local-admin", java.util.List.of("RESERVED", "USED")))
+                .thenReturn(java.util.List.of(saved));
         AutoTradeBudgetService restarted = new AutoTradeBudgetService(new AgentProperties(), repository);
 
         assertThat(restarted.reservedBudget()).isEqualByComparingTo("20");
@@ -52,9 +56,36 @@ class AutoTradeBudgetServiceTest {
     }
 
     @Test
+    void persistedReservationsAreScopedByCurrentUser() {
+        BudgetReservationEntity alice = persistedReservation("alice", "10");
+        BudgetReservationRepository repository = mock(BudgetReservationRepository.class);
+        when(repository.findByUserNameAndStatusIn("alice", java.util.List.of("RESERVED", "USED")))
+                .thenReturn(java.util.List.of(alice));
+        when(repository.findByUserNameAndReservationId(any(), any())).thenReturn(java.util.Optional.empty());
+        when(repository.save(any(BudgetReservationEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AutoTradeBudgetService service = AuthUserContext.callAs("alice",
+                () -> new AutoTradeBudgetService(new AgentProperties(), repository));
+        BudgetReservation reservation = AuthUserContext.callAs("alice", () -> service.reserveBudget(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                "ETH-USDT-SWAP",
+                new BigDecimal("5"),
+                new BigDecimal("50")
+        ));
+
+        ArgumentCaptor<BudgetReservationEntity> captor = ArgumentCaptor.forClass(BudgetReservationEntity.class);
+        verify(repository).save(captor.capture());
+        assertThat(AuthUserContext.callAs("alice", service::reservedBudget)).isEqualByComparingTo("15");
+        assertThat(reservation.reserved()).isTrue();
+        assertThat(captor.getValue().getUserName()).isEqualTo("alice");
+    }
+
+    @Test
     void persistedMarkUsedAndReleaseAreIdempotent() {
         BudgetReservationEntity entity = new BudgetReservationEntity();
         entity.setReservationId(UUID.randomUUID().toString());
+        entity.setUserName("local-admin");
         entity.setPlanId(UUID.randomUUID().toString());
         entity.setPendingOrderId(UUID.randomUUID().toString());
         entity.setSymbol("BTC-USDT-SWAP");
@@ -64,7 +95,8 @@ class AutoTradeBudgetServiceTest {
         entity.setCreatedAt(java.time.Instant.now());
         entity.setUpdatedAt(java.time.Instant.now());
         BudgetReservationRepository repository = mock(BudgetReservationRepository.class);
-        when(repository.findByReservationId(entity.getReservationId())).thenReturn(java.util.Optional.of(entity));
+        when(repository.findByUserNameAndReservationId("local-admin", entity.getReservationId()))
+                .thenReturn(java.util.Optional.of(entity));
         when(repository.save(any(BudgetReservationEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties(), repository);
 
@@ -208,5 +240,20 @@ class AutoTradeBudgetServiceTest {
                 BigDecimal.ZERO,
                 new BigDecimal("2.2")
         );
+    }
+
+    private static BudgetReservationEntity persistedReservation(String userName, String amount) {
+        BudgetReservationEntity entity = new BudgetReservationEntity();
+        entity.setReservationId(UUID.randomUUID().toString());
+        entity.setUserName(userName);
+        entity.setPlanId(UUID.randomUUID().toString());
+        entity.setPendingOrderId(UUID.randomUUID().toString());
+        entity.setSymbol("BTC-USDT-SWAP");
+        entity.setAmount(new BigDecimal(amount));
+        entity.setStatus("RESERVED");
+        entity.setReason("RESERVED");
+        entity.setCreatedAt(java.time.Instant.now());
+        entity.setUpdatedAt(java.time.Instant.now());
+        return entity;
     }
 }

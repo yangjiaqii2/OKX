@@ -15,6 +15,7 @@ import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
 import com.example.quant.okxtrade.OkxOrderGateway;
+import com.example.quant.okxtrade.OkxCurrentOrderSyncService;
 import com.example.quant.okxtrade.OkxTradeAdapter;
 import com.example.quant.tradeplan.TradePlan;
 import com.example.quant.tradeplan.TradePlanType;
@@ -204,6 +205,27 @@ class AutoTradeRecoveryTaskTest {
         assertThat(closeRecovery.calls).isEqualTo(1);
     }
 
+    @Test
+    void invokesCurrentOrderSyncDuringScheduledRecovery() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        CountingCurrentOrderSync syncService = new CountingCurrentOrderSync();
+        AutoTradeRecoveryTask task = new AutoTradeRecoveryTask(
+                pendingOrderService,
+                budgetService,
+                properties,
+                null,
+                null,
+                null,
+                syncService
+        );
+
+        task.runOnce();
+
+        assertThat(syncService.calls).isEqualTo(1);
+    }
+
     private static BudgetAllocationRequest request() {
         return new BudgetAllocationRequest(
                 new BigDecimal("50"),
@@ -289,6 +311,20 @@ class AutoTradeRecoveryTaskTest {
         public CloseRecoveryResult runOnce(Instant now) {
             calls++;
             return new CloseRecoveryResult(0);
+        }
+    }
+
+    private static class CountingCurrentOrderSync extends OkxCurrentOrderSyncService {
+        private int calls;
+
+        CountingCurrentOrderSync() {
+            super(null, null);
+        }
+
+        @Override
+        public SyncResult syncOnce() {
+            calls++;
+            return new SyncResult(0, 0, 0, false, null, List.of());
         }
     }
 }

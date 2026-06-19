@@ -138,7 +138,7 @@ export function Dashboard() {
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(5, minmax(0, 1fr))' },
+            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(6, minmax(0, 1fr))' },
             gap: 2,
           }}
         >
@@ -151,8 +151,14 @@ export function Dashboard() {
           <TradeMetricCard
             label="今日已用预算"
             value={formatAsset(state.profit?.todaySubmittedMarginUsdt)}
-            helper="按 Asia/Shanghai 统计"
+            helper={`今日已实现 ${formatAsset(state.profit?.todayRealizedPnlUsdt)}`}
             accent="info"
+          />
+          <TradeMetricCard
+            label="已实现净收益"
+            value={formatAsset(state.profit?.realizedPnlUsdt)}
+            helper="来自平仓记录"
+            accent={Number(state.profit?.realizedPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
             label="当前浮动盈亏"

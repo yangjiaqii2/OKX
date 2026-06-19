@@ -1,5 +1,7 @@
 package com.example.quant.agent.budget;
 
+import com.example.quant.account.OkxCredentialStore;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -98,7 +100,7 @@ public class AutoTradeBudgetService {
         }
         UUID id = UUID.randomUUID();
         Instant now = Instant.now();
-        BudgetReservation reservation = new BudgetReservation(id, planId, pendingOrderId, symbol, normalized,
+        BudgetReservation reservation = new BudgetReservation(id, planId, pendingOrderId, currentUserName(), symbol, normalized,
                 BudgetReservationStatus.RESERVED, now, now, "RESERVED");
         reservations.put(id, reservation);
         save(reservation);
@@ -124,10 +126,12 @@ public class AutoTradeBudgetService {
             return Optional.empty();
         }
         if (repository != null) {
-            Optional<BudgetReservationEntity> row = repository.findFirstByPendingOrderId(pendingOrderId.toString());
+            Optional<BudgetReservationEntity> row = repository.findFirstByUserNameAndPendingOrderId(
+                    currentUserName(), pendingOrderId.toString());
             return row == null ? Optional.empty() : row.map(this::fromEntity);
         }
         return reservations.values().stream()
+                .filter(item -> currentUserName().equals(item.userName()))
                 .filter(item -> pendingOrderId != null && pendingOrderId.equals(item.pendingOrderId()))
                 .findFirst();
     }
@@ -227,19 +231,32 @@ public class AutoTradeBudgetService {
 
     private List<BudgetReservation> activeReservations() {
         if (repository == null) {
-            return new ArrayList<>(reservations.values());
+            return new ArrayList<>(reservations.values()).stream()
+                    .filter(item -> currentUserName().equals(item.userName()))
+                    .toList();
         }
-        List<BudgetReservationEntity> rows = repository.findByStatusIn(List.of("RESERVED", "USED"));
+        List<BudgetReservationEntity> rows = repository.findByUserNameAndStatusIn(
+                currentUserName(), List.of("RESERVED", "USED"));
         if (rows == null) {
-            return new ArrayList<>(reservations.values());
+            return new ArrayList<>(reservations.values()).stream()
+                    .filter(item -> currentUserName().equals(item.userName()))
+                    .toList();
         }
         List<BudgetReservation> active = rows.stream()
                 .map(this::fromEntity)
                 .toList();
+        Map<UUID, BudgetReservation> merged = new LinkedHashMap<>();
         for (BudgetReservation reservation : active) {
+            merged.put(reservation.reservationId(), reservation);
+        }
+        reservations.values().stream()
+                .filter(item -> currentUserName().equals(item.userName()))
+                .filter(AutoTradeBudgetService::active)
+                .forEach(item -> merged.put(item.reservationId(), item));
+        for (BudgetReservation reservation : merged.values()) {
             reservations.put(reservation.reservationId(), reservation);
         }
-        return active;
+        return new ArrayList<>(merged.values());
     }
 
     private void loadActiveReservations() {
@@ -259,6 +276,7 @@ public class AutoTradeBudgetService {
         entity.setReservationId(reservation.reservationId().toString());
         entity.setPlanId(reservation.planId() == null ? null : reservation.planId().toString());
         entity.setPendingOrderId(reservation.pendingOrderId() == null ? null : reservation.pendingOrderId().toString());
+        entity.setUserName(reservation.userName());
         entity.setSymbol(reservation.symbol());
         entity.setAmount(reservation.amount());
         entity.setStatus(reservation.status().name());
@@ -269,7 +287,8 @@ public class AutoTradeBudgetService {
     }
 
     private Optional<BudgetReservationEntity> findEntity(UUID reservationId) {
-        Optional<BudgetReservationEntity> row = repository.findByReservationId(reservationId.toString());
+        Optional<BudgetReservationEntity> row = repository.findByUserNameAndReservationId(
+                currentUserName(), reservationId.toString());
         return row == null ? Optional.empty() : row;
     }
 
@@ -278,6 +297,9 @@ public class AutoTradeBudgetService {
                 UUID.fromString(entity.getReservationId()),
                 uuid(entity.getPlanId()),
                 uuid(entity.getPendingOrderId()),
+                entity.getUserName() == null || entity.getUserName().isBlank()
+                        ? OkxCredentialStore.SYSTEM_USER
+                        : entity.getUserName(),
                 entity.getSymbol(),
                 entity.getAmount() == null ? BigDecimal.ZERO : entity.getAmount(),
                 status(entity.getStatus()),
@@ -309,13 +331,22 @@ public class AutoTradeBudgetService {
 
     private BudgetReservation rejected(UUID planId, UUID pendingOrderId, String symbol, BigDecimal amount, String reason) {
         Instant now = Instant.now();
-        return new BudgetReservation(UUID.randomUUID(), planId, pendingOrderId, symbol, amount,
+        return new BudgetReservation(UUID.randomUUID(), planId, pendingOrderId, currentUserName(), symbol, amount,
                 BudgetReservationStatus.RELEASED, now, now, reason);
     }
 
     private static BudgetReservation withStatus(BudgetReservation current, BudgetReservationStatus status, String reason) {
-        return new BudgetReservation(current.reservationId(), current.planId(), current.pendingOrderId(),
+        return new BudgetReservation(current.reservationId(), current.planId(), current.pendingOrderId(), current.userName(),
                 current.symbol(), current.amount(), status, current.createdAt(), Instant.now(), reason);
+    }
+
+    private static boolean active(BudgetReservation reservation) {
+        return reservation.status() == BudgetReservationStatus.RESERVED
+                || reservation.status() == BudgetReservationStatus.USED;
+    }
+
+    private static String currentUserName() {
+        return AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
     }
 
     private static List<String> allocationReasons(AgentProperties.Budget config, BudgetAllocationRequest request,

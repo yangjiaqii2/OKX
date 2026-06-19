@@ -8,6 +8,7 @@ public record BudgetReservation(
         UUID reservationId,
         UUID planId,
         UUID pendingOrderId,
+        String userName,
         String symbol,
         BigDecimal amount,
         BudgetReservationStatus status,

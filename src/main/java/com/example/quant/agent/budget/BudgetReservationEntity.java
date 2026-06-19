@@ -20,6 +20,9 @@ public class BudgetReservationEntity {
     @Column(name = "pending_order_id", length = 36)
     private String pendingOrderId;
 
+    @Column(name = "user_name", nullable = false, length = 128)
+    private String userName;
+
     @Column(name = "symbol", nullable = false, length = 64)
     private String symbol;
 
@@ -60,6 +63,14 @@ public class BudgetReservationEntity {
 
     public void setPendingOrderId(String pendingOrderId) {
         this.pendingOrderId = pendingOrderId;
+    }
+
+    public String getUserName() {
+        return userName;
+    }
+
+    public void setUserName(String userName) {
+        this.userName = userName;
     }
 
     public String getSymbol() {

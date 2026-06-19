@@ -15,6 +15,7 @@ import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
 import com.example.quant.order.OrderExecutionResult;
 import com.example.quant.order.PendingOrderService;
+import com.example.quant.okxtrade.OkxCurrentOrderSyncService;
 import com.example.quant.risk.RiskLevel;
 import com.example.quant.system.AutoTradeRiskMode;
 import com.example.quant.system.SystemControlService;
@@ -36,11 +37,12 @@ class AutoTradeServiceTest {
 
     @Test
     void skipsWhenRuntimeSwitchIsOff() {
+        CapturingAutoTradeRecordService recordService = new CapturingAutoTradeRecordService();
         AutoTradeService service = new AutoTradeService(
                 new AgentProperties(),
                 new SystemControlService(tradingProperties()),
                 new FakeTradeOrderRecordService(false),
-                new FakeAutoTradeRecordService(),
+                recordService,
                 new FailingTradePlanService(),
                 new PendingOrderService(120),
                 null,
@@ -52,6 +54,8 @@ class AutoTradeServiceTest {
 
         assertThat(result.status()).isEqualTo("SKIPPED");
         assertThat(result.message()).isEqualTo("auto_trade_runtime_switch_off");
+        assertThat(recordService.records).extracting(AutoTradeService.AutoTradeResult::status)
+                .containsExactly("SKIPPED");
     }
 
     @Test
@@ -630,6 +634,84 @@ class AutoTradeServiceTest {
     }
 
     @Test
+    void skipsWhenLocalActiveEntryOrderExists() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(true),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 95)));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("local_active_entry_order");
+        assertThat(confirmService.confirmCount).isZero();
+    }
+
+    @Test
+    void skipsWhenOkxCurrentOrderAlreadyOccupiesSameSymbol() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of()),
+                new com.example.quant.agent.budget.AutoTradeBudgetService(new AgentProperties()),
+                new FixedCurrentOrderSyncService(new OkxCurrentOrderSyncService.SyncResult(
+                        1, 1, 2, false, null, List.of("BTC-USDT-SWAP")))
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 95)));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("okx_current_active_order");
+        assertThat(confirmService.confirmCount).isZero();
+    }
+
+    @Test
+    void skipsRoundWhenOkxCurrentOrderSyncFails() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of()),
+                new com.example.quant.agent.budget.AutoTradeBudgetService(new AgentProperties()),
+                new FixedCurrentOrderSyncService(new OkxCurrentOrderSyncService.SyncResult(
+                        0, 0, 0, true, "OKX orders unavailable", List.of()))
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 95)));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("okx_current_orders_unavailable");
+        assertThat(confirmService.confirmCount).isZero();
+    }
+
+    @Test
     void doesNotRetrySameSymbolInOneFallbackRound() {
         SequencedOrderConfirmService confirmService = new SequencedOrderConfirmService(List.of(
                 new OrderExecutionResult(false, false, null, "实时订单簿流动性不足：spread_bps_above_8"),
@@ -903,6 +985,34 @@ class AutoTradeServiceTest {
         @Override
         public void record(AutoTradeService.AutoTradeResult result, int candidateCount,
                            com.example.quant.crypto.dto.ContractCandidate candidate) {
+        }
+    }
+
+    private static class CapturingAutoTradeRecordService extends AutoTradeRecordService {
+        private final List<AutoTradeService.AutoTradeResult> records = new ArrayList<>();
+
+        CapturingAutoTradeRecordService() {
+            super(null);
+        }
+
+        @Override
+        public void record(AutoTradeService.AutoTradeResult result, int candidateCount,
+                           com.example.quant.crypto.dto.ContractCandidate candidate) {
+            records.add(result);
+        }
+    }
+
+    private static class FixedCurrentOrderSyncService extends OkxCurrentOrderSyncService {
+        private final SyncResult result;
+
+        FixedCurrentOrderSyncService(SyncResult result) {
+            super(null, null);
+            this.result = result;
+        }
+
+        @Override
+        public SyncResult syncOnce() {
+            return result;
         }
     }
 

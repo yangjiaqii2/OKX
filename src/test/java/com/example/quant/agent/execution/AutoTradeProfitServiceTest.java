@@ -1,9 +1,13 @@
 package com.example.quant.agent.execution;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.example.quant.account.ClosePositionRecordEntity;
+import com.example.quant.account.ClosePositionRecordRepository;
 import com.example.quant.account.PositionSnapshotService;
 import com.example.quant.account.dto.PositionSummary;
 import com.example.quant.auth.AuthUserContext;
@@ -15,6 +19,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.domain.Pageable;
 
 class AutoTradeProfitServiceTest {
     private static final Clock CLOCK = Clock.fixed(
@@ -72,6 +77,39 @@ class AutoTradeProfitServiceTest {
         assertThat(summary.openPositionCount()).isEqualTo(1);
     }
 
+    @Test
+    void summarizesRealizedNetProfitFromClosedCloseRecords() {
+        AutoTradeRecordRepository repository = mock(AutoTradeRecordRepository.class);
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        PositionSnapshotService positionSnapshotService = new FixedPositionSnapshotService(List.of());
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(50));
+        when(repository.findAll()).thenReturn(List.of(
+                record("PEPE-USDT-SWAP", "EXECUTED", "22.5", "2026-06-18T01:10:00Z")
+        ));
+        when(closeRepository.findByUserNameOrderByCreatedAtDesc(eq("local-admin"), any(Pageable.class)))
+                .thenReturn(List.of(
+                        closeRecord("CLOSED", "2.00", "-0.10", "0.05", "2026-06-18T01:10:00Z"),
+                        closeRecord("CLOSE_SUBMITTED", "8.00", "-0.20", "0", "2026-06-18T01:20:00Z"),
+                        closeRecord("CLOSED", "1.00", "-0.02", "0", "2026-06-17T01:10:00Z")
+                ));
+        AutoTradeProfitService service = new AutoTradeProfitService(
+                repository,
+                positionSnapshotService,
+                systemControlService,
+                closeRepository,
+                CLOCK
+        );
+
+        AutoTradeProfitSummary summary = service.summary();
+
+        assertThat(summary.realizedPnlUsdt()).isEqualByComparingTo("2.93");
+        assertThat(summary.todayRealizedPnlUsdt()).isEqualByComparingTo("1.95");
+        assertThat(summary.totalNetPnlUsdt()).isEqualByComparingTo("2.93");
+        assertThat(summary.dataQuality()).isEqualTo("REALIZED_FROM_CLOSE_RECORDS_PLUS_ESTIMATED_UNREALIZED");
+        assertThat(summary.message()).contains("realizedPnl + fee + fundingFee");
+    }
+
     private static AutoTradeRecordEntity record(String instId, String status, String margin, String createdAt) {
         return record("local-admin", instId, status, margin, createdAt);
     }
@@ -103,6 +141,23 @@ class AutoTradeProfitServiceTest {
                 BigDecimal.ZERO,
                 "OKX_REAL"
         );
+    }
+
+    private static ClosePositionRecordEntity closeRecord(String status, String realizedPnl, String fee,
+                                                         String fundingFee, String createdAt) {
+        ClosePositionRecordEntity entity = new ClosePositionRecordEntity();
+        entity.setUserName("local-admin");
+        entity.setInstId("PEPE-USDT-SWAP");
+        entity.setPosSide("long");
+        entity.setMarginMode("cross");
+        entity.setStatus(status);
+        entity.setSource("MANUAL");
+        entity.setRealizedPnl(new BigDecimal(realizedPnl));
+        entity.setFee(new BigDecimal(fee));
+        entity.setFundingFee(new BigDecimal(fundingFee));
+        entity.setCreatedAt(Instant.parse(createdAt));
+        entity.setUpdatedAt(Instant.parse(createdAt));
+        return entity;
     }
 
     private static TradingProperties tradingProperties() {

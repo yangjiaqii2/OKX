@@ -9,6 +9,7 @@ import com.example.quant.config.AgentProperties;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
+import com.example.quant.okxtrade.OkxCurrentOrderSyncService;
 import com.example.quant.okxtrade.OkxTradeAdapter;
 import com.example.quant.order.OrderExecutionResult;
 import java.time.Instant;
@@ -37,34 +38,45 @@ public class AutoTradeRecoveryTask {
     private final OkxTradeAdapter okxTradeAdapter;
     private final AutoTradeLifecycleService lifecycleService;
     private final ClosePositionRecoveryService closePositionRecoveryService;
+    private final OkxCurrentOrderSyncService currentOrderSyncService;
 
     public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
                                  AgentProperties agentProperties) {
-        this(pendingOrderService, budgetService, agentProperties, null, null, null);
+        this(pendingOrderService, budgetService, agentProperties, null, null, null, null);
+    }
+
+    public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                 AgentProperties agentProperties, OkxTradeAdapter okxTradeAdapter,
+                                 AutoTradeLifecycleService lifecycleService,
+                                 ClosePositionRecoveryService closePositionRecoveryService) {
+        this(pendingOrderService, budgetService, agentProperties, okxTradeAdapter, lifecycleService,
+                closePositionRecoveryService, null);
     }
 
     @Autowired
     public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
                                  AgentProperties agentProperties, OkxTradeAdapter okxTradeAdapter,
                                  AutoTradeLifecycleService lifecycleService,
-                                 ClosePositionRecoveryService closePositionRecoveryService) {
+                                 ClosePositionRecoveryService closePositionRecoveryService,
+                                 OkxCurrentOrderSyncService currentOrderSyncService) {
         this.pendingOrderService = pendingOrderService;
         this.budgetService = budgetService;
         this.agentProperties = agentProperties == null ? new AgentProperties() : agentProperties;
         this.okxTradeAdapter = okxTradeAdapter;
         this.lifecycleService = lifecycleService;
         this.closePositionRecoveryService = closePositionRecoveryService;
+        this.currentOrderSyncService = currentOrderSyncService;
     }
 
     public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
                                  AgentProperties agentProperties, OkxTradeAdapter okxTradeAdapter) {
-        this(pendingOrderService, budgetService, agentProperties, okxTradeAdapter, null, null);
+        this(pendingOrderService, budgetService, agentProperties, okxTradeAdapter, null, null, null);
     }
 
     public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
                                  AgentProperties agentProperties, OkxTradeAdapter okxTradeAdapter,
                                  AutoTradeLifecycleService lifecycleService) {
-        this(pendingOrderService, budgetService, agentProperties, okxTradeAdapter, lifecycleService, null);
+        this(pendingOrderService, budgetService, agentProperties, okxTradeAdapter, lifecycleService, null, null);
     }
 
     @Scheduled(
@@ -85,6 +97,7 @@ public class AutoTradeRecoveryTask {
         int attentionRequired = 0;
         int recoveredUnknownSubmits = 0;
         Instant now = Instant.now();
+        syncCurrentOkxOrders();
         for (PendingOrder order : pendingOrderService.allOrders()) {
             if (isReservablePendingStatus(order.status()) && order.isExpired(now)) {
                 order.markExpired();
@@ -122,6 +135,16 @@ public class AutoTradeRecoveryTask {
             closePositionRecoveryService.runOnce(now);
         }
         return new RecoveryResult(expiredOrders, releasedReservations, attentionRequired, recoveredUnknownSubmits);
+    }
+
+    private void syncCurrentOkxOrders() {
+        if (currentOrderSyncService == null) {
+            return;
+        }
+        OkxCurrentOrderSyncService.SyncResult result = currentOrderSyncService.syncOnce();
+        if (result != null && result.failed()) {
+            log.warn("AutoTrade recovery current OKX order sync failed: {}", result.errorMessage());
+        }
     }
 
     private RecoveryDecision recoverUnknownSubmit(PendingOrder order) {

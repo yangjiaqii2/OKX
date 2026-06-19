@@ -4,17 +4,22 @@ import com.example.quant.account.dto.PositionSummary;
 import com.example.quant.agent.budget.AutoTradeBudgetService;
 import com.example.quant.agent.execution.TradeOrderEntity;
 import com.example.quant.agent.execution.TradeOrderRepository;
+import com.example.quant.okxtrade.OkxOrderGateway;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ClosePositionRecoveryService {
+    private static final int PROTECTION_CANCEL_MAX_ATTEMPTS = 3;
     private static final List<String> ACTIVE_PROTECTION_STATUSES = List.of(
             "SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE"
     );
@@ -24,17 +29,30 @@ public class ClosePositionRecoveryService {
     private final PendingOrderService pendingOrderService;
     private final AutoTradeBudgetService budgetService;
     private final PositionSnapshotService positionSnapshotService;
+    private final OkxOrderGateway okxOrderGateway;
 
     public ClosePositionRecoveryService(ClosePositionRecordRepository closePositionRecordRepository,
                                         TradeOrderRepository tradeOrderRepository,
                                         PendingOrderService pendingOrderService,
                                         AutoTradeBudgetService budgetService,
                                         PositionSnapshotService positionSnapshotService) {
+        this(closePositionRecordRepository, tradeOrderRepository, pendingOrderService, budgetService,
+                positionSnapshotService, null);
+    }
+
+    @Autowired
+    public ClosePositionRecoveryService(ClosePositionRecordRepository closePositionRecordRepository,
+                                        TradeOrderRepository tradeOrderRepository,
+                                        PendingOrderService pendingOrderService,
+                                        AutoTradeBudgetService budgetService,
+                                        PositionSnapshotService positionSnapshotService,
+                                        OkxOrderGateway okxOrderGateway) {
         this.closePositionRecordRepository = closePositionRecordRepository;
         this.tradeOrderRepository = tradeOrderRepository;
         this.pendingOrderService = pendingOrderService;
         this.budgetService = budgetService;
         this.positionSnapshotService = positionSnapshotService;
+        this.okxOrderGateway = okxOrderGateway;
     }
 
     @Transactional
@@ -45,8 +63,16 @@ public class ClosePositionRecoveryService {
     @Transactional
     public CloseRecoveryResult runOnce(Instant now) {
         int closed = 0;
-        List<PositionSummary> positions = positions();
-        for (ClosePositionRecordEntity record : closePositionRecordRepository.findByStatus("CLOSE_SUBMITTED")) {
+        ProtectionCancelRetryResult retryResult = retryFailedProtectionCancels(now);
+        List<ClosePositionRecordEntity> submittedRecords = closePositionRecordRepository.findByStatus("CLOSE_SUBMITTED");
+        List<PositionSummary> positions;
+        try {
+            positions = positionSnapshotService.positions();
+        } catch (RuntimeException ex) {
+            markPositionQueryFailed(submittedRecords, now, ex);
+            return new CloseRecoveryResult(0, retryResult.retried(), retryResult.attentionRequired());
+        }
+        for (ClosePositionRecordEntity record : submittedRecords) {
             if (hasOpenPosition(record, positions)) {
                 continue;
             }
@@ -57,7 +83,48 @@ public class ClosePositionRecoveryService {
             invalidateProtectionOrders(record, now);
             closed++;
         }
-        return new CloseRecoveryResult(closed);
+        return new CloseRecoveryResult(closed, retryResult.retried(), retryResult.attentionRequired());
+    }
+
+    private ProtectionCancelRetryResult retryFailedProtectionCancels(Instant now) {
+        if (tradeOrderRepository == null) {
+            return new ProtectionCancelRetryResult(0, 0);
+        }
+        List<TradeOrderEntity> failedProtections = tradeOrderRepository.findByStatus("PROTECTION_CANCEL_FAILED");
+        int retried = 0;
+        int attentionRequired = 0;
+        for (TradeOrderEntity protection : failedProtections) {
+            int attempts = cancelRetryAttempts(protection.getErrorMessage()) + 1;
+            if (cancelProtectionOrder(protection)) {
+                protection.setStatus("INVALID");
+                protection.setOkxState("CANCELLED");
+                protection.setErrorMessage("PROTECTION_CANCEL_RETRY_SUCCEEDED: cancelRetry=" + attempts);
+                retried++;
+            } else if (attempts >= PROTECTION_CANCEL_MAX_ATTEMPTS) {
+                protection.setStatus("EMERGENCY_ATTENTION_REQUIRED");
+                protection.setErrorMessage("PROTECTION_CANCEL_RETRY_LIMIT: cancelRetry=" + attempts
+                        + "; " + compact(protection.getErrorMessage()));
+                attentionRequired++;
+            } else {
+                protection.setStatus("PROTECTION_CANCEL_FAILED");
+                protection.setErrorMessage("PROTECTION_CANCEL_FAILED: cancelRetry=" + attempts
+                        + "; " + compact(protection.getErrorMessage()));
+            }
+            protection.setUpdatedAt(now);
+        }
+        if (!failedProtections.isEmpty()) {
+            tradeOrderRepository.saveAll(failedProtections);
+        }
+        return new ProtectionCancelRetryResult(retried, attentionRequired);
+    }
+
+    private void markPositionQueryFailed(List<ClosePositionRecordEntity> submittedRecords, Instant now, RuntimeException ex) {
+        String message = "POSITION_QUERY_FAILED: " + compact(ex.getMessage());
+        for (ClosePositionRecordEntity record : submittedRecords) {
+            record.setErrorMessage(message);
+            record.setUpdatedAt(now);
+            closePositionRecordRepository.save(record);
+        }
     }
 
     private void closeLocalPendingOrder(ClosePositionRecordEntity record) {
@@ -82,13 +149,43 @@ public class ClosePositionRecoveryService {
         List<TradeOrderEntity> protections = tradeOrderRepository
                 .findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(record.getPendingOrderId(), ACTIVE_PROTECTION_STATUSES);
         for (TradeOrderEntity protection : protections) {
-            protection.setStatus("INVALID");
-            protection.setOkxState("INVALID");
-            protection.setErrorMessage("POSITION_CLOSED");
+            if (cancelProtectionOrder(protection)) {
+                protection.setStatus("INVALID");
+                protection.setOkxState("CANCELLED");
+                protection.setErrorMessage("POSITION_CLOSED");
+            } else {
+                protection.setStatus("PROTECTION_CANCEL_FAILED");
+                protection.setErrorMessage("PROTECTION_CANCEL_FAILED: cancelRetry=1; "
+                        + compact(protection.getErrorMessage()));
+            }
             protection.setUpdatedAt(now);
         }
         if (!protections.isEmpty()) {
             tradeOrderRepository.saveAll(protections);
+        }
+    }
+
+    private boolean cancelProtectionOrder(TradeOrderEntity protection) {
+        if (okxOrderGateway == null) {
+            return true;
+        }
+        Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("instId", protection.getInstId());
+        if (hasText(protection.getOkxOrdId())) {
+            payload.put("algoId", protection.getOkxOrdId());
+        } else if (hasText(protection.getClOrdId())) {
+            payload.put("algoClOrdId", protection.getClOrdId());
+        }
+        if (payload.size() <= 1) {
+            return true;
+        }
+        try {
+            okxOrderGateway.cancelAlgoOrder(payload);
+            return true;
+        } catch (RuntimeException ex) {
+            protection.setOkxState("CANCEL_FAILED");
+            protection.setErrorMessage("PROTECTION_CANCEL_FAILED: " + compact(ex.getMessage()));
+            return false;
         }
     }
 
@@ -97,14 +194,6 @@ public class ClosePositionRecoveryService {
                 .filter(position -> record.getInstId().equalsIgnoreCase(position.instId()))
                 .filter(position -> !hasText(record.getPosSide()) || record.getPosSide().equalsIgnoreCase(position.posSide()))
                 .anyMatch(position -> decimal(position.size()).signum() > 0);
-    }
-
-    private List<PositionSummary> positions() {
-        try {
-            return positionSnapshotService.positions();
-        } catch (RuntimeException ex) {
-            return List.of();
-        }
     }
 
     private static BigDecimal decimal(String value) {
@@ -122,6 +211,34 @@ public class ClosePositionRecoveryService {
         return value != null && !value.trim().isEmpty();
     }
 
-    public record CloseRecoveryResult(int closed) {
+    private static String compact(String value) {
+        if (!hasText(value)) {
+            return "unknown";
+        }
+        return value.replaceAll("\\s+", " ").trim();
+    }
+
+    private static int cancelRetryAttempts(String errorMessage) {
+        if (!hasText(errorMessage)) {
+            return 0;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("cancelRetry=(\\d+)").matcher(errorMessage);
+        if (!matcher.find()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    private record ProtectionCancelRetryResult(int retried, int attentionRequired) {
+    }
+
+    public record CloseRecoveryResult(int closed, int protectionCancelRetried, int protectionCancelAttentionRequired) {
+        public CloseRecoveryResult(int closed) {
+            this(closed, 0, 0);
+        }
     }
 }

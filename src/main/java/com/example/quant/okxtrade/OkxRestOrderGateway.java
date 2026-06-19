@@ -2,6 +2,7 @@ package com.example.quant.okxtrade;
 
 import com.example.quant.crypto.OkxRestClient;
 import com.fasterxml.jackson.databind.JsonNode;
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -84,7 +85,7 @@ public class OkxRestOrderGateway implements OkxOrderGateway {
     public JsonNode cancelAlgoOrder(Map<String, String> payload) {
         log.warn("POST OKX /api/v5/trade/cancel-algos instId={} algoId={} algoClOrdId={}",
                 payload.get("instId"), payload.getOrDefault("algoId", ""), payload.getOrDefault("algoClOrdId", ""));
-        return okxRestClient.privatePost("/api/v5/trade/cancel-algos", payload);
+        return okxRestClient.privatePost("/api/v5/trade/cancel-algos", List.of(payload));
     }
 
     @Override

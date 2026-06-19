@@ -17,15 +17,19 @@ import com.example.quant.agent.execution.TradeOrderRepository;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
+import com.example.quant.okxtrade.OkxOrderGateway;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
 import com.example.quant.tradeplan.TradePlan;
 import com.example.quant.tradeplan.TradePlanType;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -42,6 +46,9 @@ class ClosePositionRecoveryServiceTest {
         ClosePositionRecordEntity record = closeRecord(order);
         TradeOrderEntity stopLoss = protection(order.id(), "STOP_LOSS");
         TradeOrderEntity tp1 = protection(order.id(), "TP1");
+        stopLoss.setOkxOrdId("algo-sl");
+        tp1.setClOrdId("algo-tp1-cl");
+        CapturingOkxGateway gateway = new CapturingOkxGateway();
         when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of(record));
         when(closeRepository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
@@ -53,7 +60,8 @@ class ClosePositionRecoveryServiceTest {
                 tradeOrderRepository,
                 pendingOrderService,
                 budgetService,
-                new FixedPositionSnapshotService(List.of())
+                new FixedPositionSnapshotService(List.of()),
+                gateway
         );
 
         ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(Instant.parse("2026-06-18T00:10:00Z"));
@@ -67,9 +75,146 @@ class ClosePositionRecoveryServiceTest {
                 .isEqualTo(BudgetReservationStatus.RELEASED);
         assertThat(stopLoss.getStatus()).isEqualTo("INVALID");
         assertThat(tp1.getStatus()).isEqualTo("INVALID");
+        assertThat(gateway.cancelAlgoPayloads)
+                .contains(
+                        Map.of("instId", "BTC-USDT-SWAP", "algoId", "algo-sl"),
+                        Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "algo-tp1-cl")
+                );
         verify(closeRepository).save(record);
         verify(tradeOrderRepository).saveAll(List.of(stopLoss, tp1));
     }
+
+    @Test
+    void positionsQueryFailureDoesNotCloseRecordReleaseBudgetOrInvalidateProtectionOrders() {
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
+        PendingOrder order = autoOrder(pendingOrderService, budgetService);
+        order.markCloseSubmitted("close-1", "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED");
+        ClosePositionRecordEntity record = closeRecord(order);
+        TradeOrderEntity stopLoss = protection(order.id(), "STOP_LOSS");
+        when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of(record));
+        when(closeRepository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
+                order.id().toString(),
+                List.of("SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE")
+        )).thenReturn(List.of(stopLoss));
+        ClosePositionRecoveryService service = new ClosePositionRecoveryService(
+                closeRepository,
+                tradeOrderRepository,
+                pendingOrderService,
+                budgetService,
+                new FailingPositionSnapshotService()
+        );
+
+        ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(Instant.parse("2026-06-18T00:10:00Z"));
+
+        assertThat(result.closed()).isZero();
+        assertThat(record.getStatus()).isEqualTo("CLOSE_SUBMITTED");
+        assertThat(record.getErrorMessage()).contains("POSITION_QUERY_FAILED");
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSE_SUBMITTED);
+        assertThat(budgetService.reservation(order.budgetReservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.USED);
+        assertThat(stopLoss.getStatus()).isEqualTo("PROTECTION_SUBMITTED");
+        verify(closeRepository).save(record);
+    }
+
+    @Test
+    void protectionCancelFailureIsPersistedForManualAttention() {
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
+        PendingOrder order = autoOrder(pendingOrderService, budgetService);
+        order.markCloseSubmitted("close-1", "MANUAL_CLOSE_SUBMITTED");
+        ClosePositionRecordEntity record = closeRecord(order);
+        TradeOrderEntity tp1 = protection(order.id(), "TP1");
+        tp1.setClOrdId("algo-tp1-cl");
+        when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of(record));
+        when(closeRepository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
+                order.id().toString(),
+                List.of("SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE")
+        )).thenReturn(List.of(tp1));
+        ClosePositionRecoveryService service = new ClosePositionRecoveryService(
+                closeRepository,
+                tradeOrderRepository,
+                pendingOrderService,
+                budgetService,
+                new FixedPositionSnapshotService(List.of()),
+                new ThrowingCancelGateway()
+        );
+
+        ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(Instant.parse("2026-06-18T00:10:00Z"));
+
+        assertThat(result.closed()).isEqualTo(1);
+        assertThat(tp1.getStatus()).isEqualTo("PROTECTION_CANCEL_FAILED");
+        assertThat(tp1.getOkxState()).isEqualTo("CANCEL_FAILED");
+        assertThat(tp1.getErrorMessage()).contains("PROTECTION_CANCEL_FAILED").contains("OKX cancel rejected");
+        verify(tradeOrderRepository).saveAll(List.of(tp1));
+    }
+
+    @Test
+    void retriesFailedProtectionCancelAndInvalidatesWhenOkxAccepts() {
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        TradeOrderEntity tp1 = protection(UUID.randomUUID(), "TP1");
+        tp1.setClOrdId("algo-tp1-cl");
+        tp1.setStatus("PROTECTION_CANCEL_FAILED");
+        tp1.setErrorMessage("PROTECTION_CANCEL_FAILED: cancelRetry=1");
+        CapturingOkxGateway gateway = new CapturingOkxGateway();
+        when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of());
+        when(tradeOrderRepository.findByStatus("PROTECTION_CANCEL_FAILED")).thenReturn(List.of(tp1));
+        ClosePositionRecoveryService service = new ClosePositionRecoveryService(
+                closeRepository,
+                tradeOrderRepository,
+                new PendingOrderService(120),
+                new AutoTradeBudgetService(new AgentProperties()),
+                new FixedPositionSnapshotService(List.of()),
+                gateway
+        );
+
+        ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(Instant.parse("2026-06-18T00:20:00Z"));
+
+        assertThat(result.protectionCancelRetried()).isEqualTo(1);
+        assertThat(tp1.getStatus()).isEqualTo("INVALID");
+        assertThat(tp1.getOkxState()).isEqualTo("CANCELLED");
+        assertThat(tp1.getErrorMessage()).contains("PROTECTION_CANCEL_RETRY_SUCCEEDED");
+        assertThat(gateway.cancelAlgoPayloads).contains(Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "algo-tp1-cl"));
+        verify(tradeOrderRepository).saveAll(List.of(tp1));
+    }
+
+    @Test
+    void escalatesProtectionCancelFailureAfterRetryLimit() {
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        TradeOrderEntity tp1 = protection(UUID.randomUUID(), "TP1");
+        tp1.setClOrdId("algo-tp1-cl");
+        tp1.setStatus("PROTECTION_CANCEL_FAILED");
+        tp1.setErrorMessage("PROTECTION_CANCEL_FAILED: cancelRetry=2");
+        when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of());
+        when(tradeOrderRepository.findByStatus("PROTECTION_CANCEL_FAILED")).thenReturn(List.of(tp1));
+        ClosePositionRecoveryService service = new ClosePositionRecoveryService(
+                closeRepository,
+                tradeOrderRepository,
+                new PendingOrderService(120),
+                new AutoTradeBudgetService(new AgentProperties()),
+                new FixedPositionSnapshotService(List.of()),
+                new ThrowingCancelGateway()
+        );
+
+        ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(Instant.parse("2026-06-18T00:20:00Z"));
+
+        assertThat(result.protectionCancelAttentionRequired()).isEqualTo(1);
+        assertThat(tp1.getStatus()).isEqualTo("EMERGENCY_ATTENTION_REQUIRED");
+        assertThat(tp1.getOkxState()).isEqualTo("CANCEL_FAILED");
+        assertThat(tp1.getErrorMessage()).contains("PROTECTION_CANCEL_RETRY_LIMIT").contains("cancelRetry=3");
+        verify(tradeOrderRepository).saveAll(List.of(tp1));
+    }
+
 
     private static PendingOrder autoOrder(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService) {
         TradePlan plan = samplePlan();
@@ -140,6 +285,33 @@ class ClosePositionRecoveryServiceTest {
         return entity;
     }
 
+    private static class CapturingOkxGateway implements OkxOrderGateway {
+        private final List<Map<String, String>> cancelAlgoPayloads = new ArrayList<>();
+
+        @Override
+        public JsonNode placeOrder(Map<String, String> payload) {
+            throw new UnsupportedOperationException("not used");
+        }
+
+        @Override
+        public JsonNode cancelAlgoOrder(Map<String, String> payload) {
+            cancelAlgoPayloads.add(Map.copyOf(payload));
+            return new ObjectMapper().createObjectNode().putArray("data").addObject().put("sCode", "0");
+        }
+    }
+
+    private static class ThrowingCancelGateway implements OkxOrderGateway {
+        @Override
+        public JsonNode placeOrder(Map<String, String> payload) {
+            throw new UnsupportedOperationException("not used");
+        }
+
+        @Override
+        public JsonNode cancelAlgoOrder(Map<String, String> payload) {
+            throw new IllegalStateException("OKX cancel rejected");
+        }
+    }
+
     private static TradePlan samplePlan() {
         return new TradePlan(
                 UUID.randomUUID(),
@@ -180,6 +352,17 @@ class ClosePositionRecoveryServiceTest {
         @Override
         public List<PositionSummary> positions() {
             return positions;
+        }
+    }
+
+    private static class FailingPositionSnapshotService extends PositionSnapshotService {
+        FailingPositionSnapshotService() {
+            super(null);
+        }
+
+        @Override
+        public List<PositionSummary> positions() {
+            throw new IllegalStateException("OKX positions unavailable");
         }
     }
 }

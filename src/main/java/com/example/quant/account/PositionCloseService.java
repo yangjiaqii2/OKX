@@ -1,13 +1,18 @@
 package com.example.quant.account;
 
 import com.example.quant.account.dto.PositionSummary;
+import com.example.quant.agent.execution.AutoTradeRecordRepository;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.common.PageResult;
 import com.example.quant.okxtrade.OkxTradeAdapter;
+import com.example.quant.order.OrderStatus;
 import com.example.quant.order.OrderExecutionResult;
+import com.example.quant.order.PendingOrder;
+import com.example.quant.order.PendingOrderService;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
@@ -15,20 +20,44 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class PositionCloseService {
+    private static final List<OrderStatus> AUTO_CLOSE_BINDING_STATUSES = List.of(
+            OrderStatus.SUBMITTED,
+            OrderStatus.UNKNOWN_SUBMIT_STATUS,
+            OrderStatus.ENTRY_FILLED,
+            OrderStatus.PROTECTION_SUBMITTED,
+            OrderStatus.ACTIVE,
+            OrderStatus.ACTIVE_WITH_TP_WARNING,
+            OrderStatus.SIDEWAYS_TIMEOUT,
+            OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED,
+            OrderStatus.MAX_HOLD_TIMEOUT,
+            OrderStatus.CLOSE_SUBMITTED
+    );
+
     private final PositionSnapshotService positionSnapshotService;
     private final OkxTradeAdapter okxTradeAdapter;
     private final ClosePositionRecordRepository closePositionRecordRepository;
+    private final PendingOrderService pendingOrderService;
+    private final AutoTradeRecordRepository autoTradeRecordRepository;
 
     public PositionCloseService(PositionSnapshotService positionSnapshotService, OkxTradeAdapter okxTradeAdapter) {
-        this(positionSnapshotService, okxTradeAdapter, null);
+        this(positionSnapshotService, okxTradeAdapter, null, null, null);
+    }
+
+    public PositionCloseService(PositionSnapshotService positionSnapshotService, OkxTradeAdapter okxTradeAdapter,
+                                ClosePositionRecordRepository closePositionRecordRepository) {
+        this(positionSnapshotService, okxTradeAdapter, closePositionRecordRepository, null, null);
     }
 
     @Autowired
     public PositionCloseService(PositionSnapshotService positionSnapshotService, OkxTradeAdapter okxTradeAdapter,
-                                ClosePositionRecordRepository closePositionRecordRepository) {
+                                ClosePositionRecordRepository closePositionRecordRepository,
+                                PendingOrderService pendingOrderService,
+                                AutoTradeRecordRepository autoTradeRecordRepository) {
         this.positionSnapshotService = positionSnapshotService;
         this.okxTradeAdapter = okxTradeAdapter;
         this.closePositionRecordRepository = closePositionRecordRepository;
+        this.pendingOrderService = pendingOrderService;
+        this.autoTradeRecordRepository = autoTradeRecordRepository;
     }
 
     public OrderExecutionResult closePosition(String instId, String posSide, String marginMode) {
@@ -63,7 +92,7 @@ public class PositionCloseService {
                 .stream()
                 .map(ClosePositionRecordView::from)
                 .toList();
-        return new PageResult<>(rows, rows.size(), safePage, safeSize);
+        return new PageResult<>(rows, closePositionRecordRepository.countByUserName(username), safePage, safeSize);
     }
 
     private void recordCloseSubmitted(PositionSummary position, String posSide, String marginMode,
@@ -83,9 +112,36 @@ public class PositionCloseService {
         record.setAvgPx(position.avgPrice());
         record.setStatus("CLOSE_SUBMITTED");
         record.setSource("MANUAL");
+        bindAutoTradeLifecycle(record, result);
         record.setCreatedAt(now);
         record.setUpdatedAt(now);
         closePositionRecordRepository.save(record);
+    }
+
+    private void bindAutoTradeLifecycle(ClosePositionRecordEntity record, OrderExecutionResult result) {
+        Optional<PendingOrder> matched = matchingAutoPendingOrder(record.getInstId(), record.getPosSide());
+        if (matched.isEmpty()) {
+            return;
+        }
+        PendingOrder order = matched.get();
+        record.setPendingOrderId(order.id().toString());
+        if (autoTradeRecordRepository != null) {
+            autoTradeRecordRepository.findFirstByPendingOrderIdOrderByCreatedAtDesc(order.id().toString())
+                    .ifPresent(autoTradeRecord -> record.setAutoTradeRecordId(autoTradeRecord.getId()));
+        }
+        order.markCloseSubmitted(result.externalOrderId(), "MANUAL_CLOSE_SUBMITTED");
+    }
+
+    private Optional<PendingOrder> matchingAutoPendingOrder(String instId, String posSide) {
+        if (pendingOrderService == null) {
+            return Optional.empty();
+        }
+        return pendingOrderService.allOrders().stream()
+                .filter(order -> order.budgetReservationId() != null)
+                .filter(order -> instId.equalsIgnoreCase(order.instId()))
+                .filter(order -> !hasText(posSide) || posSide.equalsIgnoreCase(order.posSide()))
+                .filter(order -> AUTO_CLOSE_BINDING_STATUSES.contains(order.status()))
+                .findFirst();
     }
 
     private static BigDecimal decimal(String value) {

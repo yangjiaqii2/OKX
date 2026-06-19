@@ -1,6 +1,8 @@
 package com.example.quant.agent.execution;
 
 import com.example.quant.account.OkxCredentialStore;
+import com.example.quant.account.ClosePositionRecordEntity;
+import com.example.quant.account.ClosePositionRecordRepository;
 import com.example.quant.account.PositionSnapshotService;
 import com.example.quant.account.dto.PositionSummary;
 import com.example.quant.auth.AuthUserContext;
@@ -15,6 +17,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,17 +27,28 @@ public class AutoTradeProfitService {
     private static final BigDecimal ONE_HUNDRED = BigDecimal.valueOf(100);
 
     private final AutoTradeRecordRepository recordRepository;
+    private final ClosePositionRecordRepository closePositionRecordRepository;
     private final PositionSnapshotService positionSnapshotService;
     private final SystemControlService systemControlService;
     private final Clock clock;
 
-    @Autowired
     public AutoTradeProfitService(
             AutoTradeRecordRepository recordRepository,
             PositionSnapshotService positionSnapshotService,
             SystemControlService systemControlService
     ) {
-        this(recordRepository, positionSnapshotService, systemControlService, Clock.system(DISPLAY_ZONE));
+        this(recordRepository, positionSnapshotService, systemControlService, null, Clock.system(DISPLAY_ZONE));
+    }
+
+    @Autowired
+    public AutoTradeProfitService(
+            AutoTradeRecordRepository recordRepository,
+            PositionSnapshotService positionSnapshotService,
+            SystemControlService systemControlService,
+            ClosePositionRecordRepository closePositionRecordRepository
+    ) {
+        this(recordRepository, positionSnapshotService, systemControlService,
+                closePositionRecordRepository, Clock.system(DISPLAY_ZONE));
     }
 
     AutoTradeProfitService(
@@ -43,7 +57,18 @@ public class AutoTradeProfitService {
             SystemControlService systemControlService,
             Clock clock
     ) {
+        this(recordRepository, positionSnapshotService, systemControlService, null, clock);
+    }
+
+    AutoTradeProfitService(
+            AutoTradeRecordRepository recordRepository,
+            PositionSnapshotService positionSnapshotService,
+            SystemControlService systemControlService,
+            ClosePositionRecordRepository closePositionRecordRepository,
+            Clock clock
+    ) {
         this.recordRepository = recordRepository;
+        this.closePositionRecordRepository = closePositionRecordRepository;
         this.positionSnapshotService = positionSnapshotService;
         this.systemControlService = systemControlService;
         this.clock = clock;
@@ -89,9 +114,16 @@ public class AutoTradeProfitService {
         }
 
         BigDecimal totalBudget = zeroIfNull(systemControlService.status().autoTradeMarginUsdt());
-        BigDecimal realizedPnl = BigDecimal.ZERO;
-        BigDecimal todayRealizedPnl = BigDecimal.ZERO;
+        CloseProfit closeProfit = realizedCloseProfit(username, today);
+        BigDecimal realizedPnl = closeProfit.realizedNetPnl();
+        BigDecimal todayRealizedPnl = closeProfit.todayRealizedNetPnl();
         BigDecimal totalNetPnl = realizedPnl.add(unrealizedPnl);
+        String dataQuality = closeProfit.closedCount() > 0
+                ? "REALIZED_FROM_CLOSE_RECORDS_PLUS_ESTIMATED_UNREALIZED"
+                : "ESTIMATED_UNREALIZED_ONLY";
+        String message = closeProfit.closedCount() > 0
+                ? "已实现净收益来自平仓记录 realizedPnl + fee + fundingFee；未实现收益仍来自OKX当前持仓，标记为估算。"
+                : "当前未找到已关闭平仓记录；未实现收益来自OKX当前持仓，完整净收益需继续接入成交、手续费和资金费流水。";
         return new AutoTradeProfitSummary(
                 totalBudget,
                 submittedMargin,
@@ -105,9 +137,34 @@ public class AutoTradeProfitService {
                 openPositionCount,
                 records.size(),
                 now,
-                "ESTIMATED_UNREALIZED_ONLY",
-                "当前为第一版收益概览：已实现收益暂按0处理，未实现收益来自OKX当前持仓；完整净收益需接入成交、手续费和资金费流水。"
+                dataQuality,
+                message
         );
+    }
+
+    private CloseProfit realizedCloseProfit(String username, LocalDate today) {
+        if (closePositionRecordRepository == null) {
+            return new CloseProfit(BigDecimal.ZERO, BigDecimal.ZERO, 0);
+        }
+        BigDecimal realized = BigDecimal.ZERO;
+        BigDecimal todayRealized = BigDecimal.ZERO;
+        int closedCount = 0;
+        for (ClosePositionRecordEntity record : closePositionRecordRepository
+                .findByUserNameOrderByCreatedAtDesc(username, Pageable.unpaged())) {
+            if (!"CLOSED".equalsIgnoreCase(nullToEmpty(record.getStatus()))) {
+                continue;
+            }
+            BigDecimal net = zeroIfNull(record.getRealizedPnl())
+                    .add(zeroIfNull(record.getFee()))
+                    .add(zeroIfNull(record.getFundingFee()));
+            realized = realized.add(net);
+            closedCount++;
+            if (record.getCreatedAt() != null
+                    && LocalDate.ofInstant(record.getCreatedAt(), DISPLAY_ZONE).equals(today)) {
+                todayRealized = todayRealized.add(net);
+            }
+        }
+        return new CloseProfit(realized, todayRealized, closedCount);
     }
 
     private List<PositionSummary> safePositions() {
@@ -162,5 +219,8 @@ public class AutoTradeProfitService {
 
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private record CloseProfit(BigDecimal realizedNetPnl, BigDecimal todayRealizedNetPnl, int closedCount) {
     }
 }

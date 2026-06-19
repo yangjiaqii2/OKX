@@ -53,6 +53,7 @@ class PendingOrderServiceTest {
                 UUID.randomUUID(),
                 samplePlan().id(),
                 UUID.randomUUID(),
+                "local-admin",
                 "BTC-USDT-SWAP",
                 new BigDecimal("22.5"),
                 BudgetReservationStatus.RESERVED,

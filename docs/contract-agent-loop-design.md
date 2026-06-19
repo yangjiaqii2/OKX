@@ -905,7 +905,7 @@ Auto trading should remain disabled until backtest and monitor modules exist.
 
 本次改造把自动交易从“提交 OKX 委托”推进到可恢复、可追踪、可复盘的第一阶段闭环。核心边界如下：
 
-- 自动交易运行态持久化到 `system_control_state`，包括紧急停止、自动交易开关、owner、风险模式、总预算、无风控最低分数和最低杠杆。
+- 自动交易运行态持久化到 `system_control_state`，包括紧急停止、自动交易开关、owner、风险模式、总预算、放宽策略最低分数和最低杠杆。
 - 自动交易预算持久化到 `auto_trade_budget_reservation`，`RESERVED` 表示未成交入场委托或待确认占用，`USED` 表示已进入实际入场风险敞口，`RELEASED` 表示预算释放。
 - OKX 提交超时后通过稳定 `clOrdId` 查询 `/api/v5/trade/order`，查到订单则恢复本地 `SUBMITTED` 并保持预算占用；确认查不到时才释放预算。
 - `AutoTradeRecoveryTask` 增强为恢复和同步入口：处理过期/失败预算释放、`UNKNOWN_SUBMIT_STATUS` 恢复，并调用生命周期检查。
@@ -953,7 +953,7 @@ quant:
 
 - 当前已预留成交、手续费、资金费字段，但完整净收益仍需接入 OKX 成交流水、手续费流水和资金费流水后计算。
 - 平仓 `CLOSED` 的最终确认已支持基于 OKX 当前持仓归零的本地同步；后续仍需接入 OKX close order/fill 明细来补全 `avgPx`、手续费、资金费和精确已实现盈亏。
-- 保护单在平仓完成后会本地标记 `INVALID`，后续仍需增加 OKX 算法单批量撤销确认和失败重试。
+- 保护单在平仓完成后需要调用 OKX 算法单撤销接口并同步本地状态；撤销失败必须进入 `PROTECTION_CANCEL_FAILED`，不能静默裸仓。
 
 ## 19. 2026-06-18 第二阶段闭环补强
 
@@ -962,16 +962,71 @@ quant:
 - `PendingOrder` 新增 `pending_order_state` 表持久化，自动交易入场订单、预算预占用、`clientOrderId`、OKX 订单号、提交时间、拒绝原因和生命周期状态会在状态变化时保存。
 - `PendingOrderService` 启动时恢复未闭环订单，`SUBMITTED`、`UNKNOWN_SUBMIT_STATUS`、`PROTECTION_SUBMITTED`、`CLOSE_SUBMITTED` 等状态可继续被恢复任务和生命周期任务处理。
 - 开启自动交易前，`SystemControlController` 必须调用 OKX 私有账户验证；未绑定、签名失败、权限/IP/时间戳等验证失败时不会打开自动交易开关。
-- 新增 `ClosePositionRecoveryService`，定时任务确认 OKX 当前持仓已归零后，将平仓记录标记为 `CLOSED`，对应本地 PendingOrder 标记为 `CLOSED`，释放自动交易预算，并将 reduceOnly 保护单本地标记为 `INVALID`。
+- 新增 `ClosePositionRecoveryService`，定时任务确认 OKX 当前持仓已归零后，将平仓记录标记为 `CLOSED`，对应本地 PendingOrder 标记为 `CLOSED`，释放自动交易预算，并撤销/失效 reduceOnly 保护单。
 - 登录页移除默认管理员账号/密码提示和用户名预填；账号安全页创建用户输入区加宽，并支持查看初始密码。
+
+## 20. 2026-06-18 第三阶段闭环修复
+
+本次修复继续补齐“真实生命周期闭环”的高风险缺口：
+
+- `ClosePositionRecoveryService` 不再把 OKX 持仓查询异常当成空持仓；查询失败时只给 `close_position_record.error_message` 写入 `POSITION_QUERY_FAILED` 并跳过本轮，不关闭记录、不释放预算、不失效保护单。
+- 平仓确认后会对同一 `pendingOrderId` 下的活跃 reduceOnly 保护单调用 OKX `/api/v5/trade/cancel-algos`；撤销成功后本地标记 `INVALID/CANCELLED`，撤销失败标记 `PROTECTION_CANCEL_FAILED` 并保留错误原因。
+- OKX `cancel-algos` 请求体改为数组格式，符合 OKX V5 接口要求。
+- 手动平仓会匹配同 `instId + posSide` 的活跃自动交易 `PendingOrder`，写入 `close_position_record.pending_order_id`，并将本地订单置为 `CLOSE_SUBMITTED`；后续恢复确认 `CLOSED` 后释放对应预算。
+- 最大持仓 8 小时触发时，生命周期服务除了提交 OKX close-position，还会写入 `close_position_record`，`source=MAX_HOLD_TIMEOUT`，状态为 `CLOSE_SUBMITTED`。
+- 横盘 3 小时的小盈利退出会先撤销/失效旧 `TP1/TP2/TP3`，保留 `STOP_LOSS`，再提交并落库新的 `SIDEWAYS_TP` 保护单。
+- 部分成交后的保护单数量改为使用 `OkxInstrumentRulesProvider` 的真实 `lotSz/minSz/tickSz`，不再使用默认整数规则。
+- 生命周期 `algoClOrdId` 改为稳定短 hash + 类型码，避免 `SL/TP1/TP2/TP3/SIDEWAYS_TP` 截断碰撞。
+- 自动交易复盘记录由只保存 `EXECUTED` 改为保存所有最终状态，包括 `SKIPPED`、`REJECTED`、`FAILED`、`UNKNOWN_SUBMIT_STATUS`。
+- 本地已有活跃入场委托时，自动交易轮次会以 `local_active_entry_order` 跳过，避免服务重启或状态不同步导致重复开仓。
+- `auto_trade_budget_reservation` 新增 `user_name`，预算恢复、统计、按 pendingOrder 查询和保存均按当前用户隔离。
+- 平仓记录分页 total 改为 repository count，不再用当前页 `rows.size()` 伪造总数。
+- 前端将 `NO_RISK` 展示文案调整为“放宽策略门槛”，明确它只是放宽 `AUTO_TRADE_ALLOWED` 和部分策略等待，仍保留 OKX Key、余额、最小下单、重复开仓、重大恶性新闻和交易所错误等硬门槛。
+
+### 第三阶段剩余边界
+
+- 自动交易开仓容量已经覆盖 OKX 持仓、本地活跃入场记录、PendingOrder 和预算记录；OKX 当前普通委托/算法委托同步到 `trade_order` 后的逐 symbol 阻断在第四阶段补齐。
+- 平仓完成后的精确收益仍需 OKX close order/fill 明细、手续费流水和资金费流水；第四阶段先基于 `close_position_record` 的已落库字段提供净收益汇总。
+- 保护单撤销失败已持久化为 `PROTECTION_CANCEL_FAILED`；第四阶段补齐自动重试和超限后的 `EMERGENCY_ATTENTION_REQUIRED`。
 
 ### 第二阶段剩余边界
 
-- OKX 算法单撤销目前是本地失效标记，仍需对接 `/api/v5/trade/cancel-algos` 做实盘撤销确认。
 - 平仓完成后的精确收益仍需 OKX 成交流水、手续费流水和资金费流水。
 - 自动交易扫描容量判断已能利用本地恢复订单和预算记录，但还需要继续把 OKX 当前普通委托/算法委托状态同步回 `trade_order` 的最终状态。
 
+## 21. 2026-06-18 第四阶段边界补齐
+
+本次补齐第三阶段遗留的“未完全闭环”边界：
+
+- 新增 `OkxCurrentOrderSyncService`，每轮同步 OKX 当前普通委托和算法委托到 `trade_order`，按 OKX 订单号或客户端订单号 upsert 本地记录，并返回当前被 OKX 未完成委托占用的 `instId` 集合。
+- `AutoTradeRecoveryTask` 每轮恢复开始时调用 OKX 当前委托同步；同步失败只记录告警，不阻断入场超时、横盘 TP、最大持仓和平仓恢复等后续补偿任务。
+- `AutoTradeService` 开仓前调用 OKX 当前委托同步：查询失败时本轮以 `okx_current_orders_unavailable` 跳过；同一 `instId` 已存在 OKX 当前普通委托或算法委托时，以 `okx_current_active_order` 跳过，避免重启或本地状态缺失后的重复开仓。
+- 自动交易容量统计新增 OKX 当前委托占用，容量不再只看 OKX 当前持仓和内存 symbol lock。
+- `ClosePositionRecoveryService` 对 `PROTECTION_CANCEL_FAILED` 保护单增加自动重试：重试成功标记 `INVALID/CANCELLED`，连续失败达到阈值后升级为 `EMERGENCY_ATTENTION_REQUIRED`，并保留 `cancelRetry` 和失败原因。
+- 横盘 TP 替换和平仓完成撤销保护单的首次失败都会写入 `cancelRetry=1`，后续恢复任务可继续递增处理。
+- `AutoTradeProfitService` 已实现收益不再固定为 0，而是从当前用户 `CLOSED` 平仓记录汇总 `realizedPnl + fee + fundingFee`；未实现收益仍来自 OKX 当前持仓，并通过 `dataQuality=REALIZED_FROM_CLOSE_RECORDS_PLUS_ESTIMATED_UNREALIZED` 明确这是平仓记录加估算浮盈口径。
+- 控制台收益卡片新增“已实现净收益”，今日预算卡片显示今日已实现净收益，避免把预算占用和收益混在一起。
+
+### 第四阶段剩余边界
+
+- `trade_order` 当前委托同步已能 upsert OKX 当前 live 委托，但仍需后续把已消失的 OKX 委托与本地历史状态做更精确的终态对账，例如区分成交、撤销、过期和 OKX 自动取消。
+- 净收益目前基于 `close_position_record` 已落库字段；若 OKX close fill、手续费、资金费流水尚未写入该表，仍需后续接入流水补全 `avgPx`、`fee`、`fundingFee` 和精确 `realizedPnl`。
+
 ## Change Log
+
+### 2026-06-18 - 自动交易闭环第四阶段边界补齐
+
+- 变更摘要：新增 OKX 当前委托同步到 `trade_order`、开仓前 OKX 当前委托防重复、恢复任务同步入口、保护单取消失败重试/人工处理升级、平仓记录净收益汇总和前端收益卡片区分。
+- 影响文件：`src/main/java/com/example/quant/okxtrade/OkxCurrentOrderSyncService.java`、`src/main/java/com/example/quant/task/AutoTradeRecoveryTask.java`、`src/main/java/com/example/quant/agent/execution/AutoTradeService.java`、`src/main/java/com/example/quant/agent/execution/TradeOrderRepository.java`、`src/main/java/com/example/quant/account/ClosePositionRecoveryService.java`、`src/main/java/com/example/quant/agent/lifecycle/AutoTradeLifecycleService.java`、`src/main/java/com/example/quant/agent/execution/AutoTradeProfitService.java`、`frontend/src/pages/Dashboard.tsx`。
+- 影响：OKX 当前 live 普通/算法委托会被镜像到本地订单表并参与自动交易防重复；OKX 当前委托查询失败时不会继续硬开仓；保护单取消失败不会永久停在失败状态；收益展示区分已实现净收益、估算浮盈和预算占用。
+- 验证：`mvn test` 通过，179 个测试 0 失败；`npm --prefix frontend run build` 通过，仍有 Vite chunk size 警告。
+
+### 2026-06-18 - 自动交易闭环第三阶段修复
+
+- 变更摘要：补齐平仓恢复异常保护、OKX 保护单撤销、手动/最大持仓平仓关联、横盘 TP 替换、部分成交真实精度、预算多用户隔离、复盘记录和分页 total。
+- 影响文件：`src/main/java/com/example/quant/account/ClosePositionRecoveryService.java`、`src/main/java/com/example/quant/account/PositionCloseService.java`、`src/main/java/com/example/quant/account/ClosePositionRecordRepository.java`、`src/main/java/com/example/quant/agent/lifecycle/AutoTradeLifecycleService.java`、`src/main/java/com/example/quant/agent/budget/AutoTradeBudgetService.java`、`src/main/java/com/example/quant/agent/budget/BudgetReservation*.java`、`src/main/java/com/example/quant/agent/execution/AutoTradeService.java`、`src/main/java/com/example/quant/agent/execution/TradeOrderEntity.java`、`src/main/java/com/example/quant/crypto/OkxRestClient.java`、`src/main/java/com/example/quant/okxtrade/OkxRestOrderGateway.java`、`src/main/resources/db/migration/V13__budget_reservation_user_name.sql`、`frontend/src/pages/SystemControlPage.tsx`。
+- 影响：OKX 持仓查询异常不会误关闭；平仓完成后会真实撤销保护单并记录失败；最大持仓平仓和手动平仓可关联 PendingOrder；横盘退出不会保留多组 TP；预算按用户隔离；自动交易所有最终状态都会进入复盘记录；前端 NO_RISK 文案更准确。
+- 验证：`mvn test` 通过，171 个测试 0 失败；`npm --prefix frontend run build` 通过，仍有 Vite chunk size 警告。
 
 ### 2026-06-18 - 自动交易闭环第二阶段补强
 

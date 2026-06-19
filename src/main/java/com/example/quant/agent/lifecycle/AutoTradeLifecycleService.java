@@ -1,16 +1,26 @@
 package com.example.quant.agent.lifecycle;
 
+import com.example.quant.account.ClosePositionRecordEntity;
+import com.example.quant.account.ClosePositionRecordRepository;
+import com.example.quant.account.OkxCredentialStore;
 import com.example.quant.account.PositionSnapshotService;
 import com.example.quant.account.dto.PositionSummary;
 import com.example.quant.agent.budget.AutoTradeBudgetService;
 import com.example.quant.agent.budget.BudgetReservation;
+import com.example.quant.agent.execution.TradeOrderEntity;
+import com.example.quant.agent.execution.TradeOrderRepository;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.okxtrade.OkxInstrumentRules;
+import com.example.quant.okxtrade.OkxInstrumentRulesProvider;
 import com.example.quant.okxtrade.OkxOrderGateway;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
 import com.fasterxml.jackson.databind.JsonNode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
@@ -19,24 +29,63 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AutoTradeLifecycleService {
+    private static final List<String> ACTIVE_PROTECTION_STATUSES = List.of(
+            "SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE"
+    );
+
     private final PendingOrderService pendingOrderService;
     private final AutoTradeBudgetService budgetService;
     private final AgentProperties agentProperties;
     private final OkxOrderGateway okxOrderGateway;
     private final PositionSnapshotService positionSnapshotService;
+    private final OkxInstrumentRulesProvider instrumentRulesProvider;
+    private final ClosePositionRecordRepository closePositionRecordRepository;
+    private final TradeOrderRepository tradeOrderRepository;
 
     public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
                                      AgentProperties agentProperties, OkxOrderGateway okxOrderGateway,
                                      PositionSnapshotService positionSnapshotService) {
+        this(pendingOrderService, budgetService, agentProperties, okxOrderGateway, positionSnapshotService,
+                OkxInstrumentRules::defaultFor, null, null);
+    }
+
+    public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                     AgentProperties agentProperties, OkxOrderGateway okxOrderGateway,
+                                     PositionSnapshotService positionSnapshotService,
+                                     ClosePositionRecordRepository closePositionRecordRepository) {
+        this(pendingOrderService, budgetService, agentProperties, okxOrderGateway, positionSnapshotService,
+                OkxInstrumentRules::defaultFor, closePositionRecordRepository, null);
+    }
+
+    public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                     AgentProperties agentProperties, OkxOrderGateway okxOrderGateway,
+                                     PositionSnapshotService positionSnapshotService,
+                                     ClosePositionRecordRepository closePositionRecordRepository,
+                                     TradeOrderRepository tradeOrderRepository) {
+        this(pendingOrderService, budgetService, agentProperties, okxOrderGateway, positionSnapshotService,
+                OkxInstrumentRules::defaultFor, closePositionRecordRepository, tradeOrderRepository);
+    }
+
+    @Autowired
+    public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                     AgentProperties agentProperties, OkxOrderGateway okxOrderGateway,
+                                     PositionSnapshotService positionSnapshotService,
+                                     OkxInstrumentRulesProvider instrumentRulesProvider,
+                                     ClosePositionRecordRepository closePositionRecordRepository,
+                                     TradeOrderRepository tradeOrderRepository) {
         this.pendingOrderService = pendingOrderService;
         this.budgetService = budgetService;
         this.agentProperties = agentProperties == null ? new AgentProperties() : agentProperties;
         this.okxOrderGateway = okxOrderGateway;
         this.positionSnapshotService = positionSnapshotService;
+        this.instrumentRulesProvider = instrumentRulesProvider == null ? OkxInstrumentRules::defaultFor : instrumentRulesProvider;
+        this.closePositionRecordRepository = closePositionRecordRepository;
+        this.tradeOrderRepository = tradeOrderRepository;
     }
 
     public LifecycleRunResult runOnce() {
@@ -56,7 +105,7 @@ public class AutoTradeLifecycleService {
             PositionSummary position = matchingPosition(order, positions);
             Duration age = Duration.between(order.submittedAt(), now);
             if (position != null && shouldMaxHoldClose(order, age)) {
-                maxHoldCloseSubmitted += submitMaxHoldClose(order);
+                maxHoldCloseSubmitted += submitMaxHoldClose(order, position, now);
                 continue;
             }
             if (position != null && shouldAdjustSideways(order, position, age)) {
@@ -145,15 +194,98 @@ public class AutoTradeLifecycleService {
         BigDecimal avgPx = positive(position.avgPrice(), order.price());
         BigDecimal size = decimal(position.size());
         BigDecimal triggerPx = smallProfitTakeProfit(order.posSide(), avgPx);
+        if (!replaceExistingTakeProfits(order)) {
+            order.markEmergencyAttentionRequired("SIDEWAYS_TP_REPLACE_FAILED");
+            return 0;
+        }
         Map<String, String> payload = algoPayload(order, size, "SIDEWAYS_TP");
         payload.put("tpTriggerPx", value(triggerPx));
         payload.put("tpOrdPx", "-1");
-        okxOrderGateway.placeAlgoOrder(payload);
+        JsonNode response = okxOrderGateway.placeAlgoOrder(payload);
+        recordSidewaysTakeProfit(order, payload, size, triggerPx, response);
         order.markSidewaysTimeoutTpAdjusted("SIDEWAYS_TIMEOUT_TP_ADJUSTED");
         return 1;
     }
 
-    private int submitMaxHoldClose(PendingOrder order) {
+    private boolean replaceExistingTakeProfits(PendingOrder order) {
+        if (tradeOrderRepository == null) {
+            return true;
+        }
+        List<TradeOrderEntity> takeProfits = tradeOrderRepository
+                .findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(order.id().toString(), ACTIVE_PROTECTION_STATUSES)
+                .stream()
+                .filter(AutoTradeLifecycleService::isTakeProfitRole)
+                .toList();
+        boolean allCancelled = true;
+        Instant now = Instant.now();
+        for (TradeOrderEntity takeProfit : takeProfits) {
+            if (cancelProtection(takeProfit)) {
+                takeProfit.setStatus("INVALID");
+                takeProfit.setOkxState("CANCELLED");
+                takeProfit.setErrorMessage("SIDEWAYS_TP_REPLACED");
+            } else {
+                allCancelled = false;
+                takeProfit.setStatus("PROTECTION_CANCEL_FAILED");
+                takeProfit.setErrorMessage("PROTECTION_CANCEL_FAILED: cancelRetry=1; "
+                        + compact(takeProfit.getErrorMessage()));
+            }
+            takeProfit.setUpdatedAt(now);
+        }
+        if (!takeProfits.isEmpty()) {
+            tradeOrderRepository.saveAll(takeProfits);
+        }
+        return allCancelled;
+    }
+
+    private boolean cancelProtection(TradeOrderEntity protection) {
+        Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("instId", protection.getInstId());
+        if (hasText(protection.getOkxOrdId())) {
+            payload.put("algoId", protection.getOkxOrdId());
+        } else if (hasText(protection.getClOrdId())) {
+            payload.put("algoClOrdId", protection.getClOrdId());
+        }
+        if (payload.size() <= 1) {
+            return true;
+        }
+        try {
+            okxOrderGateway.cancelAlgoOrder(payload);
+            return true;
+        } catch (RuntimeException ex) {
+            protection.setOkxState("CANCEL_FAILED");
+            protection.setErrorMessage("PROTECTION_CANCEL_FAILED: " + compact(ex.getMessage()));
+            return false;
+        }
+    }
+
+    private void recordSidewaysTakeProfit(PendingOrder order, Map<String, String> payload,
+                                          BigDecimal size, BigDecimal triggerPx, JsonNode response) {
+        if (tradeOrderRepository == null) {
+            return;
+        }
+        Instant now = Instant.now();
+        TradeOrderEntity entity = new TradeOrderEntity();
+        entity.setTradePlanId(order.tradePlanId() == null ? null : order.tradePlanId().toString());
+        entity.setPendingOrderId(order.id().toString());
+        entity.setOrderRole("SIDEWAYS_TP");
+        entity.setInstId(order.instId());
+        entity.setSide(payload.get("side"));
+        entity.setPosSide(order.posSide());
+        entity.setOrdType(payload.get("ordType"));
+        entity.setTdMode(order.tdMode());
+        entity.setSize(size);
+        entity.setPrice(triggerPx);
+        entity.setReduceOnly(true);
+        entity.setClOrdId(payload.get("algoClOrdId"));
+        entity.setOkxOrdId(algoId(response));
+        entity.setOkxState("live");
+        entity.setStatus("PROTECTION_SUBMITTED");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        tradeOrderRepository.save(entity);
+    }
+
+    private int submitMaxHoldClose(PendingOrder order, PositionSummary position, Instant now) {
         Map<String, String> payload = new LinkedHashMap<>();
         payload.put("instId", order.instId());
         payload.put("mgnMode", order.tdMode());
@@ -163,7 +295,9 @@ public class AutoTradeLifecycleService {
         }
         try {
             JsonNode response = okxOrderGateway.closePosition(payload);
-            order.markCloseSubmitted(closeId(response), "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED");
+            String closeOrderId = closeId(response);
+            order.markCloseSubmitted(closeOrderId, "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED");
+            recordMaxHoldCloseSubmitted(order, position, closeOrderId, now);
             return 1;
         } catch (RuntimeException ex) {
             order.markEmergencyAttentionRequired("MAX_HOLD_TIMEOUT_CLOSE_FAILED: " + ex.getMessage());
@@ -171,11 +305,41 @@ public class AutoTradeLifecycleService {
         }
     }
 
+    private void recordMaxHoldCloseSubmitted(PendingOrder order, PositionSummary position, String closeOrderId, Instant now) {
+        if (closePositionRecordRepository == null) {
+            return;
+        }
+        ClosePositionRecordEntity record = new ClosePositionRecordEntity();
+        record.setUserName(AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER));
+        record.setInstId(order.instId());
+        record.setPosSide(order.posSide());
+        record.setMarginMode(order.tdMode());
+        record.setCloseOrderId(closeOrderId);
+        record.setCloseClOrdId("MAXC" + shortHash(order.id().toString(), 24));
+        record.setSize(decimal(position.size()));
+        record.setAvgPx(position.avgPrice());
+        record.setStatus("CLOSE_SUBMITTED");
+        record.setSource("MAX_HOLD_TIMEOUT");
+        record.setPendingOrderId(order.id().toString());
+        record.setCreatedAt(now);
+        record.setUpdatedAt(now);
+        closePositionRecordRepository.save(record);
+    }
+
     private void submitProtection(PendingOrder order, BigDecimal avgPx, BigDecimal filledSize, String suffix) {
-        OkxInstrumentRules rules = OkxInstrumentRules.defaultFor(order.instId());
+        OkxInstrumentRules rules = instrumentRules(order.instId());
         BigDecimal normalizedSize = rules.floorToLot(filledSize);
         for (Map<String, String> payload : protectionPayloads(order, rules, normalizedSize, avgPx, suffix)) {
             okxOrderGateway.placeAlgoOrder(payload);
+        }
+    }
+
+    private OkxInstrumentRules instrumentRules(String instId) {
+        try {
+            OkxInstrumentRules rules = instrumentRulesProvider.rules(instId);
+            return rules == null ? OkxInstrumentRules.defaultFor(instId) : rules;
+        } catch (RuntimeException ex) {
+            return OkxInstrumentRules.defaultFor(instId);
         }
     }
 
@@ -362,10 +526,43 @@ public class AutoTradeLifecycleService {
     }
 
     private static String lifecycleAlgoClOrdId(PendingOrder order, String suffix) {
-        String base = order.id().toString().replace("-", "");
-        String cleanSuffix = suffix == null ? "" : suffix.replaceAll("[^A-Za-z0-9]", "");
-        String value = "lc" + base.substring(0, Math.min(20, base.length())) + cleanSuffix;
-        return value.length() > 32 ? value.substring(0, 32) : value;
+        String cleanSuffix = suffix == null ? "" : suffix.replaceAll("[^A-Za-z0-9]", "").toUpperCase();
+        String typeCode = lifecycleTypeCode(cleanSuffix);
+        return "lc" + shortHash(order.id().toString(), 12) + typeCode + shortHash(cleanSuffix, 8);
+    }
+
+    private static String lifecycleTypeCode(String cleanSuffix) {
+        if (cleanSuffix.contains("SIDEWAYS")) {
+            return "SWT";
+        }
+        if (cleanSuffix.contains("TP1")) {
+            return "TP1";
+        }
+        if (cleanSuffix.contains("TP2")) {
+            return "TP2";
+        }
+        if (cleanSuffix.contains("TP3")) {
+            return "TP3";
+        }
+        if (cleanSuffix.contains("SL") || cleanSuffix.contains("STOP")) {
+            return "SL";
+        }
+        return "LC";
+    }
+
+    private static String shortHash(String value, int length) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder(bytes.length * 2);
+            for (byte item : bytes) {
+                builder.append(Character.forDigit((item >> 4) & 0xf, 16));
+                builder.append(Character.forDigit(item & 0xf, 16));
+            }
+            return builder.substring(0, Math.min(length, builder.length()));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 
     private static JsonNode firstDataItem(JsonNode response) {
@@ -379,6 +576,11 @@ public class AutoTradeLifecycleService {
     private static String closeId(JsonNode response) {
         JsonNode item = firstDataItem(response);
         return item == null ? null : item.path("ordId").asText("");
+    }
+
+    private static String algoId(JsonNode response) {
+        JsonNode item = firstDataItem(response);
+        return item == null ? null : item.path("algoId").asText("");
     }
 
     private static BigDecimal decimal(JsonNode node, String field) {
@@ -405,6 +607,18 @@ public class AutoTradeLifecycleService {
 
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private static boolean isTakeProfitRole(TradeOrderEntity entity) {
+        String role = entity.getOrderRole();
+        return "TP1".equalsIgnoreCase(role) || "TP2".equalsIgnoreCase(role) || "TP3".equalsIgnoreCase(role);
+    }
+
+    private static String compact(String value) {
+        if (!hasText(value)) {
+            return "unknown";
+        }
+        return value.replaceAll("\\s+", " ").trim();
     }
 
     private record EntryFill(BigDecimal avgPx, BigDecimal filledSize) {

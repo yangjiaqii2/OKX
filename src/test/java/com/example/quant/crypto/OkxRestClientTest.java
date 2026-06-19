@@ -9,6 +9,7 @@ import com.example.quant.account.OkxCredentialStore;
 import com.example.quant.account.StoredOkxCredential;
 import com.example.quant.config.OkxProperties;
 import com.example.quant.config.TradingProperties;
+import com.example.quant.okxtrade.OkxRestOrderGateway;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
@@ -96,6 +97,48 @@ class OkxRestClientTest {
                     .hasMessageContaining("All operations failed")
                     .hasMessageContaining("51008")
                     .hasMessageContaining("Insufficient balance");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void cancelAlgoGatewayPostsArrayPayloadRequiredByOkx() throws Exception {
+        AtomicReference<String> capturedBody = new AtomicReference<>("");
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v5/public/time", exchange -> {
+            byte[] body = "{\"code\":\"0\",\"data\":[{\"ts\":\"1700000000123\"}]}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.createContext("/api/v5/trade/cancel-algos", exchange -> {
+            capturedBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] body = "{\"code\":\"0\",\"data\":[{\"algoClOrdId\":\"lc123SL\",\"sCode\":\"0\",\"sMsg\":\"\"}]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            OkxRestClient client = new OkxRestClient(
+                    new OkxProperties(
+                            new OkxProperties.Api("http://127.0.0.1:" + server.getAddress().getPort(), "", "", ""),
+                            new OkxProperties.Websocket("", "", 0, 0, 0)
+                    ),
+                    bindingService(),
+                    new OkxSigner(),
+                    new ObjectMapper(),
+                    HttpClient.newHttpClient()
+            );
+            OkxRestOrderGateway gateway = new OkxRestOrderGateway(client);
+
+            gateway.cancelAlgoOrder(Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "lc123SL"));
+
+            assertThat(capturedBody.get()).startsWith("[");
+            assertThat(capturedBody.get()).contains("\"instId\":\"BTC-USDT-SWAP\"");
+            assertThat(capturedBody.get()).contains("\"algoClOrdId\":\"lc123SL\"");
         } finally {
             server.stop(0);
         }

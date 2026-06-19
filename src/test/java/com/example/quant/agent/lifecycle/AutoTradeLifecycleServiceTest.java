@@ -1,7 +1,13 @@
 package com.example.quant.agent.lifecycle;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import com.example.quant.account.ClosePositionRecordEntity;
+import com.example.quant.account.ClosePositionRecordRepository;
 import com.example.quant.account.PositionSnapshotService;
 import com.example.quant.account.dto.PositionSummary;
 import com.example.quant.agent.budget.AutoTradeBudgetService;
@@ -9,9 +15,12 @@ import com.example.quant.agent.budget.BudgetAllocation;
 import com.example.quant.agent.budget.BudgetAllocationRequest;
 import com.example.quant.agent.budget.BudgetReservation;
 import com.example.quant.agent.budget.BudgetReservationStatus;
+import com.example.quant.agent.execution.TradeOrderEntity;
+import com.example.quant.agent.execution.TradeOrderRepository;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
+import com.example.quant.okxtrade.OkxInstrumentRules;
 import com.example.quant.okxtrade.OkxOrderGateway;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
@@ -28,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class AutoTradeLifecycleServiceTest {
 
@@ -90,7 +100,43 @@ class AutoTradeLifecycleServiceTest {
         assertThat(gateway.algoPayloads.get(1)).containsEntry("sz", "3").containsEntry("tpTriggerPx", "102");
         assertThat(gateway.algoPayloads.get(2)).containsEntry("sz", "4").containsEntry("tpTriggerPx", "104");
         assertThat(gateway.algoPayloads.get(3)).containsEntry("sz", "3").containsEntry("tpTriggerPx", "106");
+        assertThat(gateway.algoPayloads)
+                .extracting(payload -> payload.get("algoClOrdId"))
+                .doesNotHaveDuplicates()
+                .allSatisfy(clOrdId -> assertThat(clOrdId).hasSizeLessThanOrEqualTo(32));
         assertThat(order.status()).isEqualTo(OrderStatus.PROTECTION_SUBMITTED);
+    }
+
+    @Test
+    void partialFillProtectionUsesInstrumentLotRulesForActualFilledSize() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        LifecycleGateway gateway = new LifecycleGateway();
+        gateway.orderState = "partially_filled";
+        gateway.accFillSz = new BigDecimal("2.7");
+        gateway.avgPx = new BigDecimal("100");
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of()),
+                instId -> new OkxInstrumentRules(instId, BigDecimal.ONE, "BTC",
+                        new BigDecimal("0.5"), new BigDecimal("0.5"), new BigDecimal("0.5")),
+                null,
+                null
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T00:11:00Z"));
+
+        assertThat(result.partialFillProtected()).isEqualTo(1);
+        assertThat(gateway.algoPayloads.get(0)).containsEntry("sz", "2.5");
+        assertThat(gateway.algoPayloads.get(1)).containsEntry("sz", "0.5");
+        assertThat(gateway.algoPayloads.get(2)).containsEntry("sz", "1");
+        assertThat(gateway.algoPayloads.get(3)).containsEntry("sz", "1");
     }
 
     @Test
@@ -114,6 +160,56 @@ class AutoTradeLifecycleServiceTest {
         assertThat(result.sidewaysTpAdjusted()).isEqualTo(1);
         assertThat(order.status()).isEqualTo(OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED);
         assertThat(gateway.algoPayloads.get(0)).containsEntry("tpTriggerPx", "100.3");
+    }
+
+    @Test
+    void sidewaysTimeoutReplacesExistingTakeProfitsAndRecordsSidewaysProtection() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        TradeOrderEntity tp1 = protection(order, "TP1", "tp1-cl");
+        TradeOrderEntity tp2 = protection(order, "TP2", "tp2-cl");
+        TradeOrderEntity tp3 = protection(order, "TP3", "tp3-cl");
+        TradeOrderEntity stopLoss = protection(order, "STOP_LOSS", "sl-cl");
+        when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
+                order.id().toString(),
+                List.of("SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE")
+        )).thenReturn(List.of(tp1, tp2, tp3, stopLoss));
+        when(tradeOrderRepository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        LifecycleGateway gateway = new LifecycleGateway();
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "2", "100", "5", "1000"))),
+                null,
+                tradeOrderRepository
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T03:01:00Z"));
+
+        assertThat(result.sidewaysTpAdjusted()).isEqualTo(1);
+        assertThat(gateway.cancelAlgoPayloads)
+                .containsExactly(
+                        Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "tp1-cl"),
+                        Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "tp2-cl"),
+                        Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "tp3-cl")
+                );
+        assertThat(tp1.getStatus()).isEqualTo("INVALID");
+        assertThat(tp2.getStatus()).isEqualTo("INVALID");
+        assertThat(tp3.getStatus()).isEqualTo("INVALID");
+        assertThat(stopLoss.getStatus()).isEqualTo("PROTECTION_SUBMITTED");
+        ArgumentCaptor<TradeOrderEntity> sidewaysRecord = ArgumentCaptor.forClass(TradeOrderEntity.class);
+        verify(tradeOrderRepository).save(sidewaysRecord.capture());
+        assertThat(sidewaysRecord.getValue().getOrderRole()).isEqualTo("SIDEWAYS_TP");
+        assertThat(sidewaysRecord.getValue().getPendingOrderId()).isEqualTo(order.id().toString());
+        assertThat(sidewaysRecord.getValue().getStatus()).isEqualTo("PROTECTION_SUBMITTED");
+        assertThat(sidewaysRecord.getValue().isReduceOnly()).isTrue();
+        assertThat(sidewaysRecord.getValue().getPrice()).isEqualByComparingTo("100.3");
     }
 
     @Test
@@ -146,12 +242,15 @@ class AutoTradeLifecycleServiceTest {
         order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
         budgetService.markUsed(order.budgetReservationId());
         LifecycleGateway gateway = new LifecycleGateway();
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        when(closeRepository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         AutoTradeLifecycleService service = new AutoTradeLifecycleService(
                 pendingOrderService,
                 budgetService,
                 properties,
                 gateway,
-                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "2", "100", "20", "1000")))
+                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "2", "100", "20", "1000"))),
+                closeRepository
         );
 
         AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T08:01:00Z"));
@@ -159,6 +258,13 @@ class AutoTradeLifecycleServiceTest {
         assertThat(result.maxHoldCloseSubmitted()).isEqualTo(1);
         assertThat(order.status()).isEqualTo(OrderStatus.CLOSE_SUBMITTED);
         assertThat(gateway.closePayload).containsEntry("instId", "BTC-USDT-SWAP");
+        ArgumentCaptor<ClosePositionRecordEntity> closeRecord = ArgumentCaptor.forClass(ClosePositionRecordEntity.class);
+        verify(closeRepository).save(closeRecord.capture());
+        assertThat(closeRecord.getValue().getStatus()).isEqualTo("CLOSE_SUBMITTED");
+        assertThat(closeRecord.getValue().getSource()).isEqualTo("MAX_HOLD_TIMEOUT");
+        assertThat(closeRecord.getValue().getPendingOrderId()).isEqualTo(order.id().toString());
+        assertThat(closeRecord.getValue().getCloseOrderId()).isEqualTo("close-1");
+        assertThat(closeRecord.getValue().getSize()).isEqualByComparingTo("2");
         assertThat(budgetService.reservation(order.budgetReservationId()))
                 .get()
                 .extracting(BudgetReservation::status)
@@ -248,6 +354,25 @@ class AutoTradeLifecycleServiceTest {
         );
     }
 
+    private static TradeOrderEntity protection(PendingOrder order, String role, String clOrdId) {
+        TradeOrderEntity entity = new TradeOrderEntity();
+        entity.setPendingOrderId(order.id().toString());
+        entity.setOrderRole(role);
+        entity.setInstId(order.instId());
+        entity.setSide("sell");
+        entity.setPosSide(order.posSide());
+        entity.setOrdType("conditional");
+        entity.setTdMode(order.tdMode());
+        entity.setSize(BigDecimal.ONE);
+        entity.setReduceOnly(true);
+        entity.setClOrdId(clOrdId);
+        entity.setOkxState("live");
+        entity.setStatus("PROTECTION_SUBMITTED");
+        entity.setCreatedAt(Instant.parse("2026-06-18T00:00:00Z"));
+        entity.setUpdatedAt(Instant.parse("2026-06-18T00:00:00Z"));
+        return entity;
+    }
+
     private static class FixedPositionSnapshotService extends PositionSnapshotService {
         private final List<PositionSummary> positions;
 
@@ -269,6 +394,7 @@ class AutoTradeLifecycleServiceTest {
         private Map<String, String> cancelPayload;
         private Map<String, String> closePayload;
         private final List<Map<String, String>> algoPayloads = new ArrayList<>();
+        private final List<Map<String, String>> cancelAlgoPayloads = new ArrayList<>();
 
         @Override
         public JsonNode placeOrder(Map<String, String> payload) {
@@ -299,9 +425,19 @@ class AutoTradeLifecycleServiceTest {
         }
 
         @Override
+        public JsonNode cancelAlgoOrder(Map<String, String> payload) {
+            this.cancelAlgoPayloads.add(Map.copyOf(payload));
+            ObjectNode root = new ObjectMapper().createObjectNode();
+            root.putArray("data").addObject().put("sCode", "0");
+            return root;
+        }
+
+        @Override
         public JsonNode closePosition(Map<String, String> payload) {
             this.closePayload = payload;
-            return new ObjectMapper().createObjectNode().putArray("data").addObject().put("ordId", "close-1");
+            ObjectNode root = new ObjectMapper().createObjectNode();
+            root.putArray("data").addObject().put("ordId", "close-1");
+            return root;
         }
     }
 }
