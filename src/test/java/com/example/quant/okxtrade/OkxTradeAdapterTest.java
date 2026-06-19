@@ -52,6 +52,10 @@ class OkxTradeAdapterTest {
         OrderExecutionResult result = adapter.placeOrder(order);
 
         assertThat(result.executed()).isTrue();
+        assertThat(result.submitted()).isTrue();
+        assertThat(result.filled()).isFalse();
+        assertThat(result.partiallyFilled()).isFalse();
+        assertThat(result.unknown()).isFalse();
         assertThat(result.liveOrder()).isTrue();
         assertThat(result.externalOrderId()).isEqualTo("123456");
         assertThat(result.message()).contains("等待成交");

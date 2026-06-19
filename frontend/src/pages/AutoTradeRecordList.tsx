@@ -40,6 +40,7 @@ const pageSize = 50;
 const statusOptions = [
   { value: '', label: '全部状态' },
   { value: 'EXECUTED', label: '已提交委托' },
+  { value: 'ENTRY_SUBMITTED', label: '入场委托已提交' },
   { value: 'SKIPPED', label: '已跳过' },
   { value: 'REJECTED', label: '已拒绝' },
   { value: 'FAILED', label: '失败' },

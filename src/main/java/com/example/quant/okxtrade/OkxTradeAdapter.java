@@ -80,7 +80,8 @@ public class OkxTradeAdapter {
             recordSubmitted(order, entryRecord.withOkxOrdId(orderId));
             if (!"market".equalsIgnoreCase(order.orderType())) {
                 return new OrderExecutionResult(true, true, orderId,
-                        "OKX委托已提交，订单号 " + orderId + "，等待成交。委托提交不代表已成交，请由生命周期查询成交后提交保护单。");
+                        "入场委托已提交，等待成交",
+                        true, false, false, false);
             }
             ProtectionPlanResult protectionPlan = protectionPlan(order, rules, positionMode, orderId, new BigDecimal(payload.get("sz")));
             if (!protectionPlan.valid()) {
@@ -88,23 +89,27 @@ public class OkxTradeAdapter {
                 if ("ENTRY_FILL_NOT_CONFIRMED".equals(reason)) {
                     return new OrderExecutionResult(true, true, orderId,
                             "ENTRY_FILL_UNCONFIRMED: OKX委托已提交，订单号 " + orderId
-                                    + "，但成交数量未确认，等待生命周期恢复查询。");
+                                    + "，但成交数量未确认，等待生命周期恢复查询。",
+                            true, false, false, false);
                 }
                 log.error("OKX protection plan invalid instId={} ordId={} reason={}", order.instId(), orderId, reason);
                 if ("CLOSE_POSITION".equalsIgnoreCase(agentProperties.protection().protectionFailAction())) {
                     closePosition(order.instId(), order.posSide(), order.tdMode());
                     return new OrderExecutionResult(true, true, orderId,
-                            "OKX委托已提交，订单号 " + orderId + "；保护单未提交：" + reason + "，已请求平仓保护。");
+                            "OKX委托已成交，订单号 " + orderId + "；保护单未提交：" + reason + "，已请求平仓保护。",
+                            true, true, false, false);
                 }
                 return new OrderExecutionResult(true, true, orderId,
-                        "OKX委托已提交，订单号 " + orderId + "；保护单未提交：" + reason + "，需要人工处理。");
+                        "OKX委托已成交，订单号 " + orderId + "；保护单未提交：" + reason + "，需要人工处理。",
+                        true, true, false, false);
             }
             ProtectionSubmitResult protection = placeProtectionOrders(order, protectionPlan.payloads());
             return new OrderExecutionResult(true, true, orderId,
                     protection.submitted() > 0 || protection.failed() > 0
-                            ? "OKX委托已提交，订单号 " + orderId + "；保护单已提交 " + protection.submitted()
-                            + " 个，失败 " + protection.failed() + " 个。委托提交不代表已成交，请在OKX当前委托/持仓确认。"
-                            : "OKX委托已提交，订单号 " + orderId + "，等待成交。请在OKX当前委托/持仓确认。");
+                            ? "OKX委托已成交，订单号 " + orderId + "；保护单已提交 " + protection.submitted()
+                            + " 个，失败 " + protection.failed() + " 个。"
+                            : "OKX委托已成交，订单号 " + orderId + "，未生成保护单，请人工确认。",
+                    true, true, false, false);
         } catch (RuntimeException ex) {
             if (isTimeout(ex)) {
                 OrderExecutionResult recovered = recoverTimedOutSubmit(order, payload, entryRecord, ex);
@@ -134,8 +139,12 @@ public class OkxTradeAdapter {
             return new OrderExecutionResult(false, true, null,
                     "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId());
         }
+        BigDecimal filledSize = decimal(item, "accFillSz");
+        boolean filled = filledSize.signum() > 0 && "filled".equalsIgnoreCase(state);
+        boolean partiallyFilled = filledSize.signum() > 0 && !filled;
         return new OrderExecutionResult(true, true, ordId,
-                "OKX clOrdId recovered: clOrdId=" + order.clientOrderId() + ", state=" + state);
+                "OKX clOrdId recovered: clOrdId=" + order.clientOrderId() + ", state=" + state,
+                true, filled, partiallyFilled, false);
     }
 
     private OrderExecutionResult recoverTimedOutSubmit(PendingOrder order, Map<String, String> payload,
@@ -161,8 +170,12 @@ public class OkxTradeAdapter {
             recordSubmitted(order, entryRecord.withOkxOrdId(ordId));
             log.warn("OKX order submit timeout recovered by clOrdId instId={} clOrdId={} ordId={} state={}",
                     order.instId(), clOrdId, ordId, state);
+            BigDecimal filledSize = decimal(item, "accFillSz");
+            boolean filled = filledSize.signum() > 0 && "filled".equalsIgnoreCase(state);
+            boolean partiallyFilled = filledSize.signum() > 0 && !filled;
             return new OrderExecutionResult(true, true, ordId,
-                    "OKX提交超时后已通过clOrdId恢复：clOrdId=" + clOrdId + "，订单号 " + ordId + "，state=" + state);
+                    "OKX提交超时后已通过clOrdId恢复：clOrdId=" + clOrdId + "，订单号 " + ordId + "，state=" + state,
+                    true, filled, partiallyFilled, false);
         } catch (RuntimeException queryEx) {
             timeout.addSuppressed(queryEx);
             return null;

@@ -320,7 +320,11 @@ class OrderConfirmServiceTest {
         assertThat(result.executed()).isTrue();
         assertThat(riskService.captured.suggestedMargin()).isEqualByComparingTo("22.5000");
         assertThat(order.marginAmount()).isEqualByComparingTo("22.5000");
-        assertThat(budgetService.reservation(reservation.reservationId()).orElseThrow().status().name()).isEqualTo("USED");
+        assertThat(result.submitted()).isTrue();
+        assertThat(result.filled()).isFalse();
+        assertThat(result.partiallyFilled()).isFalse();
+        assertThat(budgetService.reservation(reservation.reservationId()).orElseThrow().status().name()).isEqualTo("RESERVED");
+        assertThat(order.status()).isEqualTo(OrderStatus.SUBMITTED);
     }
 
     @Test

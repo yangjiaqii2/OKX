@@ -140,6 +140,37 @@ class AutoTradeLifecycleServiceTest {
     }
 
     @Test
+    void lifecycleQueriesEntryFillAndSubmitsProtectionWhenPositionAlreadyExists() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        LifecycleGateway gateway = new LifecycleGateway();
+        gateway.orderState = "filled";
+        gateway.accFillSz = new BigDecimal("10");
+        gateway.avgPx = new BigDecimal("100");
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "10", "100", "5", "1000")))
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T00:01:00Z"));
+
+        assertThat(result.entryFilledProtected()).isEqualTo(1);
+        assertThat(gateway.queryOrderPayload).containsEntry("ordId", "entry-ord-1");
+        assertThat(gateway.algoPayloads).hasSize(4);
+        assertThat(order.status()).isEqualTo(OrderStatus.PROTECTION_SUBMITTED);
+        assertThat(budgetService.reservation(order.budgetReservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.USED);
+    }
+
+    @Test
     void positionSnapshotFailureDoesNotCancelReleaseOrClose() {
         AgentProperties properties = new AgentProperties();
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
@@ -238,6 +269,7 @@ class AutoTradeLifecycleServiceTest {
         PendingOrderService pendingOrderService = new PendingOrderService(120);
         PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
         order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
         LifecycleGateway gateway = new LifecycleGateway();
         AutoTradeLifecycleService service = new AutoTradeLifecycleService(
                 pendingOrderService,
@@ -261,6 +293,7 @@ class AutoTradeLifecycleServiceTest {
         PendingOrderService pendingOrderService = new PendingOrderService(120);
         PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
         order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
         TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
         TradeOrderEntity tp1 = protection(order, "TP1", "tp1-cl");
         TradeOrderEntity tp2 = protection(order, "TP2", "tp2-cl");
@@ -311,6 +344,7 @@ class AutoTradeLifecycleServiceTest {
         PendingOrderService pendingOrderService = new PendingOrderService(120);
         PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("ETH-USDT-SWAP", TradePlanType.OPEN_SHORT));
         order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-2");
+        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
         LifecycleGateway gateway = new LifecycleGateway();
         AutoTradeLifecycleService service = new AutoTradeLifecycleService(
                 pendingOrderService,
@@ -332,6 +366,7 @@ class AutoTradeLifecycleServiceTest {
         PendingOrderService pendingOrderService = new PendingOrderService(120);
         PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
         order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
         budgetService.markUsed(order.budgetReservationId());
         LifecycleGateway gateway = new LifecycleGateway();
         ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
@@ -494,6 +529,7 @@ class AutoTradeLifecycleServiceTest {
         private String orderState = "live";
         private BigDecimal accFillSz = BigDecimal.ZERO;
         private BigDecimal avgPx = BigDecimal.ZERO;
+        private Map<String, String> queryOrderPayload;
         private Map<String, String> cancelPayload;
         private Map<String, String> closePayload;
         private final List<Map<String, String>> algoPayloads = new ArrayList<>();
@@ -506,6 +542,7 @@ class AutoTradeLifecycleServiceTest {
 
         @Override
         public JsonNode queryOrder(Map<String, String> payload) {
+            this.queryOrderPayload = payload;
             ObjectNode root = new ObjectMapper().createObjectNode();
             ObjectNode item = root.putArray("data").addObject();
             item.put("ordId", payload.getOrDefault("ordId", "entry-ord-1"));

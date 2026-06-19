@@ -161,7 +161,7 @@ public class AutoTradeLifecycleService {
             }
             PositionSummary position = matchingPosition(order, positions);
             Duration age = Duration.between(order.submittedAt(), now);
-            if (position == null && order.status() == OrderStatus.SUBMITTED) {
+            if (order.status() == OrderStatus.SUBMITTED) {
                 EntryFill fill = queryEntryFill(order);
                 if (fill.complete()) {
                     try {
@@ -185,6 +185,43 @@ public class AutoTradeLifecycleService {
                     }
                     continue;
                 }
+                if (shouldCancelStaleEntry(order, age)) {
+                    cancelEntryOrder(order);
+                    if (fill.filledSize().signum() <= 0) {
+                        order.markEntryTimeoutCancelled("ENTRY_TIMEOUT_CANCELLED");
+                        if (order.budgetReservationId() != null) {
+                            budgetService.release(order.budgetReservationId(), "ENTRY_TIMEOUT_CANCELLED");
+                        }
+                        recordEvent(order, TradeEventType.ENTRY_TIMEOUT_CANCELLED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.ENTRY_TIMEOUT_CANCELLED.name(), "ENTRY_TIMEOUT_CANCELLED",
+                                "入场委托超时且无成交，已撤单", order.externalOrderId(), order.clientOrderId(), null);
+                        recordEvent(order, TradeEventType.BUDGET_RELEASED, "RESERVED", "RELEASED",
+                                "ENTRY_TIMEOUT_CANCELLED", "入场无成交超时释放预算", null, order.clientOrderId(), null);
+                        entryTimeoutCancelled++;
+                    } else {
+                        try {
+                            submitProtection(order, fill.avgPx(), fill.filledSize(), "PARTIAL_FILL_ENTRY_TIMEOUT");
+                            if (order.budgetReservationId() != null) {
+                                budgetService.markUsed(order.budgetReservationId());
+                            }
+                            order.markProtectionSubmitted("PARTIAL_FILL_PROTECTION_SUBMITTED");
+                            recordEvent(order, TradeEventType.ENTRY_PARTIAL_FILLED, OrderStatus.SUBMITTED.name(),
+                                    OrderStatus.PROTECTION_SUBMITTED.name(), "PARTIAL_FILL_ENTRY_TIMEOUT",
+                                    "部分成交超时后取消剩余委托，并按实际成交数量提交保护单", order.externalOrderId(),
+                                    order.clientOrderId(), null);
+                            recordEvent(order, TradeEventType.PROTECTION_SUBMITTED, OrderStatus.SUBMITTED.name(),
+                                    OrderStatus.PROTECTION_SUBMITTED.name(), "PARTIAL_FILL_PROTECTION_SUBMITTED",
+                                    "部分成交后提交保护单", order.externalOrderId(), order.clientOrderId(), null);
+                            partialFillProtected++;
+                        } catch (RuntimeException ex) {
+                            order.markProtectionFailed("PROTECTION_FAILED_AFTER_PARTIAL_FILL: " + compact(ex.getMessage()));
+                            recordEvent(order, TradeEventType.PROTECTION_FAILED, OrderStatus.SUBMITTED.name(),
+                                    OrderStatus.PROTECTION_FAILED.name(), "PROTECTION_FAILED_AFTER_PARTIAL_FILL",
+                                    ex.getMessage(), order.externalOrderId(), order.clientOrderId(), null);
+                        }
+                    }
+                }
+                continue;
             }
             if (position != null && shouldMaxHoldClose(order, age)) {
                 maxHoldCloseSubmitted += submitMaxHoldClose(order, position, now);
@@ -193,43 +230,6 @@ public class AutoTradeLifecycleService {
             if (position != null && shouldAdjustSideways(order, position, age)) {
                 sidewaysTpAdjusted += tightenTakeProfit(order, position);
                 continue;
-            }
-            if (position == null && shouldCancelStaleEntry(order, age)) {
-                EntryFill fill = queryEntryFill(order);
-                cancelEntryOrder(order);
-                if (fill.filledSize().signum() <= 0) {
-                    order.markEntryTimeoutCancelled("ENTRY_TIMEOUT_CANCELLED");
-                    if (order.budgetReservationId() != null) {
-                        budgetService.release(order.budgetReservationId(), "ENTRY_TIMEOUT_CANCELLED");
-                    }
-                    recordEvent(order, TradeEventType.ENTRY_TIMEOUT_CANCELLED, OrderStatus.SUBMITTED.name(),
-                            OrderStatus.ENTRY_TIMEOUT_CANCELLED.name(), "ENTRY_TIMEOUT_CANCELLED",
-                            "入场委托超时且无成交，已撤单", order.externalOrderId(), order.clientOrderId(), null);
-                    recordEvent(order, TradeEventType.BUDGET_RELEASED, "RESERVED", "RELEASED",
-                            "ENTRY_TIMEOUT_CANCELLED", "入场无成交超时释放预算", null, order.clientOrderId(), null);
-                    entryTimeoutCancelled++;
-                } else {
-                    try {
-                        submitProtection(order, fill.avgPx(), fill.filledSize(), "PARTIAL_FILL_ENTRY_TIMEOUT");
-                        if (order.budgetReservationId() != null) {
-                            budgetService.markUsed(order.budgetReservationId());
-                        }
-                        order.markProtectionSubmitted("PARTIAL_FILL_PROTECTION_SUBMITTED");
-                        recordEvent(order, TradeEventType.ENTRY_PARTIAL_FILLED, OrderStatus.SUBMITTED.name(),
-                                OrderStatus.PROTECTION_SUBMITTED.name(), "PARTIAL_FILL_ENTRY_TIMEOUT",
-                                "部分成交超时后取消剩余委托，并按实际成交数量提交保护单", order.externalOrderId(),
-                                order.clientOrderId(), null);
-                        recordEvent(order, TradeEventType.PROTECTION_SUBMITTED, OrderStatus.SUBMITTED.name(),
-                                OrderStatus.PROTECTION_SUBMITTED.name(), "PARTIAL_FILL_PROTECTION_SUBMITTED",
-                                "部分成交后提交保护单", order.externalOrderId(), order.clientOrderId(), null);
-                        partialFillProtected++;
-                    } catch (RuntimeException ex) {
-                        order.markProtectionFailed("PROTECTION_FAILED_AFTER_PARTIAL_FILL: " + compact(ex.getMessage()));
-                        recordEvent(order, TradeEventType.PROTECTION_FAILED, OrderStatus.SUBMITTED.name(),
-                                OrderStatus.PROTECTION_FAILED.name(), "PROTECTION_FAILED_AFTER_PARTIAL_FILL",
-                                ex.getMessage(), order.externalOrderId(), order.clientOrderId(), null);
-                    }
-                }
             }
         }
         return new LifecycleRunResult(entryTimeoutCancelled, entryFilledProtected, partialFillProtected,
@@ -712,11 +712,8 @@ public class AutoTradeLifecycleService {
     }
 
     private static String lifecycleStatus(PendingOrder order, PositionSummary position) {
-        if (order.status() == OrderStatus.SUBMITTED && position == null) {
+        if (order.status() == OrderStatus.SUBMITTED) {
             return "ENTRY_PENDING";
-        }
-        if (order.status() == OrderStatus.SUBMITTED && position != null) {
-            return "NORMAL";
         }
         return order.status().name();
     }

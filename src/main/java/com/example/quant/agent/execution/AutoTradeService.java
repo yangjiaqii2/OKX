@@ -467,15 +467,17 @@ public class AutoTradeService {
                     }
                     return recordAndReturn(AutoTradeResult.failed(ex.getMessage()), candidateCount, candidate);
                 }
-                if (result.executed()) {
-                    if (reservation != null) {
+                if (result.submitted()) {
+                    if (reservation != null && result.filled()) {
                         budgetService.markUsed(reservation.reservationId());
                     }
+                    String submittedStatus = result.filled() ? "EXECUTED" : "ENTRY_SUBMITTED";
+                    String submittedNewStatus = result.filled() ? "ENTRY_FILLED" : "SUBMITTED";
                     recordEvent(candidate, order, plan, TradeEventType.ENTRY_SUBMITTED,
-                            "SUBMITTING", "SUBMITTED", "ENTRY_SUBMITTED", result.message(), result.externalOrderId());
+                            "SUBMITTING", submittedNewStatus, "ENTRY_SUBMITTED", result.message(), result.externalOrderId());
                     log.warn("Auto trade submitted scanId={} instId={} tradePlanId={} pendingOrderId={} okxOrdId={}",
                             scanId, plan.instId(), plan.id(), order.id(), result.externalOrderId());
-                    AutoTradeResult executed = new AutoTradeResult("EXECUTED", plan.instId(), plan.id().toString(),
+                    AutoTradeResult executed = new AutoTradeResult(submittedStatus, plan.instId(), plan.id().toString(),
                             order.id().toString(), result.externalOrderId(), plan.action().name(), order.posSide(),
                             order.leverage(), orderMarginUsdt, plan.entryPrice(), result.message(), Instant.now());
                     recordExecution(executed, candidateCount, candidate);
@@ -584,7 +586,10 @@ public class AutoTradeService {
                 .map(AutoTradeResult::marginAmount)
                 .filter(amount -> amount != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        return new AutoTradeResult("EXECUTED", last.instId(), last.tradePlanId(), last.pendingOrderId(),
+        String aggregateStatus = executedResults.stream().allMatch(item -> "EXECUTED".equals(item.status()))
+                ? "EXECUTED"
+                : "ENTRY_SUBMITTED";
+        return new AutoTradeResult(aggregateStatus, last.instId(), last.tradePlanId(), last.pendingOrderId(),
                 last.okxOrderId(), last.action(), last.posSide(), last.leverage(), totalMargin,
                 last.entryPrice(), message, Instant.now());
     }

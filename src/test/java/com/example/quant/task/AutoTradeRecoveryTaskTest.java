@@ -123,7 +123,7 @@ class AutoTradeRecoveryTaskTest {
     }
 
     @Test
-    void recoversUnknownSubmitStatusByClientOrderIdWhenOkxOrderExists() {
+    void recoversUnknownSubmitStatusByClientOrderIdWhenOkxOrderExistsButNotFilled() {
         AgentProperties properties = new AgentProperties();
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
         PendingOrderService pendingOrderService = new PendingOrderService(120);
@@ -152,6 +152,48 @@ class AutoTradeRecoveryTaskTest {
                 budgetService,
                 properties,
                 new OkxTradeAdapter(new QueryExistingOrderGateway())
+        );
+        AutoTradeRecoveryTask.RecoveryResult result = task.runOnce();
+
+        assertThat(result.recoveredUnknownSubmits()).isEqualTo(1);
+        assertThat(order.status()).isEqualTo(OrderStatus.SUBMITTED);
+        assertThat(order.externalOrderId()).isEqualTo("recovered-ord-1");
+        assertThat(budgetService.reservation(reservation.reservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.RESERVED);
+    }
+
+    @Test
+    void marksUnknownSubmitBudgetUsedOnlyWhenRecoveredOrderIsFilled() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        BudgetAllocation allocation = budgetService.allocate(request());
+        UUID pendingOrderId = UUID.randomUUID();
+        BudgetReservation reservation = budgetService.reserveBudget(
+                samplePlan().id(),
+                pendingOrderId,
+                "BTC-USDT-SWAP",
+                allocation.finalOrderMarginUsdt(),
+                new BigDecimal("50")
+        );
+        PendingOrder order = pendingOrderService.createAutoPendingOrder(
+                MarketType.OKX_SWAP,
+                samplePlan(),
+                pendingOrderId,
+                allocation.finalOrderMarginUsdt(),
+                reservation.reservationId(),
+                allocation,
+                "AUTOunknownfilled"
+        );
+        order.markUnknownSubmitStatus("OKX submit timeout");
+
+        AutoTradeRecoveryTask task = new AutoTradeRecoveryTask(
+                pendingOrderService,
+                budgetService,
+                properties,
+                new OkxTradeAdapter(new QueryExistingOrderGateway("filled", "0.45"))
         );
         AutoTradeRecoveryTask.RecoveryResult result = task.runOnce();
 
@@ -439,6 +481,18 @@ class AutoTradeRecoveryTaskTest {
     }
 
     private static class QueryExistingOrderGateway implements OkxOrderGateway {
+        private final String state;
+        private final String accFillSz;
+
+        QueryExistingOrderGateway() {
+            this("live", "0");
+        }
+
+        QueryExistingOrderGateway(String state, String accFillSz) {
+            this.state = state;
+            this.accFillSz = accFillSz;
+        }
+
         @Override
         public JsonNode placeOrder(Map<String, String> payload) {
             throw new UnsupportedOperationException("not used");
@@ -450,7 +504,8 @@ class AutoTradeRecoveryTaskTest {
             ObjectNode item = root.putArray("data").addObject();
             item.put("ordId", "recovered-ord-1");
             item.put("clOrdId", payload.get("clOrdId"));
-            item.put("state", "live");
+            item.put("state", state);
+            item.put("accFillSz", accFillSz);
             return root;
         }
     }

@@ -125,6 +125,7 @@ public class AutoTradeRecordService {
         }
         return switch (status) {
             case "EXECUTED" -> "SUBMIT";
+            case "ENTRY_SUBMITTED" -> "ENTRY";
             case "SKIPPED" -> "SCAN";
             case "REJECTED" -> "CONFIRM";
             case "UNKNOWN_SUBMIT_STATUS" -> "OKX_SUBMIT";

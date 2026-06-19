@@ -205,9 +205,9 @@ public class AutoTradeRecoveryTask {
         }
         try {
             OrderExecutionResult result = okxTradeAdapter.recoverUnknownSubmitStatus(order);
-            if (result.executed()) {
+            if (result.submitted()) {
                 order.markSubmitted(Instant.now(), result.externalOrderId());
-                if (order.budgetReservationId() != null) {
+                if (result.filled() && order.budgetReservationId() != null) {
                     budgetService.markUsed(order.budgetReservationId());
                 }
                 log.warn("AutoTrade recovery restored unknown OKX submit: symbol={}, pendingOrderId={}, clOrdId={}, okxOrdId={}",

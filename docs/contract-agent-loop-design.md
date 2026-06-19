@@ -1054,6 +1054,13 @@ quant:
 
 ## Change Log
 
+### 2026-06-19 - 编译修复与 LIMIT 入场状态语义收敛
+
+- 变更摘要：全项目 Java/TS/TSX 乱码与缺失引号扫描未发现当前编译失败点；后端测试和前端 build 均可通过。本次不新增复杂功能，集中把入场“提交成功”和“真实成交”拆开。
+- 影响文件：`src/main/java/com/example/quant/order/OrderExecutionResult.java`、`src/main/java/com/example/quant/order/OrderConfirmService.java`、`src/main/java/com/example/quant/okxtrade/OkxTradeAdapter.java`、`src/main/java/com/example/quant/agent/execution/AutoTradeService.java`、`src/main/java/com/example/quant/agent/execution/AutoTradeRecordService.java`、`src/main/java/com/example/quant/agent/lifecycle/AutoTradeLifecycleService.java`、`src/main/java/com/example/quant/task/AutoTradeRecoveryTask.java`、`frontend/src/formatters.ts`、`frontend/src/pages/AutoTradeRecordList.tsx`。
+- 影响：`OrderExecutionResult` 新增 `submitted/filled/partiallyFilled/unknown` 语义；LIMIT 提交成功只标记入场已提交并保留预算预留，不立即 `markUsed`；生命周期对 `SUBMITTED` 入场无论是否已有持仓都会查询 OKX 成交事实，完全成交或部分成交超时后才按实际成交数量提交保护单并使用预算；保护单失败继续进入需要处理状态；前端状态文案区分入场委托已提交、等待成交、部分成交、已成交和保护单阶段。
+- 验证：定向测试 `mvn -Dtest=OrderConfirmServiceTest,OkxTradeAdapterTest,AutoTradeLifecycleServiceTest,AutoTradeServiceTest test` 通过，69 个测试 0 失败；恢复测试 `mvn -Dtest=AutoTradeRecoveryTaskTest test` 通过，9 个测试 0 失败；全量 `mvn test` 通过，196 个测试 0 失败；`npm --prefix frontend run build` 通过，仍有 Vite chunk size 警告；Java/TS/TSX 乱码扫描无命中。
+
 ### 2026-06-19 - 事实驱动自动交易生命周期
 
 - 变更摘要：恢复任务切换到自动交易 owner 上下文，OKX 提交未知状态保留预算，LIMIT/market 入场改为成交事实驱动保护单，持仓不可用不再当作无持仓，平仓恢复按用户隔离，并新增交易事件流水、生命周期聚合事实、汇率 API、收益质量、平仓复盘和做空反转门槛。

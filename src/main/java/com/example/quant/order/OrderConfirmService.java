@@ -195,9 +195,11 @@ public class OrderConfirmService {
                 order.size(), order.price());
         try {
             OrderExecutionResult result = okxTradeAdapter.placeOrder(order);
-            if (result.executed()) {
+            if (result.submitted()) {
                 order.markSubmitted(clock.instant(), result.externalOrderId());
-                markBudgetUsed(order);
+                if (result.filled()) {
+                    markBudgetUsed(order);
+                }
                 if (tradePlanRecordService != null && order.tradePlanId() != null) {
                     tradePlanRecordService.markOrderSubmitted(order.tradePlanId(), result.externalOrderId());
                 }

@@ -742,6 +742,38 @@ class AutoTradeServiceTest {
     }
 
     @Test
+    void autoTradeEntrySubmittedKeepsBudgetReservedAndRecordsEntrySubmitted() {
+        EntrySubmittedOrderConfirmService confirmService = new EntrySubmittedOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AgentProperties agentProperties = new AgentProperties();
+        com.example.quant.agent.budget.AutoTradeBudgetService budgetService =
+                new com.example.quant.agent.budget.AutoTradeBudgetService(agentProperties);
+        CapturingAutoTradeRecordService recordService = new CapturingAutoTradeRecordService();
+        AutoTradeService service = new AutoTradeService(
+                agentProperties,
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                recordService,
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of()),
+                budgetService
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 95)));
+
+        assertThat(result.status()).isEqualTo("ENTRY_SUBMITTED");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+        assertThat(budgetService.reservedBudget()).isEqualByComparingTo("9");
+        assertThat(budgetService.usedBudget()).isZero();
+        assertThat(recordService.records).extracting(AutoTradeService.AutoTradeResult::status)
+                .containsExactly("ENTRY_SUBMITTED");
+    }
+
+    @Test
     void doesNotRetrySameSymbolInOneFallbackRound() {
         SequencedOrderConfirmService confirmService = new SequencedOrderConfirmService(List.of(
                 new OrderExecutionResult(false, false, null, "实时订单簿流动性不足：spread_bps_above_8"),
@@ -1214,6 +1246,17 @@ class AutoTradeServiceTest {
             this.confirmCount++;
             this.capturedMargins.add(marginAmount);
             throw new OrderSubmitStatusUnknownException("OKX submit timed out");
+        }
+    }
+
+    private static class EntrySubmittedOrderConfirmService extends CapturingOrderConfirmService {
+        @Override
+        public OrderExecutionResult confirmAuto(UUID orderId, BigDecimal marginAmount) {
+            this.capturedMargin = marginAmount;
+            this.confirmCount++;
+            this.capturedMargins.add(marginAmount);
+            return new OrderExecutionResult(true, true, "okx-order-1", "入场委托已提交，等待成交",
+                    true, false, false, false);
         }
     }
 
