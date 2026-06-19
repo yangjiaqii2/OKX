@@ -10,4 +10,9 @@ public interface ClosePositionRecordRepository extends JpaRepository<ClosePositi
     long countByUserName(String userName);
 
     List<ClosePositionRecordEntity> findByStatus(String status);
+
+    List<ClosePositionRecordEntity> findByUserNameAndStatus(String userName, String status);
+
+    List<ClosePositionRecordEntity> findByUserNameAndPendingOrderIdOrderByCreatedAtDesc(String userName,
+                                                                                        String pendingOrderId);
 }

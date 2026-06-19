@@ -81,6 +81,45 @@ class ContractSignalAnalyzerScenarioTest {
     }
 
     @Test
+    void highTodayGainAndSharpDropWithoutStructureBreakCanOnlyWatch() {
+        ContractSignal signal = analyzer.analyze(
+                "PUMP-WATCH-USDT-SWAP",
+                new BigDecimal("180"),
+                new BigDecimal("100"),
+                new BigDecimal("1200000000"),
+                new BigDecimal("0.0012"),
+                new BigDecimal("1000000"),
+                new BigDecimal("900000"),
+                klineSet(upTrend20m(new BigDecimal("170"), new BigDecimal("0.18"), true),
+                        sharpDrop5m(), range20m(new BigDecimal("180")), range20m(new BigDecimal("180")))
+        );
+
+        assertThat(signal.signalType()).isEqualTo(ContractSignalType.WAIT_OVERHEATED);
+        assertThat(signal.action()).isEqualTo("WAIT");
+        assertThat(signal.suggestedLeverage()).isZero();
+    }
+
+    @Test
+    void highTodayGainAndSharpDropWithStructureBreakAllowsReversalShortCandidate() {
+        ContractSignal signal = analyzer.analyze(
+                "PUMP-SHORT-USDT-SWAP",
+                new BigDecimal("180"),
+                new BigDecimal("100"),
+                new BigDecimal("1200000000"),
+                new BigDecimal("0.0012"),
+                new BigDecimal("1200000"),
+                new BigDecimal("900000"),
+                klineSet(reversalBreakAfterPump20m(), sharpDrop5m(),
+                        range20m(new BigDecimal("180")), range20m(new BigDecimal("180")))
+        );
+
+        assertThat(signal.signalType()).isEqualTo(ContractSignalType.REVERSAL_SHORT);
+        assertThat(signal.directionBias().name()).isEqualTo("BEARISH");
+        assertThat(signal.action()).isIn("AUTO_TRADE_ALLOWED", "WAIT_CONFIRM");
+        assertThat(signal.stopLossPrice()).isGreaterThan(signal.entryPrice());
+    }
+
+    @Test
     void identifiesHighLevelTwentyMinuteBreakAsReversalShort() {
         ContractSignal signal = analyzer.analyze(
                 "REV-USDT-SWAP",
@@ -221,6 +260,39 @@ class ContractSignalAnalyzerScenarioTest {
             candles.set(i, candle(open, close, BigDecimal.valueOf(3200 + i * 20L), true, false));
         }
         return candles;
+    }
+
+    private static List<ContractCandle> reversalBreakAfterPump20m() {
+        List<ContractCandle> candles = new ArrayList<>();
+        BigDecimal close = new BigDecimal("160");
+        for (int i = 0; i < 20; i++) {
+            BigDecimal open = close;
+            close = close.add(new BigDecimal("1.00"));
+            candles.add(candle(open, close, BigDecimal.valueOf(1200 + i * 10L), false, false));
+        }
+        close = new BigDecimal("192");
+        for (int i = 20; i < 40; i++) {
+            BigDecimal open = close;
+            close = close.add(i % 2 == 0 ? new BigDecimal("0.70") : new BigDecimal("-0.15"));
+            candles.add(candle(open, close, BigDecimal.valueOf(1500 + i * 10L), false, false));
+        }
+        close = new BigDecimal("198");
+        for (int i = 40; i < 60; i++) {
+            BigDecimal open = close;
+            close = close.subtract(i >= 56 ? new BigDecimal("3.20") : new BigDecimal("0.55"));
+            candles.add(candle(open, close, BigDecimal.valueOf(i >= 55 ? 4200 + i * 20L : 1800 + i * 10L),
+                    i >= 56, false));
+        }
+        return candles;
+    }
+
+    private static List<ContractCandle> sharpDrop5m() {
+        List<ContractCandle> candles = range20m(new BigDecimal("200")).subList(0, 37);
+        List<ContractCandle> result = new ArrayList<>(candles);
+        result.add(candle(new BigDecimal("200"), new BigDecimal("200"), new BigDecimal("1800"), false, false));
+        result.add(candle(new BigDecimal("200"), new BigDecimal("190"), new BigDecimal("5200"), true, false));
+        result.add(candle(new BigDecimal("190"), new BigDecimal("180"), new BigDecimal("6200"), true, false));
+        return result;
     }
 
     private static List<ContractCandle> range20m(BigDecimal center) {

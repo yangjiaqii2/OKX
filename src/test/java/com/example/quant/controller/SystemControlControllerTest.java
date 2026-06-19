@@ -5,10 +5,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.quant.account.AccountSnapshotService;
 import com.example.quant.account.dto.OkxAccountVerificationResult;
+import com.example.quant.config.SystemFxRateProperties;
 import com.example.quant.config.TradingProperties;
 import com.example.quant.system.AutoTradeRiskMode;
+import com.example.quant.system.FxRateResponse;
+import com.example.quant.system.FxRateService;
 import com.example.quant.system.SystemControlService;
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
 
 class SystemControlControllerTest {
@@ -47,6 +53,30 @@ class SystemControlControllerTest {
 
         assertThat(status).isInstanceOf(SystemControlService.SystemStatus.class);
         assertThat(((SystemControlService.SystemStatus) status).autoTradeEnabled()).isTrue();
+    }
+
+    @Test
+    void returnsConfiguredUsdCnyFxRate() {
+        SystemFxRateProperties properties = new SystemFxRateProperties();
+        properties.setRate(new BigDecimal("7.31"));
+        properties.setSource("TEST_CONFIG");
+        FxRateService fxRateService = new FxRateService(
+                properties,
+                Clock.fixed(Instant.parse("2026-06-19T08:00:00Z"), ZoneOffset.UTC)
+        );
+        SystemControlController controller = new SystemControlController(
+                new SystemControlService(tradingProperties()),
+                new FixedAccountSnapshotService(null),
+                fxRateService
+        );
+
+        FxRateResponse response = (FxRateResponse) controller.fxRate("USD", "CNY");
+
+        assertThat(response.base()).isEqualTo("USD");
+        assertThat(response.quote()).isEqualTo("CNY");
+        assertThat(response.rate()).isEqualByComparingTo("7.31");
+        assertThat(response.source()).isEqualTo("TEST_CONFIG");
+        assertThat(response.updatedAt()).isEqualTo(Instant.parse("2026-06-19T08:00:00Z"));
     }
 
     private static TradingProperties tradingProperties() {

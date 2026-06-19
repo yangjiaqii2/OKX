@@ -14,6 +14,7 @@ import com.example.quant.crypto.dto.ContractNewsRiskAnalysis;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
 import com.example.quant.order.OrderExecutionResult;
+import com.example.quant.order.OrderSubmitStatusUnknownException;
 import com.example.quant.order.PendingOrderService;
 import com.example.quant.okxtrade.OkxCurrentOrderSyncService;
 import com.example.quant.risk.RiskLevel;
@@ -712,6 +713,35 @@ class AutoTradeServiceTest {
     }
 
     @Test
+    void autoTradeDoesNotReleaseBudgetWhenConfirmThrowsAfterUnknownSubmit() {
+        UnknownSubmitOrderConfirmService confirmService = new UnknownSubmitOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AgentProperties agentProperties = new AgentProperties();
+        com.example.quant.agent.budget.AutoTradeBudgetService budgetService =
+                new com.example.quant.agent.budget.AutoTradeBudgetService(agentProperties);
+        AutoTradeService service = new AutoTradeService(
+                agentProperties,
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of()),
+                budgetService
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 95)));
+
+        assertThat(result.status()).isEqualTo("UNKNOWN_SUBMIT_STATUS");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+        assertThat(budgetService.reservedBudget()).isEqualByComparingTo("9");
+        assertThat(budgetService.usedBudget()).isZero();
+    }
+
+    @Test
     void doesNotRetrySameSymbolInOneFallbackRound() {
         SequencedOrderConfirmService confirmService = new SequencedOrderConfirmService(List.of(
                 new OrderExecutionResult(false, false, null, "实时订单簿流动性不足：spread_bps_above_8"),
@@ -1174,6 +1204,16 @@ class AutoTradeServiceTest {
                 Thread.currentThread().interrupt();
             }
             return new OrderExecutionResult(true, true, "okx-order-1", "submitted");
+        }
+    }
+
+    private static class UnknownSubmitOrderConfirmService extends CapturingOrderConfirmService {
+        @Override
+        public OrderExecutionResult confirmAuto(UUID orderId, BigDecimal marginAmount) {
+            this.capturedMargin = marginAmount;
+            this.confirmCount++;
+            this.capturedMargins.add(marginAmount);
+            throw new OrderSubmitStatusUnknownException("OKX submit timed out");
         }
     }
 

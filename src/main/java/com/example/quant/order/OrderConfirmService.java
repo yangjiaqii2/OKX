@@ -213,6 +213,7 @@ public class OrderConfirmService {
         } catch (RuntimeException ex) {
             if (isTimeout(ex)) {
                 order.markUnknownSubmitStatus(ex.getMessage());
+                throw new OrderSubmitStatusUnknownException(ex.getMessage(), ex);
             } else {
                 order.markRejected(ex.getMessage());
                 releaseBudget(order, "OKX_SUBMIT_FAILED");

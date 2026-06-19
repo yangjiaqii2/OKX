@@ -8,9 +8,13 @@ import com.example.quant.agent.budget.BudgetAllocation;
 import com.example.quant.agent.budget.BudgetAllocationRequest;
 import com.example.quant.agent.budget.BudgetReservation;
 import com.example.quant.agent.budget.BudgetReservationStatus;
+import com.example.quant.agent.lifecycle.AutoTradeLifecycleService;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
+import com.example.quant.config.TradingProperties;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
+import com.example.quant.order.OrderExecutionResult;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
@@ -19,6 +23,7 @@ import com.example.quant.okxtrade.OkxCurrentOrderSyncService;
 import com.example.quant.okxtrade.OkxTradeAdapter;
 import com.example.quant.tradeplan.TradePlan;
 import com.example.quant.tradeplan.TradePlanType;
+import com.example.quant.system.SystemControlService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -30,6 +35,92 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class AutoTradeRecoveryTaskTest {
+
+    @Test
+    void scheduledRecoveryRunsAsAutoTradeOwnerForBudgetAndOkxContext() {
+        AgentProperties properties = new AgentProperties();
+        ContextCapturingBudgetService budgetService = new ContextCapturingBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        AuthUserContext.callAs("userA", () -> systemControlService.enableAutoTrade(new BigDecimal("50")));
+        BudgetAllocation allocation = AuthUserContext.callAs("userA", () -> budgetService.allocate(request()));
+        UUID pendingOrderId = UUID.randomUUID();
+        BudgetReservation ownerReservation = AuthUserContext.callAs("userA", () -> budgetService.reserveBudget(
+                samplePlan().id(),
+                pendingOrderId,
+                "BTC-USDT-SWAP",
+                allocation.finalOrderMarginUsdt(),
+                new BigDecimal("50")
+        ));
+        BudgetReservation localAdminReservation = budgetService.reserveBudget(
+                samplePlan().id(),
+                UUID.randomUUID(),
+                "LOCAL-USDT-SWAP",
+                new BigDecimal("1"),
+                new BigDecimal("50")
+        );
+        PendingOrder order = pendingOrderService.createAutoPendingOrder(
+                MarketType.OKX_SWAP,
+                samplePlan(),
+                pendingOrderId,
+                allocation.finalOrderMarginUsdt(),
+                ownerReservation.reservationId(),
+                allocation,
+                "AUTOownerctx"
+        );
+        order.markUnknownSubmitStatus("OKX submit timeout");
+        ContextCapturingOkxTradeAdapter okxTradeAdapter = new ContextCapturingOkxTradeAdapter();
+        ContextCapturingLifecycle lifecycleService = new ContextCapturingLifecycle();
+        ContextCapturingCloseRecovery closeRecovery = new ContextCapturingCloseRecovery();
+        ContextCapturingCurrentOrderSync syncService = new ContextCapturingCurrentOrderSync();
+        AutoTradeRecoveryTask task = new AutoTradeRecoveryTask(
+                pendingOrderService,
+                budgetService,
+                properties,
+                okxTradeAdapter,
+                lifecycleService,
+                closeRecovery,
+                syncService,
+                systemControlService
+        );
+
+        AutoTradeRecoveryTask.RecoveryResult result = task.runOnce();
+
+        assertThat(result.recoveredUnknownSubmits()).isEqualTo(1);
+        assertThat(okxTradeAdapter.username).isEqualTo("userA");
+        assertThat(syncService.username).isEqualTo("userA");
+        assertThat(lifecycleService.username).isEqualTo("userA");
+        assertThat(closeRecovery.username).isEqualTo("userA");
+        assertThat(budgetService.markUsedUsername).isEqualTo("userA");
+        assertThat(budgetService.reservation(ownerReservation.reservationId()).orElseThrow().status())
+                .isEqualTo(BudgetReservationStatus.USED);
+        assertThat(budgetService.reservation(localAdminReservation.reservationId()).orElseThrow().status())
+                .isEqualTo(BudgetReservationStatus.RESERVED);
+    }
+
+    @Test
+    void skipsRecoveryWhenOwnerIsMissing() {
+        AgentProperties properties = new AgentProperties();
+        ContextCapturingBudgetService budgetService = new ContextCapturingBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        MissingOwnerSystemControlService systemControlService = new MissingOwnerSystemControlService();
+        ContextCapturingCurrentOrderSync syncService = new ContextCapturingCurrentOrderSync();
+        AutoTradeRecoveryTask task = new AutoTradeRecoveryTask(
+                pendingOrderService,
+                budgetService,
+                properties,
+                null,
+                null,
+                null,
+                syncService,
+                systemControlService
+        );
+
+        AutoTradeRecoveryTask.RecoveryResult result = task.runOnce();
+
+        assertThat(result.attentionRequired()).isEqualTo(1);
+        assertThat(syncService.calls).isZero();
+    }
 
     @Test
     void recoversUnknownSubmitStatusByClientOrderIdWhenOkxOrderExists() {
@@ -76,6 +167,7 @@ class AutoTradeRecoveryTaskTest {
     @Test
     void releasesUnknownSubmitBudgetOnlyWhenOkxConfirmsClientOrderIdMissing() {
         AgentProperties properties = new AgentProperties();
+        properties.recovery().setUnknownSubmitStatusTimeoutSeconds(0);
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
         PendingOrderService pendingOrderService = new PendingOrderService(120);
         BudgetAllocation allocation = budgetService.allocate(request());
@@ -271,6 +363,81 @@ class AutoTradeRecoveryTaskTest {
         );
     }
 
+    private static TradingProperties tradingProperties() {
+        return new TradingProperties("SEMI_AUTO", true, true, 120, false);
+    }
+
+    private static String currentUsername() {
+        return AuthUserContext.currentUsername().orElse("local-admin");
+    }
+
+    private static class MissingOwnerSystemControlService extends SystemControlService {
+        MissingOwnerSystemControlService() {
+            super(tradingProperties());
+        }
+
+        @Override
+        public String autoTradeOwnerUsername() {
+            return "";
+        }
+    }
+
+    private static class ContextCapturingBudgetService extends AutoTradeBudgetService {
+        private String markUsedUsername;
+
+        ContextCapturingBudgetService(AgentProperties agentProperties) {
+            super(agentProperties);
+        }
+
+        @Override
+        public synchronized BudgetReservation markUsed(UUID reservationId) {
+            markUsedUsername = currentUsername();
+            return super.markUsed(reservationId);
+        }
+    }
+
+    private static class ContextCapturingOkxTradeAdapter extends OkxTradeAdapter {
+        private String username;
+
+        ContextCapturingOkxTradeAdapter() {
+            super(new QueryExistingOrderGateway());
+        }
+
+        @Override
+        public OrderExecutionResult recoverUnknownSubmitStatus(PendingOrder order) {
+            username = currentUsername();
+            return new OrderExecutionResult(true, true, "owner-okx-order", "recovered");
+        }
+    }
+
+    private static class ContextCapturingLifecycle extends AutoTradeLifecycleService {
+        private String username;
+
+        ContextCapturingLifecycle() {
+            super(null, null, new AgentProperties(), null, null);
+        }
+
+        @Override
+        public LifecycleRunResult runOnce(Instant now) {
+            username = currentUsername();
+            return new LifecycleRunResult(0, 0, 0, 0, 0, 0);
+        }
+    }
+
+    private static class ContextCapturingCloseRecovery extends ClosePositionRecoveryService {
+        private String username;
+
+        ContextCapturingCloseRecovery() {
+            super(null, null, null, null, null);
+        }
+
+        @Override
+        public CloseRecoveryResult runOnce(Instant now) {
+            username = currentUsername();
+            return new CloseRecoveryResult(0);
+        }
+    }
+
     private static class QueryExistingOrderGateway implements OkxOrderGateway {
         @Override
         public JsonNode placeOrder(Map<String, String> payload) {
@@ -315,7 +482,7 @@ class AutoTradeRecoveryTaskTest {
     }
 
     private static class CountingCurrentOrderSync extends OkxCurrentOrderSyncService {
-        private int calls;
+        protected int calls;
 
         CountingCurrentOrderSync() {
             super(null, null);
@@ -325,6 +492,16 @@ class AutoTradeRecoveryTaskTest {
         public SyncResult syncOnce() {
             calls++;
             return new SyncResult(0, 0, 0, false, null, List.of());
+        }
+    }
+
+    private static class ContextCapturingCurrentOrderSync extends CountingCurrentOrderSync {
+        private String username;
+
+        @Override
+        public SyncResult syncOnce() {
+            username = currentUsername();
+            return super.syncOnce();
         }
     }
 }

@@ -106,8 +106,8 @@ class AutoTradeProfitServiceTest {
         assertThat(summary.realizedPnlUsdt()).isEqualByComparingTo("2.93");
         assertThat(summary.todayRealizedPnlUsdt()).isEqualByComparingTo("1.95");
         assertThat(summary.totalNetPnlUsdt()).isEqualByComparingTo("2.93");
-        assertThat(summary.dataQuality()).isEqualTo("REALIZED_FROM_CLOSE_RECORDS_PLUS_ESTIMATED_UNREALIZED");
-        assertThat(summary.message()).contains("realizedPnl + fee + fundingFee");
+        assertThat(summary.dataQuality()).isEqualTo("CLOSE_RECORD_ESTIMATED");
+        assertThat(summary.message()).contains("估算收益").contains("OKX fills/bill");
     }
 
     private static AutoTradeRecordEntity record(String instId, String status, String margin, String createdAt) {

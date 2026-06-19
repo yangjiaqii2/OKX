@@ -3,8 +3,10 @@ package com.example.quant.controller;
 import com.example.quant.account.AccountSnapshotService;
 import com.example.quant.account.dto.OkxAccountVerificationResult;
 import com.example.quant.system.AutoTradeRiskMode;
+import com.example.quant.system.FxRateService;
 import com.example.quant.system.SystemControlService;
 import java.math.BigDecimal;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -16,10 +18,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class SystemControlController {
     private final SystemControlService systemControlService;
     private final AccountSnapshotService accountSnapshotService;
+    private final FxRateService fxRateService;
 
     public SystemControlController(SystemControlService systemControlService, AccountSnapshotService accountSnapshotService) {
+        this(systemControlService, accountSnapshotService, new FxRateService(null));
+    }
+
+    @Autowired
+    public SystemControlController(SystemControlService systemControlService, AccountSnapshotService accountSnapshotService,
+                                   FxRateService fxRateService) {
         this.systemControlService = systemControlService;
         this.accountSnapshotService = accountSnapshotService;
+        this.fxRateService = fxRateService == null ? new FxRateService(null) : fxRateService;
     }
 
     @GetMapping("/status")
@@ -52,6 +62,12 @@ public class SystemControlController {
     @PostMapping("/auto-trade/disable")
     public Object disableAutoTrade() {
         return systemControlService.disableAutoTrade();
+    }
+
+    @GetMapping("/fx-rate")
+    public Object fxRate(@RequestParam(defaultValue = "USD") String base,
+                         @RequestParam(defaultValue = "CNY") String quote) {
+        return fxRateService.rate(base, quote);
     }
 
     private void verifyOkxAccountBeforeEnable() {

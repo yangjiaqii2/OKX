@@ -1,0 +1,40 @@
+CREATE TABLE IF NOT EXISTS trade_event (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_name VARCHAR(128) NOT NULL,
+    inst_id VARCHAR(64),
+    pending_order_id VARCHAR(36),
+    auto_trade_record_id BIGINT,
+    trade_order_id BIGINT,
+    event_type VARCHAR(64) NOT NULL,
+    old_status VARCHAR(64),
+    new_status VARCHAR(64),
+    reason_code VARCHAR(128),
+    reason_message TEXT,
+    okx_ord_id VARCHAR(128),
+    cl_ord_id VARCHAR(64),
+    algo_id VARCHAR(128),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_trade_event_user_created_at (user_name, created_at),
+    INDEX idx_trade_event_pending_created_at (user_name, pending_order_id, created_at),
+    INDEX idx_trade_event_auto_record (auto_trade_record_id),
+    INDEX idx_trade_event_trade_order (trade_order_id),
+    INDEX idx_trade_event_type_created_at (event_type, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS trade_review (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_name VARCHAR(128) NOT NULL,
+    inst_id VARCHAR(64) NOT NULL,
+    pending_order_id VARCHAR(36),
+    auto_trade_record_id BIGINT,
+    close_position_record_id BIGINT NOT NULL,
+    review_reason VARCHAR(128) NOT NULL,
+    strategy_tag VARCHAR(64) NOT NULL,
+    improvement_hint TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_trade_review_close_record (close_position_record_id),
+    INDEX idx_trade_review_user_created_at (user_name, created_at),
+    INDEX idx_trade_review_strategy_tag (strategy_tag),
+    INDEX idx_trade_review_pending_order (pending_order_id)
+);

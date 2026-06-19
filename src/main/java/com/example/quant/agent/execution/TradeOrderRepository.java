@@ -14,6 +14,8 @@ public interface TradeOrderRepository extends JpaRepository<TradeOrderEntity, Lo
 
     List<TradeOrderEntity> findByStatus(String status);
 
+    List<TradeOrderEntity> findByPendingOrderIdOrderByCreatedAtAsc(String pendingOrderId);
+
     List<TradeOrderEntity> findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(String pendingOrderId,
                                                                             Collection<String> statuses);
 }

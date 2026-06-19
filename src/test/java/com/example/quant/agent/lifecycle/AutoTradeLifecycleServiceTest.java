@@ -22,6 +22,7 @@ import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
 import com.example.quant.okxtrade.OkxInstrumentRules;
 import com.example.quant.okxtrade.OkxOrderGateway;
+import com.example.quant.okxtrade.OkxPositionMode;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
@@ -108,6 +109,68 @@ class AutoTradeLifecycleServiceTest {
     }
 
     @Test
+    void lifecycleSubmitsProtectionAfterFullEntryFill() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        LifecycleGateway gateway = new LifecycleGateway();
+        gateway.orderState = "filled";
+        gateway.accFillSz = new BigDecimal("10");
+        gateway.avgPx = new BigDecimal("100");
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T00:01:00Z"));
+
+        assertThat(result.entryFilledProtected()).isEqualTo(1);
+        assertThat(gateway.cancelPayload).isNull();
+        assertThat(gateway.algoPayloads).hasSize(4);
+        assertThat(order.status()).isEqualTo(OrderStatus.PROTECTION_SUBMITTED);
+        assertThat(budgetService.reservation(order.budgetReservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.USED);
+    }
+
+    @Test
+    void positionSnapshotFailureDoesNotCancelReleaseOrClose() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        LifecycleGateway gateway = new LifecycleGateway();
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FailingPositionSnapshotService()
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T08:01:00Z"));
+
+        assertThat(result.positionSyncUnavailable()).isEqualTo(1);
+        assertThat(order.status()).isEqualTo(OrderStatus.SUBMITTED);
+        assertThat(gateway.cancelPayload).isNull();
+        assertThat(gateway.closePayload).isNull();
+        assertThat(gateway.algoPayloads).isEmpty();
+        assertThat(budgetService.reservation(order.budgetReservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.RESERVED);
+        assertThat(service.snapshots().get(0).lifecycleStatus()).isEqualTo("POSITION_SYNC_UNAVAILABLE");
+        assertThat(service.snapshots().get(0).positionLifecycle().positionSyncAvailable()).isFalse();
+    }
+
+    @Test
     void partialFillProtectionUsesInstrumentLotRulesForActualFilledSize() {
         AgentProperties properties = new AgentProperties();
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
@@ -137,6 +200,35 @@ class AutoTradeLifecycleServiceTest {
         assertThat(gateway.algoPayloads.get(1)).containsEntry("sz", "0.5");
         assertThat(gateway.algoPayloads.get(2)).containsEntry("sz", "1");
         assertThat(gateway.algoPayloads.get(3)).containsEntry("sz", "1");
+    }
+
+    @Test
+    void netModeProtectionPayloadOmitsPosSide() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        LifecycleGateway gateway = new LifecycleGateway();
+        gateway.orderState = "filled";
+        gateway.accFillSz = new BigDecimal("10");
+        gateway.avgPx = new BigDecimal("100");
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of()),
+                OkxInstrumentRules::defaultFor,
+                null,
+                null,
+                () -> OkxPositionMode.NET
+        );
+
+        service.runOnce(Instant.parse("2026-06-18T00:01:00Z"));
+
+        assertThat(gateway.algoPayloads).isNotEmpty();
+        assertThat(gateway.algoPayloads).allSatisfy(payload -> assertThat(payload).doesNotContainKey("posSide"));
     }
 
     @Test
@@ -384,6 +476,17 @@ class AutoTradeLifecycleServiceTest {
         @Override
         public List<PositionSummary> positions() {
             return positions;
+        }
+    }
+
+    private static class FailingPositionSnapshotService extends PositionSnapshotService {
+        FailingPositionSnapshotService() {
+            super(null);
+        }
+
+        @Override
+        public List<PositionSummary> positions() {
+            throw new IllegalStateException("OKX positions unavailable");
         }
     }
 

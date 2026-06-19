@@ -1,6 +1,7 @@
 package com.example.quant.order;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.quant.agent.market.OrderBookLiquidityService;
 import com.example.quant.agent.market.OrderBookLiquiditySnapshot;
@@ -323,6 +324,50 @@ class OrderConfirmServiceTest {
     }
 
     @Test
+    void autoConfirmationSubmitTimeoutMarksUnknownAndKeepsReservedBudget() {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
+        UUID pendingOrderId = UUID.randomUUID();
+        BudgetReservation reservation = budgetService.reserveBudget(
+                PendingOrderServiceTest.samplePlan().id(),
+                pendingOrderId,
+                "BTC-USDT-SWAP",
+                new BigDecimal("22.5"),
+                new BigDecimal("50")
+        );
+        PendingOrder order = pendingOrderService.createAutoPendingOrder(
+                MarketType.OKX_SWAP,
+                PendingOrderServiceTest.samplePlan(),
+                pendingOrderId,
+                new BigDecimal("22.5"),
+                reservation.reservationId(),
+                allocation("22.5"),
+                "AUTOtimeoutunknown"
+        );
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrderService,
+                new ContractRiskService(),
+                new OkxTradeAdapter(new TimeoutAndQueryFailGateway()),
+                null,
+                new AgentProperties(),
+                null,
+                null,
+                null,
+                budgetService,
+                clock
+        );
+
+        assertThatThrownBy(() -> confirmService.confirmAuto(order.id(), new BigDecimal("50")))
+                .isInstanceOf(OrderSubmitStatusUnknownException.class)
+                .hasMessageContaining("OKX request timed out");
+
+        assertThat(order.status()).isEqualTo(OrderStatus.UNKNOWN_SUBMIT_STATUS);
+        assertThat(budgetService.reservation(reservation.reservationId()).orElseThrow().status())
+                .isEqualTo(com.example.quant.agent.budget.BudgetReservationStatus.RESERVED);
+    }
+
+    @Test
     void autoConfirmationCanSubmitPendingOrderOnlyOnce() {
         Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
         PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
@@ -449,6 +494,18 @@ class OrderConfirmServiceTest {
         public JsonNode setLeverage(Map<String, String> payload) {
             this.leveragePayload = payload;
             return null;
+        }
+    }
+
+    private static class TimeoutAndQueryFailGateway extends SuccessfulGateway {
+        @Override
+        public JsonNode placeOrder(Map<String, String> payload) {
+            throw new IllegalStateException("OKX request timed out");
+        }
+
+        @Override
+        public JsonNode queryOrder(Map<String, String> payload) {
+            throw new IllegalStateException("OKX query unavailable");
         }
     }
 

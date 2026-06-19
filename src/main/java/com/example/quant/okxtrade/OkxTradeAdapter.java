@@ -78,9 +78,18 @@ public class OkxTradeAdapter {
             String orderId = orderId(response, "ordId");
             log.info("OKX trade order accepted instId={} ordId={} clOrdId={}", order.instId(), orderId, payload.get("clOrdId"));
             recordSubmitted(order, entryRecord.withOkxOrdId(orderId));
+            if (!"market".equalsIgnoreCase(order.orderType())) {
+                return new OrderExecutionResult(true, true, orderId,
+                        "OKX委托已提交，订单号 " + orderId + "，等待成交。委托提交不代表已成交，请由生命周期查询成交后提交保护单。");
+            }
             ProtectionPlanResult protectionPlan = protectionPlan(order, rules, positionMode, orderId, new BigDecimal(payload.get("sz")));
             if (!protectionPlan.valid()) {
                 String reason = protectionPlan.failureReason();
+                if ("ENTRY_FILL_NOT_CONFIRMED".equals(reason)) {
+                    return new OrderExecutionResult(true, true, orderId,
+                            "ENTRY_FILL_UNCONFIRMED: OKX委托已提交，订单号 " + orderId
+                                    + "，但成交数量未确认，等待生命周期恢复查询。");
+                }
                 log.error("OKX protection plan invalid instId={} ordId={} reason={}", order.instId(), orderId, reason);
                 if ("CLOSE_POSITION".equalsIgnoreCase(agentProperties.protection().protectionFailAction())) {
                     closePosition(order.instId(), order.posSide(), order.tdMode());
@@ -102,6 +111,7 @@ public class OkxTradeAdapter {
                 if (recovered != null) {
                     return recovered;
                 }
+                throw ex;
             }
             recordFailed(order, entryRecord, ex.getMessage());
             throw ex;
@@ -141,16 +151,12 @@ public class OkxTradeAdapter {
             JsonNode response = okxOrderGateway.queryOrder(queryPayload);
             JsonNode item = firstDataItem(response);
             if (item == null) {
-                String message = "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + clOrdId;
-                recordFailed(order, entryRecord, message);
-                return new OrderExecutionResult(false, true, null, message);
+                return null;
             }
             String ordId = item.path("ordId").asText("");
             String state = item.path("state").asText("");
             if (!hasText(ordId)) {
-                String message = "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + clOrdId;
-                recordFailed(order, entryRecord, message);
-                return new OrderExecutionResult(false, true, null, message);
+                return null;
             }
             recordSubmitted(order, entryRecord.withOkxOrdId(ordId));
             log.warn("OKX order submit timeout recovered by clOrdId instId={} clOrdId={} ordId={} state={}",

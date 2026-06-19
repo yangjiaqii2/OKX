@@ -14,6 +14,7 @@ export const quantApi = {
   closePositionRecords: (params: { page?: number; size?: number } = {}) =>
     quantFetch(`/account/positions/close-records?page=${params.page ?? 0}&size=${params.size ?? 50}`),
   autoTradeLifecycle: () => quantFetch('/auto-trade/lifecycle'),
+  autoTradeEvents: (limit = 50) => quantFetch(`/auto-trade/events?limit=${encodeURIComponent(String(limit))}`),
   closePosition: (payload: { instId: string; posSide?: string; marginMode?: string }) =>
     quantFetch('/account/positions/close', {
       method: 'POST',
@@ -51,6 +52,8 @@ export const quantApi = {
     }),
   unbindOkxAccount: () => quantFetch('/account/unbind', { method: 'POST' }),
   systemStatus: () => quantFetch('/system/status'),
+  fxRate: (base = 'USD', quote = 'CNY') =>
+    quantFetch(`/system/fx-rate?base=${encodeURIComponent(base)}&quote=${encodeURIComponent(quote)}`),
   autoTradeRecords: (params: { status?: string; instId?: string; page?: number; size?: number } = {}) => {
     const search = new URLSearchParams();
     if (params.status) search.set('status', params.status);

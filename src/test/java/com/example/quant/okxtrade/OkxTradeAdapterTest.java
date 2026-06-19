@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 
 class OkxTradeAdapterTest {
     @Test
-    void placesRealOkxOrderThroughGateway() {
+    void limitOrderSubmitDoesNotSubmitProtectionWhenNoFillIsConfirmed() {
         CapturingGateway gateway = new CapturingGateway();
         OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
         PendingOrder order = new PendingOrder(
@@ -54,7 +54,7 @@ class OkxTradeAdapterTest {
         assertThat(result.executed()).isTrue();
         assertThat(result.liveOrder()).isTrue();
         assertThat(result.externalOrderId()).isEqualTo("123456");
-        assertThat(result.message()).contains("保护单已提交 4 个");
+        assertThat(result.message()).contains("等待成交");
         assertThat(gateway.leveragePayload).containsEntry("lever", "2");
         assertThat(gateway.leveragePayload).containsEntry("mgnMode", "cross");
         assertThat(gateway.payload).containsEntry("instId", "BTC-USDT-SWAP");
@@ -65,12 +65,7 @@ class OkxTradeAdapterTest {
         assertThat(gateway.payload).containsEntry("px", "100");
         assertThat(gateway.payload).containsEntry("sz", "5");
         assertThat(gateway.payload).containsKey("clOrdId");
-        assertThat(gateway.algoPayloads).hasSize(4);
-        assertThat(gateway.algoPayloads).allSatisfy(payload -> {
-            assertThat(payload).containsEntry("reduceOnly", "true");
-            assertThat(payload).containsKey("algoClOrdId");
-            assertThat(payload).doesNotContainKey("orderRole");
-        });
+        assertThat(gateway.algoPayloads).isEmpty();
     }
 
     @Test
@@ -114,9 +109,7 @@ class OkxTradeAdapterTest {
 
         assertThat(gateway.payload).containsEntry("sz", "243");
         assertThat(gateway.payload).containsEntry("px", "0.0003853");
-        assertThat(gateway.algoPayloads)
-                .extracting(payload -> payload.get("sz"))
-                .containsExactly("243", "72", "97", "74");
+        assertThat(gateway.algoPayloads).isEmpty();
     }
 
     @Test
@@ -193,6 +186,22 @@ class OkxTradeAdapterTest {
     }
 
     @Test
+    void marketOrderWithoutConfirmedFillReturnsEntryFillUnconfirmed() {
+        CapturingGateway gateway = new CapturingGateway();
+        gateway.fillAvgPx = BigDecimal.ZERO;
+        gateway.fillSize = BigDecimal.ZERO;
+        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
+
+        OrderExecutionResult result = adapter.placeOrder(marketOrder());
+
+        assertThat(result.executed()).isTrue();
+        assertThat(result.externalOrderId()).isEqualTo("123456");
+        assertThat(result.message()).contains("ENTRY_FILL_UNCONFIRMED");
+        assertThat(gateway.algoPayloads).isEmpty();
+        assertThat(gateway.closePayload).isNull();
+    }
+
+    @Test
     void marketOrderFillDeviationTooLargeClosesPositionInsteadOfSubmittingProtection() {
         CapturingGateway gateway = new CapturingGateway();
         gateway.fillAvgPx = new BigDecimal("101");
@@ -253,16 +262,15 @@ class OkxTradeAdapterTest {
     }
 
     @Test
-    void submitTimeoutReturnsRejectedWhenOkxConfirmsClientOrderIdMissing() {
+    void submitTimeoutKeepsStatusUnknownWhenClientOrderIdIsNotYetFound() {
         TimeoutThenMissingGateway gateway = new TimeoutThenMissingGateway();
         OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
         PendingOrder order = order();
         order.applyBudgetReservation(new BigDecimal("22.5"), UUID.randomUUID(), "{}", "AUTOmissing123456");
 
-        OrderExecutionResult result = adapter.placeOrder(order);
-
-        assertThat(result.executed()).isFalse();
-        assertThat(result.message()).contains("OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT");
+        assertThatThrownBy(() -> adapter.placeOrder(order))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("OKX request timed out");
         assertThat(gateway.queryOrderPayload).containsEntry("clOrdId", "AUTOmissing123456");
     }
 

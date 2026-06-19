@@ -7,6 +7,10 @@ import com.example.quant.account.PositionSnapshotService;
 import com.example.quant.account.dto.PositionSummary;
 import com.example.quant.agent.budget.AutoTradeBudgetService;
 import com.example.quant.agent.budget.BudgetReservation;
+import com.example.quant.agent.event.TradeEventPayload;
+import com.example.quant.agent.event.TradeEventService;
+import com.example.quant.agent.event.TradeEventType;
+import com.example.quant.agent.event.TradeEventView;
 import com.example.quant.agent.execution.TradeOrderEntity;
 import com.example.quant.agent.execution.TradeOrderRepository;
 import com.example.quant.auth.AuthUserContext;
@@ -14,6 +18,8 @@ import com.example.quant.config.AgentProperties;
 import com.example.quant.okxtrade.OkxInstrumentRules;
 import com.example.quant.okxtrade.OkxInstrumentRulesProvider;
 import com.example.quant.okxtrade.OkxOrderGateway;
+import com.example.quant.okxtrade.OkxPositionMode;
+import com.example.quant.okxtrade.OkxPositionModeProvider;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
@@ -44,14 +50,16 @@ public class AutoTradeLifecycleService {
     private final OkxOrderGateway okxOrderGateway;
     private final PositionSnapshotService positionSnapshotService;
     private final OkxInstrumentRulesProvider instrumentRulesProvider;
+    private final OkxPositionModeProvider positionModeProvider;
     private final ClosePositionRecordRepository closePositionRecordRepository;
     private final TradeOrderRepository tradeOrderRepository;
+    private final TradeEventService tradeEventService;
 
     public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
                                      AgentProperties agentProperties, OkxOrderGateway okxOrderGateway,
                                      PositionSnapshotService positionSnapshotService) {
         this(pendingOrderService, budgetService, agentProperties, okxOrderGateway, positionSnapshotService,
-                OkxInstrumentRules::defaultFor, null, null);
+                OkxInstrumentRules::defaultFor, null, null, null, null);
     }
 
     public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
@@ -59,7 +67,7 @@ public class AutoTradeLifecycleService {
                                      PositionSnapshotService positionSnapshotService,
                                      ClosePositionRecordRepository closePositionRecordRepository) {
         this(pendingOrderService, budgetService, agentProperties, okxOrderGateway, positionSnapshotService,
-                OkxInstrumentRules::defaultFor, closePositionRecordRepository, null);
+                OkxInstrumentRules::defaultFor, closePositionRecordRepository, null, null, null);
     }
 
     public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
@@ -68,7 +76,17 @@ public class AutoTradeLifecycleService {
                                      ClosePositionRecordRepository closePositionRecordRepository,
                                      TradeOrderRepository tradeOrderRepository) {
         this(pendingOrderService, budgetService, agentProperties, okxOrderGateway, positionSnapshotService,
-                OkxInstrumentRules::defaultFor, closePositionRecordRepository, tradeOrderRepository);
+                OkxInstrumentRules::defaultFor, closePositionRecordRepository, tradeOrderRepository, null, null);
+    }
+
+    public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                     AgentProperties agentProperties, OkxOrderGateway okxOrderGateway,
+                                     PositionSnapshotService positionSnapshotService,
+                                     OkxInstrumentRulesProvider instrumentRulesProvider,
+                                     ClosePositionRecordRepository closePositionRecordRepository,
+                                     TradeOrderRepository tradeOrderRepository) {
+        this(pendingOrderService, budgetService, agentProperties, okxOrderGateway, positionSnapshotService,
+                instrumentRulesProvider, closePositionRecordRepository, tradeOrderRepository, null, null);
     }
 
     @Autowired
@@ -77,15 +95,41 @@ public class AutoTradeLifecycleService {
                                      PositionSnapshotService positionSnapshotService,
                                      OkxInstrumentRulesProvider instrumentRulesProvider,
                                      ClosePositionRecordRepository closePositionRecordRepository,
-                                     TradeOrderRepository tradeOrderRepository) {
+                                     TradeOrderRepository tradeOrderRepository,
+                                     TradeEventService tradeEventService) {
+        this(pendingOrderService, budgetService, agentProperties, okxOrderGateway, positionSnapshotService,
+                instrumentRulesProvider, closePositionRecordRepository, tradeOrderRepository, null, tradeEventService);
+    }
+
+    public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                     AgentProperties agentProperties, OkxOrderGateway okxOrderGateway,
+                                     PositionSnapshotService positionSnapshotService,
+                                     OkxInstrumentRulesProvider instrumentRulesProvider,
+                                     ClosePositionRecordRepository closePositionRecordRepository,
+                                     TradeOrderRepository tradeOrderRepository,
+                                     OkxPositionModeProvider positionModeProvider) {
+        this(pendingOrderService, budgetService, agentProperties, okxOrderGateway, positionSnapshotService,
+                instrumentRulesProvider, closePositionRecordRepository, tradeOrderRepository, positionModeProvider, null);
+    }
+
+    public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
+                                     AgentProperties agentProperties, OkxOrderGateway okxOrderGateway,
+                                     PositionSnapshotService positionSnapshotService,
+                                     OkxInstrumentRulesProvider instrumentRulesProvider,
+                                     ClosePositionRecordRepository closePositionRecordRepository,
+                                     TradeOrderRepository tradeOrderRepository,
+                                     OkxPositionModeProvider positionModeProvider,
+                                     TradeEventService tradeEventService) {
         this.pendingOrderService = pendingOrderService;
         this.budgetService = budgetService;
         this.agentProperties = agentProperties == null ? new AgentProperties() : agentProperties;
         this.okxOrderGateway = okxOrderGateway;
         this.positionSnapshotService = positionSnapshotService;
         this.instrumentRulesProvider = instrumentRulesProvider == null ? OkxInstrumentRules::defaultFor : instrumentRulesProvider;
+        this.positionModeProvider = positionModeProvider == null ? () -> OkxPositionMode.LONG_SHORT : positionModeProvider;
         this.closePositionRecordRepository = closePositionRecordRepository;
         this.tradeOrderRepository = tradeOrderRepository;
+        this.tradeEventService = tradeEventService;
     }
 
     public LifecycleRunResult runOnce() {
@@ -94,16 +138,54 @@ public class AutoTradeLifecycleService {
 
     public LifecycleRunResult runOnce(Instant now) {
         int entryTimeoutCancelled = 0;
+        int entryFilledProtected = 0;
         int partialFillProtected = 0;
         int sidewaysTpAdjusted = 0;
         int maxHoldCloseSubmitted = 0;
-        List<PositionSummary> positions = positions();
+        PositionSyncResult positionSync = positions();
+        if (!positionSync.available()) {
+            List<PendingOrder> affectedOrders = pendingOrderService.allOrders().stream()
+                    .filter(order -> order.submittedAt() != null)
+                    .toList();
+            for (PendingOrder order : affectedOrders) {
+                recordEvent(order, TradeEventType.RECOVERY_FAILED, order.status().name(), order.status().name(),
+                        "POSITION_SYNC_UNAVAILABLE", "持仓查询失败，跳过本轮生命周期动作", null, order.clientOrderId(), null);
+            }
+            int affected = affectedOrders.size();
+            return new LifecycleRunResult(0, 0, 0, 0, 0, affected);
+        }
+        List<PositionSummary> positions = positionSync.positions();
         for (PendingOrder order : pendingOrderService.allOrders()) {
             if (order.submittedAt() == null) {
                 continue;
             }
             PositionSummary position = matchingPosition(order, positions);
             Duration age = Duration.between(order.submittedAt(), now);
+            if (position == null && order.status() == OrderStatus.SUBMITTED) {
+                EntryFill fill = queryEntryFill(order);
+                if (fill.complete()) {
+                    try {
+                        submitProtection(order, fill.avgPx(), fill.filledSize(), "FULL_FILL");
+                        if (order.budgetReservationId() != null) {
+                            budgetService.markUsed(order.budgetReservationId());
+                        }
+                        order.markProtectionSubmitted("ENTRY_FILLED_PROTECTION_SUBMITTED");
+                        recordEvent(order, TradeEventType.ENTRY_FILLED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.PROTECTION_SUBMITTED.name(), "ENTRY_FULLY_FILLED",
+                                "入场委托完全成交，按实际成交数量提交保护单", order.externalOrderId(), order.clientOrderId(), null);
+                        recordEvent(order, TradeEventType.PROTECTION_SUBMITTED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.PROTECTION_SUBMITTED.name(), "FULL_FILL_PROTECTION_SUBMITTED",
+                                "完全成交后提交保护单", order.externalOrderId(), order.clientOrderId(), null);
+                        entryFilledProtected++;
+                    } catch (RuntimeException ex) {
+                        order.markProtectionFailed("PROTECTION_FAILED_AFTER_FULL_FILL: " + compact(ex.getMessage()));
+                        recordEvent(order, TradeEventType.PROTECTION_FAILED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.PROTECTION_FAILED.name(), "PROTECTION_FAILED_AFTER_FULL_FILL",
+                                ex.getMessage(), order.externalOrderId(), order.clientOrderId(), null);
+                    }
+                    continue;
+                }
+            }
             if (position != null && shouldMaxHoldClose(order, age)) {
                 maxHoldCloseSubmitted += submitMaxHoldClose(order, position, now);
                 continue;
@@ -120,32 +202,59 @@ public class AutoTradeLifecycleService {
                     if (order.budgetReservationId() != null) {
                         budgetService.release(order.budgetReservationId(), "ENTRY_TIMEOUT_CANCELLED");
                     }
+                    recordEvent(order, TradeEventType.ENTRY_TIMEOUT_CANCELLED, OrderStatus.SUBMITTED.name(),
+                            OrderStatus.ENTRY_TIMEOUT_CANCELLED.name(), "ENTRY_TIMEOUT_CANCELLED",
+                            "入场委托超时且无成交，已撤单", order.externalOrderId(), order.clientOrderId(), null);
+                    recordEvent(order, TradeEventType.BUDGET_RELEASED, "RESERVED", "RELEASED",
+                            "ENTRY_TIMEOUT_CANCELLED", "入场无成交超时释放预算", null, order.clientOrderId(), null);
                     entryTimeoutCancelled++;
                 } else {
-                    submitProtection(order, fill.avgPx(), fill.filledSize(), "PARTIAL_FILL_ENTRY_TIMEOUT");
-                    if (order.budgetReservationId() != null) {
-                        budgetService.markUsed(order.budgetReservationId());
+                    try {
+                        submitProtection(order, fill.avgPx(), fill.filledSize(), "PARTIAL_FILL_ENTRY_TIMEOUT");
+                        if (order.budgetReservationId() != null) {
+                            budgetService.markUsed(order.budgetReservationId());
+                        }
+                        order.markProtectionSubmitted("PARTIAL_FILL_PROTECTION_SUBMITTED");
+                        recordEvent(order, TradeEventType.ENTRY_PARTIAL_FILLED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.PROTECTION_SUBMITTED.name(), "PARTIAL_FILL_ENTRY_TIMEOUT",
+                                "部分成交超时后取消剩余委托，并按实际成交数量提交保护单", order.externalOrderId(),
+                                order.clientOrderId(), null);
+                        recordEvent(order, TradeEventType.PROTECTION_SUBMITTED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.PROTECTION_SUBMITTED.name(), "PARTIAL_FILL_PROTECTION_SUBMITTED",
+                                "部分成交后提交保护单", order.externalOrderId(), order.clientOrderId(), null);
+                        partialFillProtected++;
+                    } catch (RuntimeException ex) {
+                        order.markProtectionFailed("PROTECTION_FAILED_AFTER_PARTIAL_FILL: " + compact(ex.getMessage()));
+                        recordEvent(order, TradeEventType.PROTECTION_FAILED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.PROTECTION_FAILED.name(), "PROTECTION_FAILED_AFTER_PARTIAL_FILL",
+                                ex.getMessage(), order.externalOrderId(), order.clientOrderId(), null);
                     }
-                    order.markProtectionSubmitted("PARTIAL_FILL_PROTECTION_SUBMITTED");
-                    partialFillProtected++;
                 }
             }
         }
-        return new LifecycleRunResult(entryTimeoutCancelled, partialFillProtected, sidewaysTpAdjusted, maxHoldCloseSubmitted);
+        return new LifecycleRunResult(entryTimeoutCancelled, entryFilledProtected, partialFillProtected,
+                sidewaysTpAdjusted, maxHoldCloseSubmitted, 0);
     }
 
     public List<AutoTradeLifecycleSnapshot> snapshots() {
-        List<PositionSummary> positions = positions();
+        PositionSyncResult positionSync = positions();
+        List<PositionSummary> positions = positionSync.positions();
         Instant now = Instant.now();
         return pendingOrderService.allOrders().stream()
                 .filter(order -> order.budgetReservationId() != null || order.clientOrderId() != null)
                 .map(order -> {
-                    PositionSummary position = matchingPosition(order, positions);
+                    PositionSummary position = positionSync.available() ? matchingPosition(order, positions) : null;
                     Instant entryTime = order.submittedAt() == null ? order.createdAt() : order.submittedAt();
                     BudgetReservation reservation = order.budgetReservationId() == null
                             ? null
                             : budgetService.reservation(order.budgetReservationId()).orElse(null);
                     BigDecimal budgetUsed = reservation == null ? order.marginAmount() : reservation.amount();
+                    EntryOrderFact entryFact = entryFact(order, position);
+                    List<ProtectionOrderFact> protectionFacts = protectionFacts(order);
+                    ClosePositionFact closeFact = closeFact(order);
+                    BudgetFact budgetFact = budgetFact(order, reservation);
+                    List<TradeEventView> recentEvents = recentEvents(order);
+                    PositionLifecycleFact positionFact = positionFact(positionSync, position);
                     return new AutoTradeLifecycleSnapshot(
                             order.instId(),
                             order.posSide(),
@@ -158,11 +267,132 @@ public class AutoTradeLifecycleService {
                             budgetUsed,
                             order.status().name(),
                             protectionStatus(order),
-                            lifecycleStatus(order, position),
-                            nextAction(order)
+                            positionSync.available() ? lifecycleStatus(order, position) : "POSITION_SYNC_UNAVAILABLE",
+                            positionSync.available() ? nextAction(order) : "WAIT_POSITION_SYNC_RECOVERY",
+                            entryFact,
+                            protectionFacts,
+                            positionFact,
+                            closeFact,
+                            budgetFact,
+                            recentEvents,
+                            manualAttentionRequired(order, protectionFacts, closeFact)
                     );
                 })
                 .toList();
+    }
+
+    private EntryOrderFact entryFact(PendingOrder order, PositionSummary position) {
+        return new EntryOrderFact(
+                order.status().name(),
+                order.externalOrderId(),
+                order.clientOrderId(),
+                order.size(),
+                position == null ? BigDecimal.ZERO : decimal(position.size()),
+                position == null ? BigDecimal.ZERO : position.avgPrice(),
+                order.submittedAt()
+        );
+    }
+
+    private List<ProtectionOrderFact> protectionFacts(PendingOrder order) {
+        if (tradeOrderRepository == null || order == null) {
+            return List.of();
+        }
+        return tradeOrderRepository.findByPendingOrderIdOrderByCreatedAtAsc(order.id().toString())
+                .stream()
+                .filter(TradeOrderEntity::isReduceOnly)
+                .map(item -> new ProtectionOrderFact(
+                        item.getId(),
+                        item.getOrderRole(),
+                        item.getStatus(),
+                        item.getOkxState(),
+                        item.getOkxOrdId(),
+                        item.getClOrdId(),
+                        item.getSize(),
+                        item.getPrice(),
+                        item.getCreatedAt(),
+                        item.getErrorMessage()
+                ))
+                .toList();
+    }
+
+    private ClosePositionFact closeFact(PendingOrder order) {
+        if (closePositionRecordRepository == null || order == null) {
+            return null;
+        }
+        List<ClosePositionRecordEntity> records = closePositionRecordRepository
+                .findByUserNameAndPendingOrderIdOrderByCreatedAtDesc(currentUsername(), order.id().toString());
+        if (records == null || records.isEmpty()) {
+            return null;
+        }
+        ClosePositionRecordEntity record = records.get(0);
+        return new ClosePositionFact(
+                record.getId(),
+                record.getStatus(),
+                record.getSource(),
+                record.getCloseOrderId(),
+                record.getCloseClOrdId(),
+                record.getRealizedPnl(),
+                record.getFee(),
+                record.getFundingFee(),
+                record.getUpdatedAt(),
+                record.getErrorMessage()
+        );
+    }
+
+    private BudgetFact budgetFact(PendingOrder order, BudgetReservation reservation) {
+        if (reservation == null) {
+            return order.budgetReservationId() == null
+                    ? null
+                    : new BudgetFact(order.budgetReservationId().toString(), "UNKNOWN", order.marginAmount(), null, null);
+        }
+        return new BudgetFact(
+                reservation.reservationId().toString(),
+                reservation.status().name(),
+                reservation.amount(),
+                reservation.reason(),
+                reservation.updatedAt()
+        );
+    }
+
+    private List<TradeEventView> recentEvents(PendingOrder order) {
+        if (tradeEventService == null || order == null) {
+            return List.of();
+        }
+        try {
+            return tradeEventService.recentForPendingOrder(order.id().toString(), 20);
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
+    }
+
+    private static PositionLifecycleFact positionFact(PositionSyncResult positionSync, PositionSummary position) {
+        if (!positionSync.available()) {
+            return new PositionLifecycleFact(false, false, BigDecimal.ZERO, BigDecimal.ZERO,
+                    BigDecimal.ZERO, BigDecimal.ZERO, "POSITION_SYNC_UNAVAILABLE");
+        }
+        return new PositionLifecycleFact(
+                true,
+                position != null,
+                position == null ? BigDecimal.ZERO : decimal(position.size()),
+                position == null ? BigDecimal.ZERO : position.avgPrice(),
+                position == null ? BigDecimal.ZERO : position.unrealizedPnl(),
+                position == null ? BigDecimal.ZERO : pnlPct(position),
+                position == null ? "NO_POSITION" : position.mode()
+        );
+    }
+
+    private static boolean manualAttentionRequired(PendingOrder order, List<ProtectionOrderFact> protections,
+                                                   ClosePositionFact closeFact) {
+        if (order.status() == OrderStatus.EMERGENCY_ATTENTION_REQUIRED
+                || order.status() == OrderStatus.PROTECTION_FAILED) {
+            return true;
+        }
+        boolean protectionAttention = protections != null && protections.stream()
+                .anyMatch(item -> "EMERGENCY_ATTENTION_REQUIRED".equalsIgnoreCase(item.status())
+                        || "PROTECTION_CANCEL_FAILED".equalsIgnoreCase(item.status()));
+        boolean closeAttention = closeFact != null && hasText(closeFact.errorMessage())
+                && closeFact.errorMessage().startsWith("POSITION_QUERY_FAILED");
+        return protectionAttention || closeAttention;
     }
 
     private boolean shouldCancelStaleEntry(PendingOrder order, Duration age) {
@@ -204,6 +434,9 @@ public class AutoTradeLifecycleService {
         JsonNode response = okxOrderGateway.placeAlgoOrder(payload);
         recordSidewaysTakeProfit(order, payload, size, triggerPx, response);
         order.markSidewaysTimeoutTpAdjusted("SIDEWAYS_TIMEOUT_TP_ADJUSTED");
+        recordEvent(order, TradeEventType.SIDEWAYS_TP_REPLACED, OrderStatus.PROTECTION_SUBMITTED.name(),
+                OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED.name(), "SIDEWAYS_TP_REPLACED",
+                "横盘超时后替换为小盈利止盈保护单", null, payload.get("algoClOrdId"), algoId(response));
         return 1;
     }
 
@@ -298,9 +531,15 @@ public class AutoTradeLifecycleService {
             String closeOrderId = closeId(response);
             order.markCloseSubmitted(closeOrderId, "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED");
             recordMaxHoldCloseSubmitted(order, position, closeOrderId, now);
+            recordEvent(order, TradeEventType.MAX_HOLD_CLOSE_SUBMITTED, OrderStatus.PROTECTION_SUBMITTED.name(),
+                    OrderStatus.CLOSE_SUBMITTED.name(), "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED",
+                    "达到最大持仓时间后提交平仓", closeOrderId, order.clientOrderId(), null);
             return 1;
         } catch (RuntimeException ex) {
             order.markEmergencyAttentionRequired("MAX_HOLD_TIMEOUT_CLOSE_FAILED: " + ex.getMessage());
+            recordEvent(order, TradeEventType.RECOVERY_FAILED, order.status().name(),
+                    OrderStatus.EMERGENCY_ATTENTION_REQUIRED.name(), "MAX_HOLD_TIMEOUT_CLOSE_FAILED",
+                    ex.getMessage(), null, order.clientOrderId(), null);
             return 0;
         }
     }
@@ -416,7 +655,9 @@ public class AutoTradeLifecycleService {
         payload.put("instId", order.instId());
         payload.put("tdMode", order.tdMode());
         payload.put("side", closeSide(order));
-        payload.put("posSide", order.posSide());
+        if (positionMode() == OkxPositionMode.LONG_SHORT) {
+            payload.put("posSide", order.posSide());
+        }
         payload.put("ordType", "conditional");
         payload.put("reduceOnly", "true");
         payload.put("sz", value(size));
@@ -425,6 +666,9 @@ public class AutoTradeLifecycleService {
     }
 
     private EntryFill queryEntryFill(PendingOrder order) {
+        if (okxOrderGateway == null) {
+            return new EntryFill(BigDecimal.ZERO, BigDecimal.ZERO, "");
+        }
         Map<String, String> payload = new LinkedHashMap<>();
         payload.put("instId", order.instId());
         if (hasText(order.externalOrderId())) {
@@ -434,9 +678,9 @@ public class AutoTradeLifecycleService {
         }
         JsonNode item = firstDataItem(okxOrderGateway.queryOrder(payload));
         if (item == null) {
-            return new EntryFill(BigDecimal.ZERO, BigDecimal.ZERO);
+            return new EntryFill(BigDecimal.ZERO, BigDecimal.ZERO, "");
         }
-        return new EntryFill(decimal(item, "avgPx"), decimal(item, "accFillSz"));
+        return new EntryFill(decimal(item, "avgPx"), decimal(item, "accFillSz"), item.path("state").asText(""));
     }
 
     private void cancelEntryOrder(PendingOrder order) {
@@ -488,14 +732,49 @@ public class AutoTradeLifecycleService {
         };
     }
 
-    private List<PositionSummary> positions() {
+    private PositionSyncResult positions() {
         if (positionSnapshotService == null) {
-            return List.of();
+            return PositionSyncResult.available(List.of());
         }
         try {
-            return positionSnapshotService.positions();
+            return PositionSyncResult.available(positionSnapshotService.positions());
         } catch (RuntimeException ex) {
-            return List.of();
+            return PositionSyncResult.unavailable();
+        }
+    }
+
+    private OkxPositionMode positionMode() {
+        try {
+            OkxPositionMode mode = positionModeProvider.positionMode();
+            return mode == null ? OkxPositionMode.NET : mode;
+        } catch (RuntimeException ex) {
+            return OkxPositionMode.NET;
+        }
+    }
+
+    private void recordEvent(PendingOrder order, TradeEventType eventType, String oldStatus, String newStatus,
+                             String reasonCode, String reasonMessage, String okxOrdId, String clOrdId, String algoId) {
+        if (tradeEventService == null || order == null) {
+            return;
+        }
+        try {
+            tradeEventService.record(new TradeEventPayload(
+                    null,
+                    order.instId(),
+                    order.id().toString(),
+                    null,
+                    null,
+                    eventType,
+                    oldStatus,
+                    newStatus,
+                    reasonCode,
+                    reasonMessage,
+                    okxOrdId,
+                    clOrdId,
+                    algoId
+            ));
+        } catch (RuntimeException ex) {
+            // Event persistence must not interrupt recovery/lifecycle handling.
         }
     }
 
@@ -609,6 +888,10 @@ public class AutoTradeLifecycleService {
         return value != null && !value.trim().isEmpty();
     }
 
+    private static String currentUsername() {
+        return AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
+    }
+
     private static boolean isTakeProfitRole(TradeOrderEntity entity) {
         String role = entity.getOrderRole();
         return "TP1".equalsIgnoreCase(role) || "TP2".equalsIgnoreCase(role) || "TP3".equalsIgnoreCase(role);
@@ -621,17 +904,36 @@ public class AutoTradeLifecycleService {
         return value.replaceAll("\\s+", " ").trim();
     }
 
-    private record EntryFill(BigDecimal avgPx, BigDecimal filledSize) {
+    private record EntryFill(BigDecimal avgPx, BigDecimal filledSize, String state) {
+        boolean complete() {
+            return filledSize != null && filledSize.signum() > 0 && "filled".equalsIgnoreCase(state);
+        }
     }
 
     private record TakeProfitLeg(String suffix, BigDecimal size, BigDecimal rMultiple) {
     }
 
+    private record PositionSyncResult(boolean available, List<PositionSummary> positions) {
+        static PositionSyncResult available(List<PositionSummary> positions) {
+            return new PositionSyncResult(true, positions == null ? List.of() : positions);
+        }
+
+        static PositionSyncResult unavailable() {
+            return new PositionSyncResult(false, List.of());
+        }
+    }
+
     public record LifecycleRunResult(
             int entryTimeoutCancelled,
+            int entryFilledProtected,
             int partialFillProtected,
             int sidewaysTpAdjusted,
-            int maxHoldCloseSubmitted
+            int maxHoldCloseSubmitted,
+            int positionSyncUnavailable
     ) {
+        public LifecycleRunResult(int entryTimeoutCancelled, int partialFillProtected, int sidewaysTpAdjusted,
+                                  int maxHoldCloseSubmitted) {
+            this(entryTimeoutCancelled, 0, partialFillProtected, sidewaysTpAdjusted, maxHoldCloseSubmitted, 0);
+        }
     }
 }

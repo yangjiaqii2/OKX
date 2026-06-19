@@ -58,6 +58,7 @@ public class ContractSignalAnalyzer {
         BigDecimal todayChangePct = percent(entry.subtract(todayOpen), todayOpen);
         BigDecimal oiChange = percent(openInterest.subtract(previousOpenInterest), previousOpenInterest);
         BigDecimal change5m = changeOverBars(fiveMinute.isEmpty() ? twentyMinute : fiveMinute, 1);
+        BigDecimal change10m = changeOverBars(fiveMinute.isEmpty() ? twentyMinute : fiveMinute, 2);
         ContractNewsRiskAnalysis newsRisk = ContractNewsRiskAnalysis.low();
 
         if (twentyMinute.size() < MIN_20M_CANDLES) {
@@ -86,7 +87,8 @@ public class ContractSignalAnalyzer {
                 main,
                 fast,
                 structure,
-                distanceFromEma20Pct
+                distanceFromEma20Pct,
+                change10m
         );
         DirectionBias direction = directionFor(signalType, trend20m, entry, main);
         String entryTiming5m = entryTiming(signalType, fast, direction, distanceFromEma20Pct);
@@ -224,7 +226,24 @@ public class ContractSignalAnalyzer {
                                                  String trend20m, String trend1h, String trend4h,
                                                  IndicatorSnapshot main, IndicatorSnapshot fast,
                                                  StructureSnapshot structure,
-                                                 BigDecimal distanceFromEma20Pct) {
+                                                 BigDecimal distanceFromEma20Pct,
+                                                 BigDecimal shortTermChangePct) {
+        if (todayChangePct.compareTo(new BigDecimal("50")) >= 0
+                && shortTermChangePct.compareTo(new BigDecimal("-8")) <= 0) {
+            boolean breakdownConfirmed = structure.lowerStructure()
+                    || "DOWN".equals(trend20m)
+                    || "DOWN".equals(trendDirection(fast, structure));
+            boolean rejectionConfirmed = main.upperWickPct().compareTo(new BigDecimal("0.80")) >= 0
+                    || main.consecutiveUpperWicks() >= 1
+                    || main.closePosition().compareTo(new BigDecimal("0.35")) <= 0;
+            boolean fundingOverheated = fundingRate.compareTo(new BigDecimal("0.0008")) > 0;
+            boolean volumeBreakdown = main.volumeRatio().compareTo(new BigDecimal("1.20")) >= 0
+                    && fast.volumeRatio().compareTo(new BigDecimal("1.10")) >= 0;
+            if (breakdownConfirmed && rejectionConfirmed && fundingOverheated && volumeBreakdown) {
+                return ContractSignalType.REVERSAL_SHORT;
+            }
+            return ContractSignalType.WAIT_OVERHEATED;
+        }
         if (todayChangePct.compareTo(new BigDecimal("15")) > 0
                 && (main.rsi().compareTo(BigDecimal.valueOf(75)) > 0
                 || distanceFromEma20Pct.compareTo(new BigDecimal("3")) > 0

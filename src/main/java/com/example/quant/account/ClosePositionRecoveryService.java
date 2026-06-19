@@ -2,8 +2,13 @@ package com.example.quant.account;
 
 import com.example.quant.account.dto.PositionSummary;
 import com.example.quant.agent.budget.AutoTradeBudgetService;
+import com.example.quant.agent.event.TradeEventPayload;
+import com.example.quant.agent.event.TradeEventService;
+import com.example.quant.agent.event.TradeEventType;
 import com.example.quant.agent.execution.TradeOrderEntity;
 import com.example.quant.agent.execution.TradeOrderRepository;
+import com.example.quant.agent.review.TradeReviewService;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.okxtrade.OkxOrderGateway;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
@@ -30,6 +35,8 @@ public class ClosePositionRecoveryService {
     private final AutoTradeBudgetService budgetService;
     private final PositionSnapshotService positionSnapshotService;
     private final OkxOrderGateway okxOrderGateway;
+    private final TradeReviewService tradeReviewService;
+    private final TradeEventService tradeEventService;
 
     public ClosePositionRecoveryService(ClosePositionRecordRepository closePositionRecordRepository,
                                         TradeOrderRepository tradeOrderRepository,
@@ -37,7 +44,17 @@ public class ClosePositionRecoveryService {
                                         AutoTradeBudgetService budgetService,
                                         PositionSnapshotService positionSnapshotService) {
         this(closePositionRecordRepository, tradeOrderRepository, pendingOrderService, budgetService,
-                positionSnapshotService, null);
+                positionSnapshotService, null, null, null);
+    }
+
+    public ClosePositionRecoveryService(ClosePositionRecordRepository closePositionRecordRepository,
+                                        TradeOrderRepository tradeOrderRepository,
+                                        PendingOrderService pendingOrderService,
+                                        AutoTradeBudgetService budgetService,
+                                        PositionSnapshotService positionSnapshotService,
+                                        OkxOrderGateway okxOrderGateway) {
+        this(closePositionRecordRepository, tradeOrderRepository, pendingOrderService, budgetService,
+                positionSnapshotService, okxOrderGateway, null, null);
     }
 
     @Autowired
@@ -46,13 +63,17 @@ public class ClosePositionRecoveryService {
                                         PendingOrderService pendingOrderService,
                                         AutoTradeBudgetService budgetService,
                                         PositionSnapshotService positionSnapshotService,
-                                        OkxOrderGateway okxOrderGateway) {
+                                        OkxOrderGateway okxOrderGateway,
+                                        TradeReviewService tradeReviewService,
+                                        TradeEventService tradeEventService) {
         this.closePositionRecordRepository = closePositionRecordRepository;
         this.tradeOrderRepository = tradeOrderRepository;
         this.pendingOrderService = pendingOrderService;
         this.budgetService = budgetService;
         this.positionSnapshotService = positionSnapshotService;
         this.okxOrderGateway = okxOrderGateway;
+        this.tradeReviewService = tradeReviewService;
+        this.tradeEventService = tradeEventService;
     }
 
     @Transactional
@@ -64,7 +85,8 @@ public class ClosePositionRecoveryService {
     public CloseRecoveryResult runOnce(Instant now) {
         int closed = 0;
         ProtectionCancelRetryResult retryResult = retryFailedProtectionCancels(now);
-        List<ClosePositionRecordEntity> submittedRecords = closePositionRecordRepository.findByStatus("CLOSE_SUBMITTED");
+        List<ClosePositionRecordEntity> submittedRecords = closePositionRecordRepository
+                .findByUserNameAndStatus(currentUsername(), "CLOSE_SUBMITTED");
         List<PositionSummary> positions;
         try {
             positions = positionSnapshotService.positions();
@@ -81,6 +103,9 @@ public class ClosePositionRecoveryService {
             closePositionRecordRepository.save(record);
             closeLocalPendingOrder(record);
             invalidateProtectionOrders(record, now);
+            createTradeReview(record);
+            recordEvent(record, TradeEventType.CLOSE_CONFIRMED, "CLOSE_SUBMITTED", "CLOSED",
+                    "CLOSE_CONFIRMED", "OKX当前持仓已消失，平仓确认完成");
             closed++;
         }
         return new CloseRecoveryResult(closed, retryResult.retried(), retryResult.attentionRequired());
@@ -124,6 +149,8 @@ public class ClosePositionRecoveryService {
             record.setErrorMessage(message);
             record.setUpdatedAt(now);
             closePositionRecordRepository.save(record);
+            recordEvent(record, TradeEventType.RECOVERY_FAILED, record.getStatus(), record.getStatus(),
+                    "POSITION_QUERY_FAILED", message);
         }
     }
 
@@ -136,6 +163,8 @@ public class ClosePositionRecoveryService {
             order.markClosed("CLOSE_SYNC_CONFIRMED");
             if (order.budgetReservationId() != null) {
                 budgetService.release(order.budgetReservationId(), "POSITION_CLOSED");
+                recordEvent(record, TradeEventType.BUDGET_RELEASED, "USED", "RELEASED",
+                        "POSITION_CLOSED", "平仓确认后释放自动交易预算");
             }
         } catch (IllegalArgumentException ignored) {
             // A close record can exist for manual positions that do not have a local auto-trade pending order.
@@ -189,6 +218,43 @@ public class ClosePositionRecoveryService {
         }
     }
 
+    private void createTradeReview(ClosePositionRecordEntity record) {
+        if (tradeReviewService == null || record == null || record.getId() == null) {
+            return;
+        }
+        try {
+            tradeReviewService.reviewClosedTrade(record);
+        } catch (RuntimeException ignored) {
+            // Review persistence is diagnostic and must not block close confirmation recovery.
+        }
+    }
+
+    private void recordEvent(ClosePositionRecordEntity record, TradeEventType eventType, String oldStatus,
+                             String newStatus, String reasonCode, String reasonMessage) {
+        if (tradeEventService == null || record == null) {
+            return;
+        }
+        try {
+            tradeEventService.record(new TradeEventPayload(
+                    record.getUserName(),
+                    record.getInstId(),
+                    record.getPendingOrderId(),
+                    record.getAutoTradeRecordId(),
+                    null,
+                    eventType,
+                    oldStatus,
+                    newStatus,
+                    reasonCode,
+                    reasonMessage,
+                    record.getCloseOrderId(),
+                    record.getCloseClOrdId(),
+                    null
+            ));
+        } catch (RuntimeException ignored) {
+            // Event persistence must not block close recovery.
+        }
+    }
+
     private boolean hasOpenPosition(ClosePositionRecordEntity record, List<PositionSummary> positions) {
         return positions.stream()
                 .filter(position -> record.getInstId().equalsIgnoreCase(position.instId()))
@@ -209,6 +275,10 @@ public class ClosePositionRecoveryService {
 
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private static String currentUsername() {
+        return AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
     }
 
     private static String compact(String value) {

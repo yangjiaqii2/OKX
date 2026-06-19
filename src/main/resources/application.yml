@@ -13,6 +13,12 @@ spring:
     enabled: true
 
 quant:
+  system:
+    fx-rate:
+      base: USD
+      quote: CNY
+      rate: ${QUANT_SYSTEM_FX_USD_CNY_RATE:7.2}
+      source: ${QUANT_SYSTEM_FX_USD_CNY_SOURCE:CONFIGURED}
   auth:
     username: ${QUANT_AUTH_USERNAME:admin}
     password: ${QUANT_AUTH_PASSWORD:admin123}

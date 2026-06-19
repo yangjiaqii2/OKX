@@ -8,12 +8,16 @@ import com.example.quant.agent.budget.AutoTradeBudgetService;
 import com.example.quant.agent.budget.BudgetAllocation;
 import com.example.quant.agent.budget.BudgetAllocationRequest;
 import com.example.quant.agent.budget.BudgetReservation;
+import com.example.quant.agent.event.TradeEventPayload;
+import com.example.quant.agent.event.TradeEventService;
+import com.example.quant.agent.event.TradeEventType;
 import com.example.quant.agent.gate.ContractTradeGate;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.market.MarketType;
 import com.example.quant.order.OrderExecutionResult;
+import com.example.quant.order.OrderSubmitStatusUnknownException;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
 import com.example.quant.okxtrade.OkxCurrentOrderSyncService;
@@ -54,6 +58,7 @@ public class AutoTradeService {
     private final PositionSnapshotService positionSnapshotService;
     private final AutoTradeBudgetService budgetService;
     private final OkxCurrentOrderSyncService currentOrderSyncService;
+    private final TradeEventService tradeEventService;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Map<String, Instant> inFlightUntilByInstId = new ConcurrentHashMap<>();
 
@@ -70,7 +75,7 @@ public class AutoTradeService {
     ) {
         this(agentProperties, systemControlService, tradeOrderRecordService, autoTradeRecordService,
                 tradePlanService, pendingOrderService, orderConfirmService, accountSnapshotService,
-                positionSnapshotService, new AutoTradeBudgetService(agentProperties), null);
+                positionSnapshotService, new AutoTradeBudgetService(agentProperties), null, null);
     }
 
     public AutoTradeService(
@@ -87,7 +92,25 @@ public class AutoTradeService {
     ) {
         this(agentProperties, systemControlService, tradeOrderRecordService, autoTradeRecordService,
                 tradePlanService, pendingOrderService, orderConfirmService, accountSnapshotService,
-                positionSnapshotService, budgetService, null);
+                positionSnapshotService, budgetService, null, null);
+    }
+
+    public AutoTradeService(
+            AgentProperties agentProperties,
+            SystemControlService systemControlService,
+            TradeOrderRecordService tradeOrderRecordService,
+            AutoTradeRecordService autoTradeRecordService,
+            TradePlanService tradePlanService,
+            PendingOrderService pendingOrderService,
+            com.example.quant.order.OrderConfirmService orderConfirmService,
+            AccountSnapshotService accountSnapshotService,
+            PositionSnapshotService positionSnapshotService,
+            AutoTradeBudgetService budgetService,
+            OkxCurrentOrderSyncService currentOrderSyncService
+    ) {
+        this(agentProperties, systemControlService, tradeOrderRecordService, autoTradeRecordService,
+                tradePlanService, pendingOrderService, orderConfirmService, accountSnapshotService,
+                positionSnapshotService, budgetService, currentOrderSyncService, null);
     }
 
     @Autowired
@@ -102,7 +125,8 @@ public class AutoTradeService {
             AccountSnapshotService accountSnapshotService,
             PositionSnapshotService positionSnapshotService,
             AutoTradeBudgetService budgetService,
-            OkxCurrentOrderSyncService currentOrderSyncService
+            OkxCurrentOrderSyncService currentOrderSyncService,
+            TradeEventService tradeEventService
     ) {
         this.agentProperties = agentProperties;
         this.systemControlService = systemControlService;
@@ -115,6 +139,7 @@ public class AutoTradeService {
         this.positionSnapshotService = positionSnapshotService;
         this.budgetService = budgetService == null ? new AutoTradeBudgetService(agentProperties) : budgetService;
         this.currentOrderSyncService = currentOrderSyncService;
+        this.tradeEventService = tradeEventService;
     }
 
     public AutoTradeResult evaluateAndExecute(List<ContractCandidate> candidates) {
@@ -244,6 +269,7 @@ public class AutoTradeService {
                     lastAttemptSkipReason = okxCurrentOrderInstIds.contains(candidate.instId())
                             ? "okx_current_active_order"
                             : "SYMBOL_ALREADY_IN_FLIGHT";
+                    recordCandidateSkipped(candidate, lastAttemptSkipReason);
                     log.warn("AutoTrade candidate skipped scanId={} symbol={} reason={} classification={} fallback=true",
                             scanId, candidate.instId(), lastAttemptSkipReason,
                             FailureClassification.NEXT_CANDIDATE_ALLOWED);
@@ -252,6 +278,7 @@ public class AutoTradeService {
                 String hardNewsBlockReason = hardNewsBlockReason(candidate);
                 if (hardNewsBlockReason != null) {
                     lastAttemptSkipReason = hardNewsBlockReason;
+                    recordCandidateSkipped(candidate, hardNewsBlockReason);
                     log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=NEWS_RISK reason={} classification={} fallback=true",
                             scanId, candidate.instId(), hardNewsBlockReason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
                     continue;
@@ -261,6 +288,7 @@ public class AutoTradeService {
                     BigDecimal minScore = BigDecimal.valueOf(noRiskMinScore);
                     if (score.compareTo(minScore) < 0) {
                         lastAttemptSkipReason = "no_risk_score_below_" + noRiskMinScore;
+                        recordCandidateSkipped(candidate, lastAttemptSkipReason);
                         log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=NO_RISK_MIN_SCORE reason={} score={} finalRankScore={} classification={} fallback=true",
                                 scanId, candidate.instId(), lastAttemptSkipReason, candidate.score(), candidate.finalRankScore(),
                                 FailureClassification.NEXT_CANDIDATE_ALLOWED);
@@ -274,6 +302,7 @@ public class AutoTradeService {
                     );
                     if (!qualityDecision.allowed()) {
                         lastAttemptSkipReason = qualityDecision.reason();
+                        recordCandidateSkipped(candidate, qualityDecision.reason());
                         log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=POSITION_QUALITY reason={} classification={} fallback=true",
                                 scanId, candidate.instId(), qualityDecision.reason(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
                         continue;
@@ -281,6 +310,7 @@ public class AutoTradeService {
                     CorrelationExposureGuard.ExposureDecision exposureDecision = exposureGuard.evaluate(positions, candidate);
                     if (!exposureDecision.allowed()) {
                         lastAttemptSkipReason = exposureDecision.reason();
+                        recordCandidateSkipped(candidate, exposureDecision.reason());
                         log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=EXPOSURE reason={} classification={} fallback=true",
                                 scanId, candidate.instId(), exposureDecision.reason(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
                         continue;
@@ -288,12 +318,13 @@ public class AutoTradeService {
                     List<String> autoGateReasons = autoGate(candidate);
                     if (!autoGateReasons.isEmpty()) {
                         lastAttemptSkipReason = String.join(",", autoGateReasons);
+                        recordCandidateSkipped(candidate, lastAttemptSkipReason);
                         continue;
                     }
                 }
                 markInFlight(candidate.instId());
-                TradePlan plan;
-                PendingOrder order;
+                TradePlan plan = null;
+                PendingOrder order = null;
                 OrderExecutionResult result;
                 BudgetReservation reservation = null;
                 BigDecimal orderMarginUsdt = BigDecimal.ZERO;
@@ -301,10 +332,13 @@ public class AutoTradeService {
                     plan = noRiskMode
                             ? tradePlanService.createNoRiskContractPlan(candidate)
                             : tradePlanService.createContractPlan(candidate);
+                    recordEvent(candidate, null, plan, TradeEventType.PLAN_CREATED, null, null,
+                            "PLAN_CREATED", "自动交易计划已生成", null);
                     if (plan.action() == com.example.quant.tradeplan.TradePlanType.WATCH
                             || "NO_ENTRY".equals(plan.orderType())) {
                         String reason = "智能入场或计划输出为观察，不提交OKX";
                         lastAttemptSkipReason = reason;
+                        recordCandidateSkipped(candidate, reason);
                         inFlightUntilByInstId.remove(candidate.instId());
                         log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=PLAN reason={} classification={} fallback=true",
                                 scanId, candidate.instId(), reason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
@@ -318,6 +352,7 @@ public class AutoTradeService {
                         if (!refreshResult.passed()) {
                             String reason = String.join(",", refreshResult.reasons());
                             lastAttemptSkipReason = reason;
+                            recordCandidateSkipped(candidate, reason);
                             inFlightUntilByInstId.remove(candidate.instId());
                             log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=PRE_CONFIRM_REFRESH reason={} classification={} fallback=true",
                                     scanId, candidate.instId(), reason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
@@ -352,6 +387,7 @@ public class AutoTradeService {
                     if (orderMarginUsdt.compareTo(agentProperties.budget().minOrderMarginUsdt()) < 0) {
                         String reason = "CANDIDATE_BUDGET_ALLOCATION_TOO_LOW_" + orderMarginUsdt;
                         lastAttemptSkipReason = reason;
+                        recordCandidateSkipped(candidate, reason);
                         inFlightUntilByInstId.remove(candidate.instId());
                         log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=BUDGET_ALLOCATION reason={} classification={} fallback=true totalBudget={} usedBudget={} reservedBudget={} remainingBudget={} slotIndex={} slotBudget={} accountAvailableRoundStart={} maxMarginForCandidate={}",
                                 scanId, candidate.instId(), reason, FailureClassification.NEXT_CANDIDATE_ALLOWED,
@@ -368,6 +404,7 @@ public class AutoTradeService {
                     if (!reservation.reserved()) {
                         String reason = reservation.reason();
                         lastAttemptSkipReason = reason;
+                        recordCandidateSkipped(candidate, reason);
                         inFlightUntilByInstId.remove(candidate.instId());
                         FailureClassification classification = failureReasonClassifier.classify("BUDGET_RESERVE", reason);
                         log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=BUDGET_RESERVE reason={} classification={} fallback={}",
@@ -388,11 +425,37 @@ public class AutoTradeService {
                     order = pendingOrderService.createAutoPendingOrder(MarketType.OKX_SWAP, plan, pendingOrderId,
                             orderMarginUsdt, reservation.reservationId(), allocation,
                             clientOrderId(agentProperties.idempotency().clientOrderIdPrefix(), plan.id(), pendingOrderId));
+                    recordEvent(candidate, order, plan, TradeEventType.BUDGET_RESERVED, null,
+                            "BUDGET_RESERVED", "BUDGET_RESERVED", "自动交易预算已预留", null);
                     result = orderConfirmService.confirmAuto(order.id(), orderMarginUsdt);
+                } catch (OrderSubmitStatusUnknownException ex) {
+                    inFlightUntilByInstId.remove(candidate.instId());
+                    recordEvent(candidate, order, plan, TradeEventType.ENTRY_SUBMIT_UNKNOWN,
+                            "SUBMITTING", "UNKNOWN_SUBMIT_STATUS", "ENTRY_SUBMIT_UNKNOWN", ex.getMessage(), null);
+                    log.warn("AutoTrade submit status unknown scanId={} symbol={} stage=PLAN_OR_CONFIRM reason={} fallback=false",
+                            scanId, candidate.instId(), ex.getMessage());
+                    AutoTradeResult unknown = new AutoTradeResult(
+                            "UNKNOWN_SUBMIT_STATUS",
+                            order == null ? candidate.instId() : order.instId(),
+                            plan == null || plan.id() == null ? null : plan.id().toString(),
+                            order == null ? null : order.id().toString(),
+                            null,
+                            plan == null || plan.action() == null ? null : plan.action().name(),
+                            order == null ? null : order.posSide(),
+                            order == null ? null : order.leverage(),
+                            orderMarginUsdt,
+                            plan == null ? null : plan.entryPrice(),
+                            ex.getMessage(),
+                            Instant.now()
+                    );
+                    recordExecution(unknown, candidateCount, candidate);
+                    return unknown;
                 } catch (RuntimeException ex) {
                     inFlightUntilByInstId.remove(candidate.instId());
                     if (reservation != null) {
                         budgetService.release(reservation.reservationId(), "PLAN_OR_CONFIRM_FAILED");
+                        recordEvent(candidate, order, plan, TradeEventType.BUDGET_RELEASED,
+                                "RESERVED", "RELEASED", "PLAN_OR_CONFIRM_FAILED", ex.getMessage(), null);
                     }
                     FailureClassification classification = failureReasonClassifier.classify("PLAN_OR_CONFIRM", ex.getMessage());
                     log.warn("AutoTrade attempt failed scanId={} symbol={} stage=PLAN_OR_CONFIRM reason={} classification={} fallback={}",
@@ -408,6 +471,8 @@ public class AutoTradeService {
                     if (reservation != null) {
                         budgetService.markUsed(reservation.reservationId());
                     }
+                    recordEvent(candidate, order, plan, TradeEventType.ENTRY_SUBMITTED,
+                            "SUBMITTING", "SUBMITTED", "ENTRY_SUBMITTED", result.message(), result.externalOrderId());
                     log.warn("Auto trade submitted scanId={} instId={} tradePlanId={} pendingOrderId={} okxOrdId={}",
                             scanId, plan.instId(), plan.id(), order.id(), result.externalOrderId());
                     AutoTradeResult executed = new AutoTradeResult("EXECUTED", plan.instId(), plan.id().toString(),
@@ -423,6 +488,8 @@ public class AutoTradeService {
                 inFlightUntilByInstId.remove(candidate.instId());
                 if (reservation != null) {
                     budgetService.release(reservation.reservationId(), "CONFIRM_REJECTED");
+                    recordEvent(candidate, order, plan, TradeEventType.BUDGET_RELEASED,
+                            "RESERVED", "RELEASED", "CONFIRM_REJECTED", result.message(), null);
                 }
                 FailureClassification classification = failureReasonClassifier.classify("CONFIRM", result.message());
                 log.warn("AutoTrade attempt failed scanId={} symbol={} stage=CONFIRM reason={} classification={} fallback={}",
@@ -476,6 +543,39 @@ public class AutoTradeService {
 
     private void recordExecution(AutoTradeResult result, int candidateCount, ContractCandidate candidate) {
         autoTradeRecordService.record(result, candidateCount, candidate);
+    }
+
+    private void recordCandidateSkipped(ContractCandidate candidate, String reason) {
+        recordEvent(candidate, null, null, TradeEventType.AUTO_CANDIDATE_SKIPPED, null, null,
+                "AUTO_CANDIDATE_SKIPPED", reason, null);
+    }
+
+    private void recordEvent(ContractCandidate candidate, PendingOrder order, TradePlan plan, TradeEventType type,
+                             String oldStatus, String newStatus, String reasonCode, String reasonMessage,
+                             String okxOrdId) {
+        if (tradeEventService == null || type == null) {
+            return;
+        }
+        try {
+            tradeEventService.record(new TradeEventPayload(
+                    null,
+                    order == null ? candidate == null ? null : candidate.instId() : order.instId(),
+                    order == null ? null : order.id().toString(),
+                    null,
+                    null,
+                    type,
+                    oldStatus,
+                    newStatus,
+                    reasonCode,
+                    reasonMessage,
+                    okxOrdId,
+                    order == null ? null : order.clientOrderId(),
+                    null
+            ));
+        } catch (RuntimeException ex) {
+            log.warn("Failed to write trade event type={} instId={} message={}",
+                    type, candidate == null ? null : candidate.instId(), ex.getMessage());
+        }
     }
 
     private AutoTradeResult aggregateExecutedResults(List<AutoTradeResult> executedResults, String message) {

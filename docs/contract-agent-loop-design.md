@@ -947,7 +947,7 @@ quant:
 - “交易生命周期”：显示 `instId`、`posSide`、入场状态、保护单状态、持仓时长、浮盈亏、预算占用、生命周期状态和下一步动作。
 - “当前委托/保护单”：分开展示 OKX 当前普通委托和算法保护单，保护单标识为 STOP_LOSS/TP。
 - “平仓记录”：显示每次平仓请求的 `CLOSE_SUBMITTED` 等状态。
-- 控制台资产支持 USD/RMB 显示切换；当前前端使用固定 7.2 汇率作为展示回退，交易逻辑仍使用 USDT。
+- 控制台资产支持 USD/RMB 显示切换；RMB 展示必须使用后端 `/api/quant/system/fx-rate` 返回的配置汇率，汇率不可用时回退 USD，交易逻辑仍使用 USDT。
 
 ### 剩余边界
 
@@ -1004,15 +1004,62 @@ quant:
 - 自动交易容量统计新增 OKX 当前委托占用，容量不再只看 OKX 当前持仓和内存 symbol lock。
 - `ClosePositionRecoveryService` 对 `PROTECTION_CANCEL_FAILED` 保护单增加自动重试：重试成功标记 `INVALID/CANCELLED`，连续失败达到阈值后升级为 `EMERGENCY_ATTENTION_REQUIRED`，并保留 `cancelRetry` 和失败原因。
 - 横盘 TP 替换和平仓完成撤销保护单的首次失败都会写入 `cancelRetry=1`，后续恢复任务可继续递增处理。
-- `AutoTradeProfitService` 已实现收益不再固定为 0，而是从当前用户 `CLOSED` 平仓记录汇总 `realizedPnl + fee + fundingFee`；未实现收益仍来自 OKX 当前持仓，并通过 `dataQuality=REALIZED_FROM_CLOSE_RECORDS_PLUS_ESTIMATED_UNREALIZED` 明确这是平仓记录加估算浮盈口径。
+- `AutoTradeProfitService` 已实现收益不再固定为 0，而是从当前用户 `CLOSED` 平仓记录汇总 `realizedPnl + fee + fundingFee`；未实现收益仍来自 OKX 当前持仓，并通过 `dataQuality=CLOSE_RECORD_ESTIMATED` 或 `ESTIMATED_UNREALIZED_ONLY` 明确当前仍是估算口径，`OKX_FILLS_NET_PNL` 仅用于后续接入 fills/bill 流水后的真实净收益。
 - 控制台收益卡片新增“已实现净收益”，今日预算卡片显示今日已实现净收益，避免把预算占用和收益混在一起。
 
 ### 第四阶段剩余边界
 
 - `trade_order` 当前委托同步已能 upsert OKX 当前 live 委托，但仍需后续把已消失的 OKX 委托与本地历史状态做更精确的终态对账，例如区分成交、撤销、过期和 OKX 自动取消。
-- 净收益目前基于 `close_position_record` 已落库字段；若 OKX close fill、手续费、资金费流水尚未写入该表，仍需后续接入流水补全 `avgPx`、`fee`、`fundingFee` 和精确 `realizedPnl`。
+- 净收益目前基于 `close_position_record` 已落库字段和 OKX 当前浮盈估算；若 OKX close fill、手续费、资金费流水尚未写入该表，前后端必须标注为“估算”，不能展示为完整真实净收益。
+
+## 22. 2026-06-19 事实驱动自动交易生命周期
+
+本次改造把自动交易从“提交 OKX 委托”推进为“交易事实驱动的生命周期系统”。核心约束是：任何状态都不能只靠内存推断，必须能从数据库事实表和 OKX 当前状态恢复。
+
+### 恢复和预算语义
+
+- `AutoTradeRecoveryTask` 每轮必须读取 `system_control_state.auto_trade_owner_username`，并用 `AuthUserContext.callAs(ownerUsername, ...)` 包裹未知提交恢复、OKX 当前委托同步、生命周期检查、平仓恢复和预算读取/释放/markUsed。
+- owner 缺失或 owner 上下文内 OKX Key/私有接口不可用时，本轮恢复跳过并写入 `RECOVERY_FAILED` 事件，不允许退回 `local-admin` 的预算或 OKX Key。
+- OKX 下单超时会把 `PendingOrder` 标为 `UNKNOWN_SUBMIT_STATUS` 并抛出 `OrderSubmitStatusUnknownException`。`AutoTradeService` 只移除内存 in-flight 标记，不释放预算；预算保持 `RESERVED`，等待恢复任务按 `clOrdId` 查询。
+- `UNKNOWN_SUBMIT_STATUS` 恢复查到 OKX 委托后标记 `SUBMITTED` 并保持预算占用；确认 OKX 查不到且超过安全等待时间后，才允许释放预算并写 `BUDGET_RELEASED`。
+
+### 入场、保护单和持仓同步
+
+- `OkxTradeAdapter` 对 LIMIT 入场只记录 entry order `SUBMITTED`，提交成功不等于成交，不再立即提交 TP/SL。
+- `AutoTradeLifecycleService` 查询 OKX 入场成交事实：完全成交后按实际成交数量提交保护单并 `markUsed`；部分成交超时后取消剩余委托，并按部分成交数量提交保护单；market 单未确认成交时进入 `ENTRY_FILL_UNCONFIRMED`，不盲目提交保护单。
+- `positionSnapshotService.positions()` 查询失败时返回明确 `POSITION_SYNC_UNAVAILABLE`。本轮 lifecycle 不取消入场单、不触发横盘 TP 替换、不触发最大持仓时间平仓、不把未知持仓当作无持仓，也不释放预算。
+- `ClosePositionRecoveryService` 只查询当前用户的 `CLOSE_SUBMITTED` 平仓记录；多用户场景下，userA 的 OKX positions 不能判断 userB 的平仓记录。
+- 生命周期保护单 payload 通过 `OkxPositionModeProvider` 判断持仓模式：`LONG_SHORT` 才传 `posSide`，`NET` 模式不传 `posSide`。
+
+### 事实表、聚合视图和前端
+
+- 新增 `trade_event` 交易事件流水，记录 `AUTO_CANDIDATE_SKIPPED`、`PLAN_CREATED`、`BUDGET_RESERVED`、`ENTRY_SUBMITTED`、`ENTRY_SUBMIT_UNKNOWN`、`ENTRY_FILLED`、`ENTRY_PARTIAL_FILLED`、`ENTRY_TIMEOUT_CANCELLED`、`PROTECTION_SUBMITTED`、`PROTECTION_FAILED`、`SIDEWAYS_TP_REPLACED`、`MAX_HOLD_CLOSE_SUBMITTED`、`MANUAL_CLOSE_SUBMITTED`、`CLOSE_CONFIRMED`、`BUDGET_RELEASED`、`RECOVERY_FAILED` 等事件。
+- 每条事件至少保存 `userName`、`instId`、`pendingOrderId`、`autoTradeRecordId`、`tradeOrderId`、`eventType`、新旧状态、原因、OKX `ordId/clOrdId/algoId` 和 `createdAt`。
+- 生命周期查询新增聚合事实：`entryOrder`、`protectionOrders`、`positionLifecycle`、`closePosition`、`budget`、`recentEvents` 和 `manualAttentionRequired`。前端“交易生命周期”页不再只看 `PendingOrder`，而是展示入场成交、保护单、持仓、平仓、预算和最近事件。
+- 新增 `/api/quant/auto-trade/events?limit=50` 查询最近交易事件，前端可基于事件流展示完整时间线。
+- 新增 `/api/quant/system/fx-rate?base=USD&quote=CNY`，由 `quant.system.fx-rate.*` 配置返回汇率、来源和更新时间。前端 RMB 展示只使用接口汇率；接口失败时强制回退 USD，避免显示伪 RMB。
+
+### 收益质量和复盘
+
+- 收益统计新增数据质量语义：`ESTIMATED_UNREALIZED_ONLY` 表示仅 OKX 当前浮盈估算，`CLOSE_RECORD_ESTIMATED` 表示 `close_position_record` 加当前浮盈估算，`OKX_FILLS_NET_PNL` 预留给 OKX fills/bill 流水接入后的真实净收益。
+- 在未接入 OKX fills/bill 前，前后端必须展示“估算”，不能把 `close_position_record + OKX 当前浮盈` 标成完整真实净收益。
+- 新增 `trade_review`，平仓恢复确认 `CLOSED` 后自动生成复盘记录，保存 `reviewReason`、`strategyTag`、`improvementHint`，用于后续候选评分统计。
+- 复盘分类覆盖正常止盈、正常止损、横盘小盈利退出、最大持仓时间退出、入场过早、止损过窄、保护单失败、流动性/滑点问题、新闻冲击和趋势反转失败。
+
+### 做空反转门槛
+
+- `ContractSignalAnalyzer` 对“今日涨幅很高但短周期急跌”的标的进入 `REVERSAL_SHORT` 候选评估，而不是直接追多。
+- 只有同时满足放量下跌、EMA/结构破位、上影线或冲高回落、资金费率过热，并通过盈亏比和止损距离约束时，才允许 `REVERSAL_SHORT`/`OPEN_SHORT`。
+- 当前分析器输入没有 BTC/ETH 外部市场因子，本次没有用同标的 1H 趋势冒充该门槛；后续应把 BTC/ETH 环境作为外部市场因子接入。
 
 ## Change Log
+
+### 2026-06-19 - 事实驱动自动交易生命周期
+
+- 变更摘要：恢复任务切换到自动交易 owner 上下文，OKX 提交未知状态保留预算，LIMIT/market 入场改为成交事实驱动保护单，持仓不可用不再当作无持仓，平仓恢复按用户隔离，并新增交易事件流水、生命周期聚合事实、汇率 API、收益质量、平仓复盘和做空反转门槛。
+- 影响文件：`src/main/java/com/example/quant/task/AutoTradeRecoveryTask.java`、`src/main/java/com/example/quant/order/OrderConfirmService.java`、`src/main/java/com/example/quant/order/OrderSubmitStatusUnknownException.java`、`src/main/java/com/example/quant/agent/execution/AutoTradeService.java`、`src/main/java/com/example/quant/okxtrade/OkxTradeAdapter.java`、`src/main/java/com/example/quant/agent/lifecycle/AutoTradeLifecycleService.java`、`src/main/java/com/example/quant/agent/lifecycle/*Fact.java`、`src/main/java/com/example/quant/account/ClosePositionRecoveryService.java`、`src/main/java/com/example/quant/account/PositionCloseService.java`、`src/main/java/com/example/quant/agent/event/*`、`src/main/java/com/example/quant/agent/review/*`、`src/main/java/com/example/quant/system/FxRateService.java`、`src/main/java/com/example/quant/system/FxRateResponse.java`、`src/main/java/com/example/quant/config/SystemFxRateProperties.java`、`src/main/java/com/example/quant/controller/SystemControlController.java`、`src/main/java/com/example/quant/controller/AutoTradeRecordController.java`、`src/main/java/com/example/quant/agent/execution/AutoTradeProfitService.java`、`src/main/java/com/example/quant/crypto/ContractSignalAnalyzer.java`、`src/main/resources/db/migration/V14__fact_driven_trade_lifecycle.sql`、`frontend/src/api/quantApi.ts`、`frontend/src/pages/Dashboard.tsx`、`frontend/src/pages/AutoTradeLifecycleList.tsx`。
+- 影响：自动交易生命周期可以从 `pending_order_state`、`trade_order`、`close_position_record`、`auto_trade_budget_reservation`、`trade_event`、`trade_review` 和 OKX 当前状态恢复；前端生命周期页展示事实聚合和最近事件；RMB 展示不再硬编码 7.2；收益展示区分估算与真实净收益预留状态；高涨幅急跌标的只有结构破位且风控通过时才进入反转做空。
+- 验证：`mvn -Dtest=QuantAssistantApplicationContextTest test` 通过；`mvn test` 通过，193 个测试 0 失败；`npm --prefix frontend run build` 通过，仍有 Vite chunk size 警告。
 
 ### 2026-06-18 - 自动交易闭环第四阶段边界补齐
 

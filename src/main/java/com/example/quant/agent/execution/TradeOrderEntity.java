@@ -70,6 +70,10 @@ public class TradeOrderEntity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    public Long getId() {
+        return id;
+    }
+
     public void setTradePlanId(String tradePlanId) {
         this.tradePlanId = tradePlanId;
     }

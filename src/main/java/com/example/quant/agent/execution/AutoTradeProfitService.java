@@ -119,11 +119,11 @@ public class AutoTradeProfitService {
         BigDecimal todayRealizedPnl = closeProfit.todayRealizedNetPnl();
         BigDecimal totalNetPnl = realizedPnl.add(unrealizedPnl);
         String dataQuality = closeProfit.closedCount() > 0
-                ? "REALIZED_FROM_CLOSE_RECORDS_PLUS_ESTIMATED_UNREALIZED"
+                ? "CLOSE_RECORD_ESTIMATED"
                 : "ESTIMATED_UNREALIZED_ONLY";
         String message = closeProfit.closedCount() > 0
-                ? "已实现净收益来自平仓记录 realizedPnl + fee + fundingFee；未实现收益仍来自OKX当前持仓，标记为估算。"
-                : "当前未找到已关闭平仓记录；未实现收益来自OKX当前持仓，完整净收益需继续接入成交、手续费和资金费流水。";
+                ? "估算收益：已实现部分来自 close_position_record 的 realizedPnl + fee + fundingFee，未实现部分来自OKX当前持仓；完整真实净收益需接入OKX fills/bill流水。"
+                : "估算收益：当前未找到已关闭平仓记录，未实现收益来自OKX当前持仓；完整真实净收益需接入成交均价、realizedPnl、fee、fundingFee和slippage。";
         return new AutoTradeProfitSummary(
                 totalBudget,
                 submittedMargin,

@@ -14,6 +14,7 @@ import com.example.quant.agent.budget.BudgetReservation;
 import com.example.quant.agent.budget.BudgetReservationStatus;
 import com.example.quant.agent.execution.TradeOrderEntity;
 import com.example.quant.agent.execution.TradeOrderRepository;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
@@ -49,7 +50,7 @@ class ClosePositionRecoveryServiceTest {
         stopLoss.setOkxOrdId("algo-sl");
         tp1.setClOrdId("algo-tp1-cl");
         CapturingOkxGateway gateway = new CapturingOkxGateway();
-        when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of(record));
+        when(closeRepository.findByUserNameAndStatus("local-admin", "CLOSE_SUBMITTED")).thenReturn(List.of(record));
         when(closeRepository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
                 order.id().toString(),
@@ -94,7 +95,7 @@ class ClosePositionRecoveryServiceTest {
         order.markCloseSubmitted("close-1", "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED");
         ClosePositionRecordEntity record = closeRecord(order);
         TradeOrderEntity stopLoss = protection(order.id(), "STOP_LOSS");
-        when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of(record));
+        when(closeRepository.findByUserNameAndStatus("local-admin", "CLOSE_SUBMITTED")).thenReturn(List.of(record));
         when(closeRepository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
                 order.id().toString(),
@@ -123,6 +124,36 @@ class ClosePositionRecoveryServiceTest {
     }
 
     @Test
+    void recoversOnlyCurrentOwnersCloseSubmittedRecords() {
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
+        ClosePositionRecordEntity userARecord = closeRecord(autoOrder(pendingOrderService, budgetService));
+        userARecord.setUserName("userA");
+        ClosePositionRecordEntity userBRecord = closeRecord(autoOrder(pendingOrderService, budgetService));
+        userBRecord.setUserName("userB");
+        when(closeRepository.findByUserNameAndStatus("userA", "CLOSE_SUBMITTED")).thenReturn(List.of(userARecord));
+        when(closeRepository.findByUserNameAndStatus("userB", "CLOSE_SUBMITTED")).thenReturn(List.of(userBRecord));
+        when(closeRepository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        ClosePositionRecoveryService service = new ClosePositionRecoveryService(
+                closeRepository,
+                tradeOrderRepository,
+                pendingOrderService,
+                budgetService,
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        ClosePositionRecoveryService.CloseRecoveryResult result =
+                AuthUserContext.callAs("userA", () -> service.runOnce(Instant.parse("2026-06-18T00:10:00Z")));
+
+        assertThat(result.closed()).isEqualTo(1);
+        assertThat(userARecord.getStatus()).isEqualTo("CLOSED");
+        assertThat(userBRecord.getStatus()).isEqualTo("CLOSE_SUBMITTED");
+        verify(closeRepository).findByUserNameAndStatus("userA", "CLOSE_SUBMITTED");
+    }
+
+    @Test
     void protectionCancelFailureIsPersistedForManualAttention() {
         ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
         TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
@@ -133,7 +164,7 @@ class ClosePositionRecoveryServiceTest {
         ClosePositionRecordEntity record = closeRecord(order);
         TradeOrderEntity tp1 = protection(order.id(), "TP1");
         tp1.setClOrdId("algo-tp1-cl");
-        when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of(record));
+        when(closeRepository.findByUserNameAndStatus("local-admin", "CLOSE_SUBMITTED")).thenReturn(List.of(record));
         when(closeRepository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
                 order.id().toString(),
@@ -166,7 +197,7 @@ class ClosePositionRecoveryServiceTest {
         tp1.setStatus("PROTECTION_CANCEL_FAILED");
         tp1.setErrorMessage("PROTECTION_CANCEL_FAILED: cancelRetry=1");
         CapturingOkxGateway gateway = new CapturingOkxGateway();
-        when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of());
+        when(closeRepository.findByUserNameAndStatus("local-admin", "CLOSE_SUBMITTED")).thenReturn(List.of());
         when(tradeOrderRepository.findByStatus("PROTECTION_CANCEL_FAILED")).thenReturn(List.of(tp1));
         ClosePositionRecoveryService service = new ClosePositionRecoveryService(
                 closeRepository,
@@ -195,7 +226,7 @@ class ClosePositionRecoveryServiceTest {
         tp1.setClOrdId("algo-tp1-cl");
         tp1.setStatus("PROTECTION_CANCEL_FAILED");
         tp1.setErrorMessage("PROTECTION_CANCEL_FAILED: cancelRetry=2");
-        when(closeRepository.findByStatus("CLOSE_SUBMITTED")).thenReturn(List.of());
+        when(closeRepository.findByUserNameAndStatus("local-admin", "CLOSE_SUBMITTED")).thenReturn(List.of());
         when(tradeOrderRepository.findByStatus("PROTECTION_CANCEL_FAILED")).thenReturn(List.of(tp1));
         ClosePositionRecoveryService service = new ClosePositionRecoveryService(
                 closeRepository,
@@ -254,7 +285,7 @@ class ClosePositionRecoveryServiceTest {
 
     private static ClosePositionRecordEntity closeRecord(PendingOrder order) {
         ClosePositionRecordEntity record = new ClosePositionRecordEntity();
-        record.setUserName("alice");
+        record.setUserName("local-admin");
         record.setInstId(order.instId());
         record.setPosSide(order.posSide());
         record.setMarginMode(order.tdMode());

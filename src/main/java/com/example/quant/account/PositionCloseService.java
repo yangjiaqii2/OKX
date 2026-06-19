@@ -1,6 +1,9 @@
 package com.example.quant.account;
 
 import com.example.quant.account.dto.PositionSummary;
+import com.example.quant.agent.event.TradeEventPayload;
+import com.example.quant.agent.event.TradeEventService;
+import com.example.quant.agent.event.TradeEventType;
 import com.example.quant.agent.execution.AutoTradeRecordRepository;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.common.PageResult;
@@ -38,6 +41,7 @@ public class PositionCloseService {
     private final ClosePositionRecordRepository closePositionRecordRepository;
     private final PendingOrderService pendingOrderService;
     private final AutoTradeRecordRepository autoTradeRecordRepository;
+    private final TradeEventService tradeEventService;
 
     public PositionCloseService(PositionSnapshotService positionSnapshotService, OkxTradeAdapter okxTradeAdapter) {
         this(positionSnapshotService, okxTradeAdapter, null, null, null);
@@ -48,16 +52,26 @@ public class PositionCloseService {
         this(positionSnapshotService, okxTradeAdapter, closePositionRecordRepository, null, null);
     }
 
-    @Autowired
     public PositionCloseService(PositionSnapshotService positionSnapshotService, OkxTradeAdapter okxTradeAdapter,
                                 ClosePositionRecordRepository closePositionRecordRepository,
                                 PendingOrderService pendingOrderService,
                                 AutoTradeRecordRepository autoTradeRecordRepository) {
+        this(positionSnapshotService, okxTradeAdapter, closePositionRecordRepository, pendingOrderService,
+                autoTradeRecordRepository, null);
+    }
+
+    @Autowired
+    public PositionCloseService(PositionSnapshotService positionSnapshotService, OkxTradeAdapter okxTradeAdapter,
+                                ClosePositionRecordRepository closePositionRecordRepository,
+                                PendingOrderService pendingOrderService,
+                                AutoTradeRecordRepository autoTradeRecordRepository,
+                                TradeEventService tradeEventService) {
         this.positionSnapshotService = positionSnapshotService;
         this.okxTradeAdapter = okxTradeAdapter;
         this.closePositionRecordRepository = closePositionRecordRepository;
         this.pendingOrderService = pendingOrderService;
         this.autoTradeRecordRepository = autoTradeRecordRepository;
+        this.tradeEventService = tradeEventService;
     }
 
     public OrderExecutionResult closePosition(String instId, String posSide, String marginMode) {
@@ -116,6 +130,7 @@ public class PositionCloseService {
         record.setCreatedAt(now);
         record.setUpdatedAt(now);
         closePositionRecordRepository.save(record);
+        recordManualCloseSubmitted(record);
     }
 
     private void bindAutoTradeLifecycle(ClosePositionRecordEntity record, OrderExecutionResult result) {
@@ -130,6 +145,31 @@ public class PositionCloseService {
                     .ifPresent(autoTradeRecord -> record.setAutoTradeRecordId(autoTradeRecord.getId()));
         }
         order.markCloseSubmitted(result.externalOrderId(), "MANUAL_CLOSE_SUBMITTED");
+    }
+
+    private void recordManualCloseSubmitted(ClosePositionRecordEntity record) {
+        if (tradeEventService == null || record == null) {
+            return;
+        }
+        try {
+            tradeEventService.record(new TradeEventPayload(
+                    record.getUserName(),
+                    record.getInstId(),
+                    record.getPendingOrderId(),
+                    record.getAutoTradeRecordId(),
+                    null,
+                    TradeEventType.MANUAL_CLOSE_SUBMITTED,
+                    null,
+                    "CLOSE_SUBMITTED",
+                    "MANUAL_CLOSE_SUBMITTED",
+                    "用户手动提交平仓",
+                    record.getCloseOrderId(),
+                    record.getCloseClOrdId(),
+                    null
+            ));
+        } catch (RuntimeException ignored) {
+            // Event persistence must not block manual close submission.
+        }
     }
 
     private Optional<PendingOrder> matchingAutoPendingOrder(String instId, String posSide) {

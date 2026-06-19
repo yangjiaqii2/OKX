@@ -21,6 +21,8 @@ type DashboardState = {
   contractsError?: string;
   ordersError?: string;
   profitError?: string;
+  fxRate?: Record<string, unknown>;
+  fxRateError?: string;
 };
 
 export function Dashboard() {
@@ -36,12 +38,13 @@ export function Dashboard() {
   async function load() {
     setLoading(true);
     try {
-      const [riskResult, accountResult, profitResult, contractResult, orderResult] = await Promise.allSettled([
+      const [riskResult, accountResult, profitResult, contractResult, orderResult, fxRateResult] = await Promise.allSettled([
         quantApi.riskStatus(),
         quantApi.accountSummary(),
         quantApi.autoTradeProfitSummary(),
         quantApi.contractCandidates(),
         quantApi.pendingOrders(),
+        quantApi.fxRate('USD', 'CNY'),
       ]);
       let positions: Record<string, unknown>[] = [];
       let positionsError = '';
@@ -60,10 +63,17 @@ export function Dashboard() {
       const profitError = profitResult.status === 'rejected'
         ? (profitResult.reason instanceof Error ? profitResult.reason.message : '自动交易收益加载失败')
         : '';
+      const fxRateError = fxRateResult.status === 'rejected'
+        ? (fxRateResult.reason instanceof Error ? fxRateResult.reason.message : '汇率加载失败')
+        : '';
+      if (fxRateError) {
+        setAssetCurrency('USD');
+      }
       setState({
         risk: riskResult.status === 'fulfilled' ? riskResult.value as Record<string, unknown> : {},
         account: accountResult.status === 'fulfilled' ? accountResult.value as Record<string, unknown> : {},
         profit: profitResult.status === 'fulfilled' ? profitResult.value as Record<string, unknown> : {},
+        fxRate: fxRateResult.status === 'fulfilled' ? fxRateResult.value as Record<string, unknown> : undefined,
         contracts: contractResult.status === 'fulfilled' && Array.isArray(contractResult.value) ? contractResult.value : [],
         orders: orderResult.status === 'fulfilled' && Array.isArray(orderResult.value) ? orderResult.value : [],
         positions,
@@ -71,6 +81,7 @@ export function Dashboard() {
         contractsError,
         ordersError,
         profitError,
+        fxRateError,
       });
       if (riskResult.status === 'rejected' || accountResult.status === 'rejected') {
         notify('核心账户或风控数据加载失败，请检查后端服务。', { type: 'warning' });
@@ -102,7 +113,9 @@ export function Dashboard() {
   const accountMode = String(state.account?.mode ?? 'OKX_UNBOUND');
   const pendingCount = state.orders.length;
   const topContracts = state.contracts.slice(0, 4) as Record<string, unknown>[];
-  const formatAsset = (value: unknown) => formatAssetMoney(value, assetCurrency);
+  const fxRateAvailable = Number.isFinite(Number(state.fxRate?.rate)) && Number(state.fxRate?.rate) > 0;
+  const formatAsset = (value: unknown) => formatAssetMoney(value, assetCurrency, state.fxRate);
+  const profitQuality = profitQualityLabel(String(state.profit?.dataQuality ?? 'ESTIMATED_UNREALIZED_ONLY'));
   
   return (
     <PageShell title="量化实盘控制台">
@@ -117,10 +130,18 @@ export function Dashboard() {
               size="small"
               exclusive
               value={assetCurrency}
-              onChange={(_, value) => value && setAssetCurrency(value)}
+              onChange={(_, value) => {
+                if (!value) return;
+                if (value === 'RMB' && !fxRateAvailable) {
+                  setAssetCurrency('USD');
+                  notify('RMB汇率不可用，已回退USD显示。', { type: 'warning' });
+                  return;
+                }
+                setAssetCurrency(value);
+              }}
             >
               <ToggleButton value="USD">USD</ToggleButton>
-              <ToggleButton value="RMB">RMB</ToggleButton>
+              <ToggleButton value="RMB" disabled={!fxRateAvailable}>RMB</ToggleButton>
             </ToggleButtonGroup>
           }
         />
@@ -134,6 +155,13 @@ export function Dashboard() {
         {state.contractsError ? <Alert severity="warning">OKX合约机会池暂不可用：{state.contractsError}</Alert> : null}
         {state.ordersError ? <Alert severity="warning">待确认订单暂不可用：{state.ordersError}</Alert> : null}
         {state.profitError ? <Alert severity="warning">自动交易收益暂不可用：{state.profitError}</Alert> : null}
+        {state.fxRateError ? <Alert severity="warning">RMB汇率不可用，已回退USD：{state.fxRateError}</Alert> : null}
+        {assetCurrency === 'RMB' && fxRateAvailable ? (
+          <Alert severity="info">
+            RMB按 {String(state.fxRate?.source ?? 'CONFIGURED')} 汇率 USD/CNY={formatNumber(state.fxRate?.rate, 4)}
+            {state.fxRate?.updatedAt ? `，更新时间 ${String(state.fxRate.updatedAt)}` : ''}
+          </Alert>
+        ) : null}
 
         <Box
           sx={{
@@ -145,7 +173,7 @@ export function Dashboard() {
           <TradeMetricCard
             label="自动交易总收益"
             value={formatAsset(state.profit?.totalNetPnlUsdt)}
-            helper={String(state.profit?.dataQuality ?? 'ESTIMATED')}
+            helper={profitQuality}
             accent={Number(state.profit?.totalNetPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
@@ -157,7 +185,7 @@ export function Dashboard() {
           <TradeMetricCard
             label="已实现净收益"
             value={formatAsset(state.profit?.realizedPnlUsdt)}
-            helper="来自平仓记录"
+            helper={profitQuality.includes('真实') ? '真实净收益' : '估算收益'}
             accent={Number(state.profit?.realizedPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
@@ -326,13 +354,29 @@ export function Dashboard() {
   );
 }
 
-function formatAssetMoney(value: unknown, currency: 'USD' | 'RMB') {
+function formatAssetMoney(value: unknown, currency: 'USD' | 'RMB', fxRate?: Record<string, unknown>) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
     return '-';
   }
   if (currency === 'RMB') {
-    return `¥${formatNumber(number * 7.2, 2)}`;
+    const rate = Number(fxRate?.rate);
+    if (Number.isFinite(rate) && rate > 0) {
+      return `¥${formatNumber(number * rate, 2)}`;
+    }
   }
   return formatUSDT(number);
+}
+
+function profitQualityLabel(value: string) {
+  switch (value) {
+    case 'OKX_FILLS_NET_PNL':
+      return '真实净收益';
+    case 'CLOSE_RECORD_ESTIMATED':
+      return '估算：平仓记录口径';
+    case 'ESTIMATED_UNREALIZED_ONLY':
+      return '估算：仅当前浮盈';
+    default:
+      return '估算收益';
+  }
 }

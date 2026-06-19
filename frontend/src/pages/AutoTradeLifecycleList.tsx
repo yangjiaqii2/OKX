@@ -68,6 +68,13 @@ export function AutoTradeLifecycleList() {
                     <TableCell>生命周期</TableCell>
                     <TableCell>入场状态</TableCell>
                     <TableCell>保护单状态</TableCell>
+                    <TableCell align="right">成交数量</TableCell>
+                    <TableCell>保护单</TableCell>
+                    <TableCell>当前持仓</TableCell>
+                    <TableCell>平仓</TableCell>
+                    <TableCell>预算</TableCell>
+                    <TableCell>最近事件</TableCell>
+                    <TableCell>人工处理</TableCell>
                     <TableCell align="right">持仓时长</TableCell>
                     <TableCell align="right">入场价</TableCell>
                     <TableCell align="right">均价</TableCell>
@@ -85,6 +92,13 @@ export function AutoTradeLifecycleList() {
                       <TableCell><StatusChip value={String(row.lifecycleStatus ?? '-')} /></TableCell>
                       <TableCell>{String(row.entryOrderStatus ?? '-')}</TableCell>
                       <TableCell>{String(row.protectionOrderStatus ?? '-')}</TableCell>
+                      <TableCell align="right">{formatPrice((row.entryOrder as Record<string, unknown> | undefined)?.filledSize)}</TableCell>
+                      <TableCell>{formatProtectionSummary(row.protectionOrders)}</TableCell>
+                      <TableCell>{formatPositionFact(row.positionLifecycle)}</TableCell>
+                      <TableCell>{formatCloseFact(row.closePosition)}</TableCell>
+                      <TableCell>{formatBudgetFact(row.budget)}</TableCell>
+                      <TableCell sx={{ maxWidth: 220, overflowWrap: 'anywhere' }}>{formatRecentEvent(row.recentEvents)}</TableCell>
+                      <TableCell>{row.manualAttentionRequired ? <StatusChip value="MANUAL_ATTENTION_REQUIRED" /> : '-'}</TableCell>
                       <TableCell align="right">{formatDuration(row.holdDuration)}</TableCell>
                       <TableCell align="right">{formatPrice(row.entryPrice)}</TableCell>
                       <TableCell align="right">{formatPrice(row.avgPx)}</TableCell>
@@ -117,4 +131,39 @@ function formatPct(value: unknown) {
   const number = Number(value);
   if (!Number.isFinite(number)) return '-';
   return `${number.toFixed(2)}%`;
+}
+
+function formatProtectionSummary(value: unknown) {
+  if (!Array.isArray(value) || value.length === 0) return '-';
+  const statuses = value
+    .map((item) => String((item as Record<string, unknown>).status ?? '-'))
+    .slice(0, 3)
+    .join('/');
+  return `${value.length}笔 ${statuses}`;
+}
+
+function formatPositionFact(value: unknown) {
+  const fact = value as Record<string, unknown> | undefined;
+  if (!fact) return '-';
+  if (fact.positionSyncAvailable === false) return '持仓同步不可用';
+  if (!fact.open) return '无持仓';
+  return `${formatPrice(fact.size)} @ ${formatPrice(fact.avgPx)}`;
+}
+
+function formatCloseFact(value: unknown) {
+  const fact = value as Record<string, unknown> | undefined;
+  if (!fact) return '-';
+  return `${String(fact.status ?? '-')} ${formatUSDT(fact.realizedPnl)}`;
+}
+
+function formatBudgetFact(value: unknown) {
+  const fact = value as Record<string, unknown> | undefined;
+  if (!fact) return '-';
+  return `${String(fact.status ?? '-')} ${formatUSDT(fact.amount)}`;
+}
+
+function formatRecentEvent(value: unknown) {
+  if (!Array.isArray(value) || value.length === 0) return '-';
+  const event = value[0] as Record<string, unknown>;
+  return `${String(event.eventType ?? '-')} ${String(event.reasonCode ?? '')}`.trim();
 }
