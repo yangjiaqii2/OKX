@@ -78,6 +78,39 @@ class OkxCurrentOrderSyncServiceTest {
         assertThat(existing.getOkxState()).isEqualTo("live");
     }
 
+    @Test
+    void marksLocalActiveEntryInactiveWhenOkxNoLongerReportsIt() {
+        TradeOrderEntity stale = new TradeOrderEntity();
+        stale.setOrderRole("ENTRY");
+        stale.setInstId("ETH-USDT-SWAP");
+        stale.setSide("buy");
+        stale.setPosSide("long");
+        stale.setOrdType("limit");
+        stale.setTdMode("cross");
+        stale.setReduceOnly(false);
+        stale.setClOrdId("AUTOstale");
+        stale.setOkxOrdId("ord-stale");
+        stale.setStatus("SUBMITTED");
+        TradeOrderRepository repository = mock(TradeOrderRepository.class);
+        when(repository.findFirstByOkxOrdId(any())).thenReturn(Optional.empty());
+        when(repository.findFirstByClOrdId(any())).thenReturn(Optional.empty());
+        when(repository.findByStatus("SUBMITTED")).thenReturn(List.of(stale));
+        when(repository.findByStatus("PROTECTION_SUBMITTED")).thenReturn(List.of());
+        when(repository.findByStatus("PARTIALLY_FILLED")).thenReturn(List.of());
+        when(repository.findByStatus("OPEN")).thenReturn(List.of());
+        when(repository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        OkxCurrentOrderSyncService service = new OkxCurrentOrderSyncService(
+                new OkxCurrentOrderService(new EmptyCurrentOrderGateway()),
+                repository
+        );
+
+        service.syncOnce();
+
+        assertThat(stale.getStatus()).isEqualTo("INACTIVE");
+        assertThat(stale.getOkxState()).isEqualTo("NOT_FOUND_ON_OKX");
+        assertThat(stale.getErrorMessage()).contains("OKX_ACTIVE_ORDER_NOT_FOUND");
+    }
+
     private static class CurrentOrderGateway implements OkxOrderGateway {
         @Override
         public JsonNode placeOrder(Map<String, String> payload) {
@@ -118,6 +151,27 @@ class OkxCurrentOrderSyncServiceTest {
             item.put("slTriggerPx", "98");
             item.put("state", "live");
             item.put("cTime", "1780000000000");
+            return root;
+        }
+    }
+
+    private static class EmptyCurrentOrderGateway implements OkxOrderGateway {
+        @Override
+        public JsonNode placeOrder(Map<String, String> payload) {
+            throw new UnsupportedOperationException("not used");
+        }
+
+        @Override
+        public JsonNode currentOrders(Map<String, String> payload) {
+            ObjectNode root = new ObjectMapper().createObjectNode();
+            root.putArray("data");
+            return root;
+        }
+
+        @Override
+        public JsonNode currentAlgoOrders(Map<String, String> payload) {
+            ObjectNode root = new ObjectMapper().createObjectNode();
+            root.putArray("data");
             return root;
         }
     }

@@ -36,10 +36,11 @@ class PositionCloseServiceTest {
     @Test
     void closePositionPersistsCloseSubmittedRecordBeforeReturning() {
         ClosePositionRecordRepository repository = mock(ClosePositionRecordRepository.class);
+        CloseGateway gateway = new CloseGateway();
         when(repository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         PositionCloseService service = new PositionCloseService(
                 new FixedPositionSnapshotService(),
-                new OkxTradeAdapter(new CloseGateway()),
+                new OkxTradeAdapter(gateway),
                 repository
         );
 
@@ -54,6 +55,8 @@ class PositionCloseServiceTest {
         assertThat(record.getPosSide()).isEqualTo("long");
         assertThat(record.getMarginMode()).isEqualTo("cross");
         assertThat(record.getCloseOrderId()).isEqualTo("close-ord-1");
+        assertThat(record.getCloseClOrdId()).isNotBlank();
+        assertThat(gateway.closePayload).containsEntry("clOrdId", record.getCloseClOrdId());
         assertThat(record.getSource()).isEqualTo("MANUAL");
     }
 
@@ -181,6 +184,8 @@ class PositionCloseServiceTest {
     }
 
     private static class CloseGateway implements OkxOrderGateway {
+        private Map<String, String> closePayload;
+
         @Override
         public JsonNode placeOrder(Map<String, String> payload) {
             throw new UnsupportedOperationException("not used");
@@ -188,6 +193,7 @@ class PositionCloseServiceTest {
 
         @Override
         public JsonNode closePosition(Map<String, String> payload) {
+            this.closePayload = payload;
             ObjectNode root = new ObjectMapper().createObjectNode();
             root.putArray("data").addObject().put("ordId", "close-ord-1");
             return root;

@@ -14,6 +14,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class OkxCurrentOrderSyncService {
+    private static final List<String> ACTIVE_ENTRY_STATUSES = List.of(
+            "SUBMITTED", "PROTECTION_SUBMITTED", "PARTIALLY_FILLED", "OPEN"
+    );
+
     private final OkxCurrentOrderService currentOrderService;
     private final TradeOrderRepository tradeOrderRepository;
 
@@ -32,10 +36,14 @@ public class OkxCurrentOrderSyncService {
             List<OkxCurrentOrderView> normalOrders = currentOrderService.currentOrders();
             List<OkxCurrentOrderView> algoOrders = currentOrderService.currentAlgoOrders();
             Set<String> activeInstIds = new LinkedHashSet<>();
+            Set<String> activeNormalOkxOrderIds = new LinkedHashSet<>();
+            Set<String> activeNormalClientOrderIds = new LinkedHashSet<>();
             int upserted = 0;
             for (OkxCurrentOrderView order : normalOrders) {
                 upsert(order);
                 addInstId(activeInstIds, order.instId());
+                addText(activeNormalOkxOrderIds, order.ordId());
+                addText(activeNormalClientOrderIds, order.clOrdId());
                 upserted++;
             }
             for (OkxCurrentOrderView order : algoOrders) {
@@ -43,6 +51,7 @@ public class OkxCurrentOrderSyncService {
                 addInstId(activeInstIds, order.instId());
                 upserted++;
             }
+            int inactiveEntries = markMissingActiveEntriesInactive(activeNormalOkxOrderIds, activeNormalClientOrderIds);
             return new SyncResult(normalOrders.size(), algoOrders.size(), upserted, false, null,
                     new ArrayList<>(activeInstIds));
         } catch (RuntimeException ex) {
@@ -75,6 +84,39 @@ public class OkxCurrentOrderSyncService {
         tradeOrderRepository.save(entity);
     }
 
+    private int markMissingActiveEntriesInactive(Set<String> activeOkxOrderIds, Set<String> activeClientOrderIds) {
+        int updated = 0;
+        Instant now = Instant.now();
+        for (String status : ACTIVE_ENTRY_STATUSES) {
+            List<TradeOrderEntity> activeEntries = tradeOrderRepository.findByStatus(status);
+            if (activeEntries == null) {
+                continue;
+            }
+            for (TradeOrderEntity entry : activeEntries) {
+                if (entry == null || entry.isReduceOnly()) {
+                    continue;
+                }
+                boolean hasOkxId = hasText(entry.getOkxOrdId());
+                boolean hasClientId = hasText(entry.getClOrdId());
+                if (!hasOkxId && !hasClientId) {
+                    continue;
+                }
+                boolean stillLive = (hasOkxId && activeOkxOrderIds.contains(entry.getOkxOrdId()))
+                        || (hasClientId && activeClientOrderIds.contains(entry.getClOrdId()));
+                if (stillLive) {
+                    continue;
+                }
+                entry.setStatus("INACTIVE");
+                entry.setOkxState("NOT_FOUND_ON_OKX");
+                entry.setErrorMessage("OKX_ACTIVE_ORDER_NOT_FOUND");
+                entry.setUpdatedAt(now);
+                tradeOrderRepository.save(entry);
+                updated++;
+            }
+        }
+        return updated;
+    }
+
     private Optional<TradeOrderEntity> findExisting(OkxCurrentOrderView order) {
         String okxOrderId = defaultText(order.ordId(), order.algoId());
         if (hasText(okxOrderId)) {
@@ -93,6 +135,12 @@ public class OkxCurrentOrderSyncService {
     private static void addInstId(Set<String> activeInstIds, String instId) {
         if (hasText(instId)) {
             activeInstIds.add(instId);
+        }
+    }
+
+    private static void addText(Set<String> values, String value) {
+        if (hasText(value)) {
+            values.add(value);
         }
     }
 

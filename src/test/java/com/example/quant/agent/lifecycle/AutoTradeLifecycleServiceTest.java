@@ -140,6 +140,73 @@ class AutoTradeLifecycleServiceTest {
     }
 
     @Test
+    void lifecycleRecordsSubmittedProtectionOrdersWithPendingOrderBinding() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        LifecycleGateway gateway = new LifecycleGateway();
+        gateway.orderState = "filled";
+        gateway.accFillSz = new BigDecimal("10");
+        gateway.avgPx = new BigDecimal("100");
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        when(tradeOrderRepository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of()),
+                OkxInstrumentRules::defaultFor,
+                null,
+                tradeOrderRepository
+        );
+
+        service.runOnce(Instant.parse("2026-06-18T00:01:00Z"));
+
+        ArgumentCaptor<TradeOrderEntity> captor = ArgumentCaptor.forClass(TradeOrderEntity.class);
+        verify(tradeOrderRepository, org.mockito.Mockito.times(4)).save(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(TradeOrderEntity::getPendingOrderId)
+                .containsOnly(order.id().toString());
+        assertThat(captor.getAllValues())
+                .extracting(TradeOrderEntity::getOrderRole)
+                .containsExactly("STOP_LOSS", "TP1", "TP2", "TP3");
+        assertThat(captor.getAllValues())
+                .extracting(TradeOrderEntity::isReduceOnly)
+                .containsOnly(true);
+    }
+
+    @Test
+    void marksBudgetUsedWhenEntryFilledEvenIfProtectionSubmitFails() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        FailingProtectionGateway gateway = new FailingProtectionGateway();
+        gateway.orderState = "filled";
+        gateway.accFillSz = new BigDecimal("10");
+        gateway.avgPx = new BigDecimal("100");
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        service.runOnce(Instant.parse("2026-06-18T00:01:00Z"));
+
+        assertThat(order.status()).isEqualTo(OrderStatus.PROTECTION_FAILED);
+        assertThat(budgetService.reservation(order.budgetReservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.USED);
+    }
+
+    @Test
     void lifecycleQueriesEntryFillAndSubmitsProtectionWhenPositionAlreadyExists() {
         AgentProperties properties = new AgentProperties();
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
@@ -526,9 +593,9 @@ class AutoTradeLifecycleServiceTest {
     }
 
     private static class LifecycleGateway implements OkxOrderGateway {
-        private String orderState = "live";
-        private BigDecimal accFillSz = BigDecimal.ZERO;
-        private BigDecimal avgPx = BigDecimal.ZERO;
+        protected String orderState = "live";
+        protected BigDecimal accFillSz = BigDecimal.ZERO;
+        protected BigDecimal avgPx = BigDecimal.ZERO;
         private Map<String, String> queryOrderPayload;
         private Map<String, String> cancelPayload;
         private Map<String, String> closePayload;
@@ -578,6 +645,13 @@ class AutoTradeLifecycleServiceTest {
             ObjectNode root = new ObjectMapper().createObjectNode();
             root.putArray("data").addObject().put("ordId", "close-1");
             return root;
+        }
+    }
+
+    private static class FailingProtectionGateway extends LifecycleGateway {
+        @Override
+        public JsonNode placeAlgoOrder(Map<String, String> payload) {
+            throw new IllegalStateException("protection rejected");
         }
     }
 }

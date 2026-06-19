@@ -164,11 +164,11 @@ public class AutoTradeLifecycleService {
             if (order.status() == OrderStatus.SUBMITTED) {
                 EntryFill fill = queryEntryFill(order);
                 if (fill.complete()) {
+                    if (order.budgetReservationId() != null) {
+                        budgetService.markUsed(order.budgetReservationId());
+                    }
                     try {
                         submitProtection(order, fill.avgPx(), fill.filledSize(), "FULL_FILL");
-                        if (order.budgetReservationId() != null) {
-                            budgetService.markUsed(order.budgetReservationId());
-                        }
                         order.markProtectionSubmitted("ENTRY_FILLED_PROTECTION_SUBMITTED");
                         recordEvent(order, TradeEventType.ENTRY_FILLED, OrderStatus.SUBMITTED.name(),
                                 OrderStatus.PROTECTION_SUBMITTED.name(), "ENTRY_FULLY_FILLED",
@@ -199,11 +199,11 @@ public class AutoTradeLifecycleService {
                                 "ENTRY_TIMEOUT_CANCELLED", "入场无成交超时释放预算", null, order.clientOrderId(), null);
                         entryTimeoutCancelled++;
                     } else {
+                        if (order.budgetReservationId() != null) {
+                            budgetService.markUsed(order.budgetReservationId());
+                        }
                         try {
                             submitProtection(order, fill.avgPx(), fill.filledSize(), "PARTIAL_FILL_ENTRY_TIMEOUT");
-                            if (order.budgetReservationId() != null) {
-                                budgetService.markUsed(order.budgetReservationId());
-                            }
                             order.markProtectionSubmitted("PARTIAL_FILL_PROTECTION_SUBMITTED");
                             recordEvent(order, TradeEventType.ENTRY_PARTIAL_FILLED, OrderStatus.SUBMITTED.name(),
                                     OrderStatus.PROTECTION_SUBMITTED.name(), "PARTIAL_FILL_ENTRY_TIMEOUT",
@@ -520,9 +520,11 @@ public class AutoTradeLifecycleService {
 
     private int submitMaxHoldClose(PendingOrder order, PositionSummary position, Instant now) {
         Map<String, String> payload = new LinkedHashMap<>();
+        String closeClOrdId = "MAXC" + shortHash(order.id().toString(), 24);
         payload.put("instId", order.instId());
         payload.put("mgnMode", order.tdMode());
         payload.put("autoCxl", "true");
+        payload.put("clOrdId", closeClOrdId);
         if (hasText(order.posSide()) && !"net".equalsIgnoreCase(order.posSide())) {
             payload.put("posSide", order.posSide());
         }
@@ -530,7 +532,7 @@ public class AutoTradeLifecycleService {
             JsonNode response = okxOrderGateway.closePosition(payload);
             String closeOrderId = closeId(response);
             order.markCloseSubmitted(closeOrderId, "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED");
-            recordMaxHoldCloseSubmitted(order, position, closeOrderId, now);
+            recordMaxHoldCloseSubmitted(order, position, closeOrderId, closeClOrdId, now);
             recordEvent(order, TradeEventType.MAX_HOLD_CLOSE_SUBMITTED, OrderStatus.PROTECTION_SUBMITTED.name(),
                     OrderStatus.CLOSE_SUBMITTED.name(), "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED",
                     "达到最大持仓时间后提交平仓", closeOrderId, order.clientOrderId(), null);
@@ -544,7 +546,8 @@ public class AutoTradeLifecycleService {
         }
     }
 
-    private void recordMaxHoldCloseSubmitted(PendingOrder order, PositionSummary position, String closeOrderId, Instant now) {
+    private void recordMaxHoldCloseSubmitted(PendingOrder order, PositionSummary position, String closeOrderId,
+                                             String closeClOrdId, Instant now) {
         if (closePositionRecordRepository == null) {
             return;
         }
@@ -554,7 +557,7 @@ public class AutoTradeLifecycleService {
         record.setPosSide(order.posSide());
         record.setMarginMode(order.tdMode());
         record.setCloseOrderId(closeOrderId);
-        record.setCloseClOrdId("MAXC" + shortHash(order.id().toString(), 24));
+        record.setCloseClOrdId(closeClOrdId);
         record.setSize(decimal(position.size()));
         record.setAvgPx(position.avgPrice());
         record.setStatus("CLOSE_SUBMITTED");
@@ -569,8 +572,35 @@ public class AutoTradeLifecycleService {
         OkxInstrumentRules rules = instrumentRules(order.instId());
         BigDecimal normalizedSize = rules.floorToLot(filledSize);
         for (Map<String, String> payload : protectionPayloads(order, rules, normalizedSize, avgPx, suffix)) {
-            okxOrderGateway.placeAlgoOrder(payload);
+            JsonNode response = okxOrderGateway.placeAlgoOrder(apiAlgoPayload(payload));
+            recordProtectionSubmitted(order, payload, response);
         }
+    }
+
+    private void recordProtectionSubmitted(PendingOrder order, Map<String, String> payload, JsonNode response) {
+        if (tradeOrderRepository == null) {
+            return;
+        }
+        Instant now = Instant.now();
+        TradeOrderEntity entity = new TradeOrderEntity();
+        entity.setTradePlanId(order.tradePlanId() == null ? null : order.tradePlanId().toString());
+        entity.setPendingOrderId(order.id().toString());
+        entity.setOrderRole(payload.getOrDefault("orderRole", "TAKE_PROFIT"));
+        entity.setInstId(order.instId());
+        entity.setSide(payload.get("side"));
+        entity.setPosSide(order.posSide());
+        entity.setOrdType(payload.get("ordType"));
+        entity.setTdMode(order.tdMode());
+        entity.setSize(decimal(payload.get("sz")));
+        entity.setPrice(triggerPrice(payload));
+        entity.setReduceOnly(true);
+        entity.setClOrdId(payload.get("algoClOrdId"));
+        entity.setOkxOrdId(algoId(response));
+        entity.setOkxState("live");
+        entity.setStatus("PROTECTION_SUBMITTED");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        tradeOrderRepository.save(entity);
     }
 
     private OkxInstrumentRules instrumentRules(String instId) {
@@ -589,6 +619,7 @@ public class AutoTradeLifecycleService {
         }
         List<Map<String, String>> payloads = new ArrayList<>();
         Map<String, String> stopLoss = algoPayload(order, filledSize, suffix + "_SL");
+        stopLoss.put("orderRole", "STOP_LOSS");
         stopLoss.put("slTriggerPx", value(rules.normalizePrice(order.stopLossPrice())));
         stopLoss.put("slOrdPx", "-1");
         payloads.add(stopLoss);
@@ -597,6 +628,7 @@ public class AutoTradeLifecycleService {
         for (TakeProfitLeg leg : takeProfitLegs(filledSize, rules)) {
             BigDecimal triggerPx = takeProfitPrice(order, positive(avgPx, order.price()), risk, leg.rMultiple());
             Map<String, String> takeProfit = algoPayload(order, leg.size(), suffix + "_" + leg.suffix());
+            takeProfit.put("orderRole", leg.suffix());
             takeProfit.put("tpTriggerPx", value(rules.normalizePrice(triggerPx)));
             takeProfit.put("tpOrdPx", "-1");
             payloads.add(takeProfit);
@@ -646,6 +678,11 @@ public class AutoTradeLifecycleService {
         return "short".equalsIgnoreCase(order.posSide()) ? avgPx.subtract(distance) : avgPx.add(distance);
     }
 
+    private static BigDecimal triggerPrice(Map<String, String> payload) {
+        String value = payload.getOrDefault("slTriggerPx", payload.getOrDefault("tpTriggerPx", "0"));
+        return decimal(value);
+    }
+
     private static BigDecimal ratio(BigDecimal value) {
         return value == null ? BigDecimal.ZERO : value;
     }
@@ -663,6 +700,12 @@ public class AutoTradeLifecycleService {
         payload.put("sz", value(size));
         payload.put("algoClOrdId", lifecycleAlgoClOrdId(order, suffix));
         return payload;
+    }
+
+    private static Map<String, String> apiAlgoPayload(Map<String, String> payload) {
+        Map<String, String> apiPayload = new LinkedHashMap<>(payload);
+        apiPayload.remove("orderRole");
+        return apiPayload;
     }
 
     private EntryFill queryEntryFill(PendingOrder order) {

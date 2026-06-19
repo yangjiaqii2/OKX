@@ -179,6 +179,10 @@ public class OkxTradeAdapter {
     }
 
     public OrderExecutionResult closePosition(String instId, String posSide, String marginMode) {
+        return closePosition(instId, posSide, marginMode, null);
+    }
+
+    public OrderExecutionResult closePosition(String instId, String posSide, String marginMode, String clOrdId) {
         if (instId == null || instId.isBlank()) {
             throw new IllegalArgumentException("平仓合约不能为空");
         }
@@ -186,9 +190,10 @@ public class OkxTradeAdapter {
         if (positionMode == null) {
             positionMode = OkxPositionMode.NET;
         }
-        Map<String, String> payload = closePositionPayload(instId, posSide, marginMode, positionMode);
-        log.warn("Calling OKX close-position instId={} posSide={} posMode={} mgnMode={}",
-                payload.get("instId"), payload.getOrDefault("posSide", ""), positionMode, payload.get("mgnMode"));
+        Map<String, String> payload = closePositionPayload(instId, posSide, marginMode, positionMode, clOrdId);
+        log.warn("Calling OKX close-position instId={} posSide={} posMode={} mgnMode={} clOrdId={}",
+                payload.get("instId"), payload.getOrDefault("posSide", ""), positionMode, payload.get("mgnMode"),
+                payload.getOrDefault("clOrdId", ""));
         JsonNode response = okxOrderGateway.closePosition(payload);
         String closeId = closePositionId(response, instId, payload.getOrDefault("posSide", ""));
         return OrderExecutionResult.submitted(closeId,
@@ -256,10 +261,18 @@ public class OkxTradeAdapter {
 
     static Map<String, String> closePositionPayload(String instId, String posSide, String marginMode,
                                                     OkxPositionMode positionMode) {
+        return closePositionPayload(instId, posSide, marginMode, positionMode, null);
+    }
+
+    static Map<String, String> closePositionPayload(String instId, String posSide, String marginMode,
+                                                    OkxPositionMode positionMode, String clOrdId) {
         Map<String, String> payload = new LinkedHashMap<>();
         payload.put("instId", instId);
         payload.put("mgnMode", hasText(marginMode) ? marginMode : "cross");
         payload.put("autoCxl", "true");
+        if (hasText(clOrdId)) {
+            payload.put("clOrdId", clOrdId);
+        }
         if (positionMode == OkxPositionMode.LONG_SHORT && hasText(posSide) && !"net".equalsIgnoreCase(posSide)) {
             payload.put("posSide", posSide);
         }

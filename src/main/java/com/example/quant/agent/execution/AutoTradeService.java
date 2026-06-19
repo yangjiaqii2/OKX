@@ -175,6 +175,14 @@ public class AutoTradeService {
             boolean noRiskMode = riskMode != null && riskMode.noRisk();
             int noRiskMinScore = noRiskMinScore();
             pruneInFlightOrders();
+            OkxCurrentOrderSyncService.SyncResult currentOrderSyncResult = syncCurrentOrders();
+            if (currentOrderSyncResult.failed()) {
+                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
+                log.warn("AutoTrade round stopped scanId={} stage=OKX_CURRENT_ORDER_SYNC reason={} fallback=false",
+                        scanId, currentOrderSyncResult.errorMessage());
+                return recordAndReturn(AutoTradeResult.skipped("okx_current_orders_unavailable: "
+                        + currentOrderSyncResult.errorMessage()), candidateCount, top);
+            }
             if (tradeOrderRecordService.hasActiveEntryOrder()) {
                 ContractCandidate top = topCandidate(safeCandidates).orElse(null);
                 log.warn("AutoTrade round stopped scanId={} stage=LOCAL_ENTRY_DEDUPE reason=local_active_entry_order fallback=false",
@@ -185,14 +193,6 @@ public class AutoTradeService {
             Set<String> heldInstIds = positions.stream()
                     .map(PositionSummary::instId)
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-            OkxCurrentOrderSyncService.SyncResult currentOrderSyncResult = syncCurrentOrders();
-            if (currentOrderSyncResult.failed()) {
-                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
-                log.warn("AutoTrade round stopped scanId={} stage=OKX_CURRENT_ORDER_SYNC reason={} fallback=false",
-                        scanId, currentOrderSyncResult.errorMessage());
-                return recordAndReturn(AutoTradeResult.skipped("okx_current_orders_unavailable: "
-                        + currentOrderSyncResult.errorMessage()), candidateCount, top);
-            }
             Set<String> okxCurrentOrderInstIds = currentOrderSyncResult.activeInstIds().stream()
                     .filter(instId -> instId != null && !instId.isBlank())
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));

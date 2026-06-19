@@ -89,8 +89,9 @@ public class PositionCloseService {
         if (!hasText(closeMarginMode)) {
             closeMarginMode = "cross";
         }
-        OrderExecutionResult result = okxTradeAdapter.closePosition(position.instId(), closePosSide, closeMarginMode);
-        recordCloseSubmitted(position, closePosSide, closeMarginMode, result);
+        String closeClOrdId = closeClientOrderId();
+        OrderExecutionResult result = okxTradeAdapter.closePosition(position.instId(), closePosSide, closeMarginMode, closeClOrdId);
+        recordCloseSubmitted(position, closePosSide, closeMarginMode, result, closeClOrdId);
         return result;
     }
 
@@ -110,7 +111,7 @@ public class PositionCloseService {
     }
 
     private void recordCloseSubmitted(PositionSummary position, String posSide, String marginMode,
-                                      OrderExecutionResult result) {
+                                      OrderExecutionResult result, String closeClOrdId) {
         if (closePositionRecordRepository == null) {
             return;
         }
@@ -121,7 +122,7 @@ public class PositionCloseService {
         record.setPosSide(posSide);
         record.setMarginMode(marginMode);
         record.setCloseOrderId(result.externalOrderId());
-        record.setCloseClOrdId("CLOSE" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
+        record.setCloseClOrdId(closeClOrdId);
         record.setSize(decimal(position.size()));
         record.setAvgPx(position.avgPrice());
         record.setStatus("CLOSE_SUBMITTED");
@@ -131,6 +132,10 @@ public class PositionCloseService {
         record.setUpdatedAt(now);
         closePositionRecordRepository.save(record);
         recordManualCloseSubmitted(record);
+    }
+
+    private static String closeClientOrderId() {
+        return "CLOSE" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
     }
 
     private void bindAutoTradeLifecycle(ClosePositionRecordEntity record, OrderExecutionResult result) {
