@@ -119,6 +119,24 @@ class PendingOrderServiceTest {
         verify(repository, atLeast(1)).save(any(PendingOrderEntity.class));
     }
 
+    @Test
+    void restoresTimedOutSubmittedEntryForProtectionRecovery() {
+        PendingOrderRepository repository = mock(PendingOrderRepository.class);
+        PendingOrderEntity saved = PendingOrderEntity.from(autoReservedOrder("AUTO_timeout_restore"));
+        saved.setStatus(OrderStatus.ENTRY_TIMEOUT_CANCELLED.name());
+        saved.setSubmittedAt(Instant.parse("2026-06-18T00:00:00Z"));
+        saved.setExternalOrderId("okx-ord-timeout");
+        when(repository.findAll()).thenReturn(List.of(saved));
+        when(repository.save(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        PendingOrderService service = new PendingOrderService(120, repository);
+
+        PendingOrder restored = service.get(UUID.fromString(saved.getId()));
+        assertThat(restored.status()).isEqualTo(OrderStatus.ENTRY_TIMEOUT_CANCELLED);
+        assertThat(restored.submittedAt()).isEqualTo(Instant.parse("2026-06-18T00:00:00Z"));
+        assertThat(restored.externalOrderId()).isEqualTo("okx-ord-timeout");
+    }
+
     static TradePlan samplePlan() {
         return new TradePlan(
                 UUID.randomUUID(),

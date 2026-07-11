@@ -49,7 +49,7 @@ class OkxCurrentOrderServiceTest {
 
     private static class CurrentOrderGateway implements OkxOrderGateway {
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             throw new UnsupportedOperationException("not used");
         }
 

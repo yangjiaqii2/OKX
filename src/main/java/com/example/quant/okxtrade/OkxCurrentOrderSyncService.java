@@ -36,22 +36,24 @@ public class OkxCurrentOrderSyncService {
             List<OkxCurrentOrderView> normalOrders = currentOrderService.currentOrders();
             List<OkxCurrentOrderView> algoOrders = currentOrderService.currentAlgoOrders();
             Set<String> activeInstIds = new LinkedHashSet<>();
-            Set<String> activeNormalOkxOrderIds = new LinkedHashSet<>();
-            Set<String> activeNormalClientOrderIds = new LinkedHashSet<>();
+            Set<String> activeOkxOrderIds = new LinkedHashSet<>();
+            Set<String> activeClientOrderIds = new LinkedHashSet<>();
             int upserted = 0;
             for (OkxCurrentOrderView order : normalOrders) {
                 upsert(order);
                 addInstId(activeInstIds, order.instId());
-                addText(activeNormalOkxOrderIds, order.ordId());
-                addText(activeNormalClientOrderIds, order.clOrdId());
+                addText(activeOkxOrderIds, order.ordId());
+                addText(activeClientOrderIds, order.clOrdId());
                 upserted++;
             }
             for (OkxCurrentOrderView order : algoOrders) {
                 upsert(order);
                 addInstId(activeInstIds, order.instId());
+                addText(activeOkxOrderIds, order.algoId());
+                addText(activeClientOrderIds, order.algoClOrdId());
                 upserted++;
             }
-            int inactiveEntries = markMissingActiveEntriesInactive(activeNormalOkxOrderIds, activeNormalClientOrderIds);
+            markMissingActiveOrdersInactive(activeOkxOrderIds, activeClientOrderIds);
             return new SyncResult(normalOrders.size(), algoOrders.size(), upserted, false, null,
                     new ArrayList<>(activeInstIds));
         } catch (RuntimeException ex) {
@@ -84,7 +86,7 @@ public class OkxCurrentOrderSyncService {
         tradeOrderRepository.save(entity);
     }
 
-    private int markMissingActiveEntriesInactive(Set<String> activeOkxOrderIds, Set<String> activeClientOrderIds) {
+    private int markMissingActiveOrdersInactive(Set<String> activeOkxOrderIds, Set<String> activeClientOrderIds) {
         int updated = 0;
         Instant now = Instant.now();
         for (String status : ACTIVE_ENTRY_STATUSES) {
@@ -93,7 +95,7 @@ public class OkxCurrentOrderSyncService {
                 continue;
             }
             for (TradeOrderEntity entry : activeEntries) {
-                if (entry == null || entry.isReduceOnly()) {
+                if (entry == null) {
                     continue;
                 }
                 boolean hasOkxId = hasText(entry.getOkxOrdId());
@@ -149,7 +151,10 @@ public class OkxCurrentOrderSyncService {
     }
 
     private static String defaultText(String value, String fallback) {
-        return hasText(value) ? value : fallback;
+        if (hasText(value)) {
+            return value;
+        }
+        return hasText(fallback) ? fallback : null;
     }
 
     private static boolean hasText(String value) {

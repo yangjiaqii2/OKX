@@ -1504,7 +1504,9 @@ public class AgentProperties {
         private int sidewaysPositionHours = 3;
         private BigDecimal sidewaysPnlRangePct = BigDecimal.ONE;
         private BigDecimal sidewaysExitProfitPct = new BigDecimal("0.3");
-        private int maxHoldHours = 8;
+        private int lossCloseMinutes = 30;
+        private int maxHoldMinutes = 60;
+        private int maxHoldHours = 1;
         private String maxHoldAction = "CLOSE_POSITION";
         private String sidewaysAction = "TIGHTEN_TAKE_PROFIT";
         private boolean moveStopToBreakeven = false;
@@ -1541,12 +1543,29 @@ public class AgentProperties {
             this.sidewaysExitProfitPct = sidewaysExitProfitPct;
         }
 
+        public int lossCloseMinutes() {
+            return lossCloseMinutes;
+        }
+
+        public void setLossCloseMinutes(int lossCloseMinutes) {
+            this.lossCloseMinutes = lossCloseMinutes;
+        }
+
+        public int maxHoldMinutes() {
+            return maxHoldMinutes > 0 ? maxHoldMinutes : Math.max(1, maxHoldHours) * 60;
+        }
+
+        public void setMaxHoldMinutes(int maxHoldMinutes) {
+            this.maxHoldMinutes = maxHoldMinutes;
+        }
+
         public int maxHoldHours() {
             return maxHoldHours;
         }
 
         public void setMaxHoldHours(int maxHoldHours) {
             this.maxHoldHours = maxHoldHours;
+            this.maxHoldMinutes = Math.max(1, maxHoldHours) * 60;
         }
 
         public String maxHoldAction() {

@@ -1054,6 +1054,13 @@ quant:
 
 ## Change Log
 
+### 2026-06-20 - 汇率接口 Web 路由回归测试
+
+- 变更摘要：针对首尔服务器出现 `/api/quant/system/fx-rate` 404 的问题，补充 Spring MVC 路由测试，确认当前代码包内该接口实际注册在 `/api/quant/system/fx-rate`。
+- 影响文件：`src/test/java/com/example/quant/controller/SystemControlControllerWebTest.java`、`docs/contract-agent-loop-design.md`。
+- 影响：新增带认证头的 MockMvc 覆盖，验证前端使用的 RMB 汇率接口路径可返回 `USD/CNY` 配置汇率；若线上仍 404，应优先检查首尔服务器部署的 jar/镜像版本或反向代理目标是否仍指向旧后端。
+- 验证：定向测试 `mvn -Dtest=SystemControlControllerWebTest test` 通过，1 个测试 0 失败；全量测试 `mvn test` 通过，200 个测试 0 失败。
+
 ### 2026-06-19 - 自动交易恢复测试与执行结果桩语义修正
 
 - 变更摘要：修复恢复任务过期预算测试的非确定性构造，并收紧 `OrderExecutionResult` 测试桩，避免 4 参数构造把“已提交”误当成“已成交”。

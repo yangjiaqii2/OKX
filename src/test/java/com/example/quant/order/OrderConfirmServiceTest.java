@@ -474,7 +474,7 @@ class OrderConfirmServiceTest {
 
     private static class SuccessfulGateway implements OkxOrderGateway {
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             ObjectNode root = new ObjectMapper().createObjectNode();
             root.putArray("data").addObject().put("ordId", "okx-order-1");
             return root;
@@ -485,7 +485,7 @@ class OrderConfirmServiceTest {
         private int placeOrderCalls;
 
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             placeOrderCalls++;
             return super.placeOrder(payload);
         }
@@ -503,7 +503,7 @@ class OrderConfirmServiceTest {
 
     private static class TimeoutAndQueryFailGateway extends SuccessfulGateway {
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             throw new IllegalStateException("OKX request timed out");
         }
 

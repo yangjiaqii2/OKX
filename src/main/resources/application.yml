@@ -230,7 +230,9 @@ quant:
       sideways-position-hours: 3
       sideways-pnl-range-pct: 1
       sideways-exit-profit-pct: 0.3
-      max-hold-hours: 8
+      loss-close-minutes: 30
+      max-hold-minutes: 60
+      max-hold-hours: 1
       max-hold-action: CLOSE_POSITION
       sideways-action: TIGHTEN_TAKE_PROFIT
       move-stop-to-breakeven: false

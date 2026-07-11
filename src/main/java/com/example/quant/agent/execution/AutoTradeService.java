@@ -204,11 +204,9 @@ public class AutoTradeService {
             int dynamicMaxPositions = noRiskMode || topForPolicy == null
                     ? maxOpenPositions()
                     : positionQualityPolicy.allowedMaxPositionsFor(topForPolicy);
-            Set<String> occupiedInstIds = new LinkedHashSet<>(heldInstIds);
-            occupiedInstIds.addAll(okxCurrentOrderInstIds);
-            int openOrPendingCount = occupiedInstIds.size() + symbolLockCount();
+            int openOrPendingCount = heldInstIds.size();
             int initialOpenOrPendingCount = openOrPendingCount;
-            int initialInFlightCount = symbolLockCount();
+            int initialInFlightCount = 0;
             int capacity = dynamicMaxPositions - openOrPendingCount;
             log.warn("AutoTrade round start scanId={} held={} okxCurrentOrders={} inFlight={} candidateCount={} marketRegime={} dynamicMaxPositions={} minScore={} minFinalRankScore={} riskMode={}",
                     scanId, heldInstIds.size(), okxCurrentOrderInstIds.size(), symbolLockCount(), candidateCount,
@@ -361,9 +359,7 @@ public class AutoTradeService {
                     }
                     int slotIndex = initialOpenOrPendingCount + executedResults.size() + 1;
                     BigDecimal allocationScore = scoreForBudget(candidate, noRiskMode);
-                    BigDecimal maxMarginForCandidate = noRiskMode
-                            ? totalBudgetUsdt
-                            : riskBasedMaxMarginUsdt(totalBudgetUsdt, plan);
+                    BigDecimal maxMarginForCandidate = totalBudgetUsdt;
                     if (accountAvailableAtRoundStart.isPresent()) {
                         BigDecimal availableForThisRound = accountAvailableAtRoundStart.get()
                                 .subtract(executedMarginAmount(executedResults))

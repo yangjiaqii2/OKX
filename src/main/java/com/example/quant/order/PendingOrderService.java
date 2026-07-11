@@ -166,7 +166,7 @@ public class PendingOrderService {
         }
         for (PendingOrderEntity entity : pendingOrderRepository.findAll()) {
             PendingOrder order = entity.toDomain();
-            if (isTerminal(order.status())) {
+            if (isTerminal(order.status()) && !recoverableTimedOutEntry(order)) {
                 continue;
             }
             attach(order);
@@ -192,6 +192,10 @@ public class PendingOrderService {
                 || status == OrderStatus.FAILED
                 || status == OrderStatus.ENTRY_TIMEOUT_CANCELLED
                 || status == OrderStatus.CLOSED;
+    }
+
+    private static boolean recoverableTimedOutEntry(PendingOrder order) {
+        return order.status() == OrderStatus.ENTRY_TIMEOUT_CANCELLED && order.submittedAt() != null;
     }
 
     private static String budgetAllocationJson(BudgetAllocation allocation) {

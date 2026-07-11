@@ -72,6 +72,35 @@ class AutoTradeLifecycleServiceTest {
     }
 
     @Test
+    void treatsAlreadyClosedCancelErrorAsEntryTimeoutCancelled() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        LifecycleGateway gateway = new AlreadyClosedCancelGateway();
+        gateway.orderState = "live";
+        gateway.accFillSz = BigDecimal.ZERO;
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T00:11:00Z"));
+
+        assertThat(result.entryTimeoutCancelled()).isEqualTo(1);
+        assertThat(order.status()).isEqualTo(OrderStatus.ENTRY_TIMEOUT_CANCELLED);
+        assertThat(gateway.cancelPayload).containsEntry("ordId", "entry-ord-1");
+        assertThat(budgetService.reservation(order.budgetReservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.RELEASED);
+    }
+
+    @Test
     void partialFillCancelsRemainderAndSubmitsProtectionForActualFill() {
         AgentProperties properties = new AgentProperties();
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
@@ -238,6 +267,149 @@ class AutoTradeLifecycleServiceTest {
     }
 
     @Test
+    void lifecycleSubmitsProtectionFromPositionWhenEntryQueryIsNotFilled() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        LifecycleGateway gateway = new LifecycleGateway();
+        gateway.orderState = "live";
+        gateway.accFillSz = BigDecimal.ZERO;
+        gateway.avgPx = BigDecimal.ZERO;
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "10", "101", "5", "1010")))
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T00:01:00Z"));
+
+        assertThat(result.entryFilledProtected()).isEqualTo(1);
+        assertThat(gateway.cancelPayload).isNull();
+        assertThat(gateway.algoPayloads).hasSize(4);
+        assertThat(gateway.algoPayloads.get(0)).containsEntry("sz", "10").containsEntry("slTriggerPx", "98");
+        assertThat(gateway.algoPayloads.get(1)).containsEntry("tpTriggerPx", "104");
+        assertThat(order.status()).isEqualTo(OrderStatus.PROTECTION_SUBMITTED);
+        assertThat(budgetService.reservation(order.budgetReservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.USED);
+    }
+
+    @Test
+    void recoversMissingProtectionForTimedOutEntryWithOpenPosition() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        order.markEntryTimeoutCancelled("ENTRY_TIMEOUT_CANCELLED");
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
+                order.id().toString(),
+                List.of("SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE")
+        )).thenReturn(List.of());
+        when(tradeOrderRepository.findByInstIdAndReduceOnlyTrueAndStatusIn(
+                "BTC-USDT-SWAP",
+                List.of("SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE")
+        )).thenReturn(List.of());
+        when(tradeOrderRepository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        LifecycleGateway gateway = new LifecycleGateway();
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "10", "101", "5", "1010"))),
+                null,
+                tradeOrderRepository
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T00:12:00Z"));
+
+        assertThat(result.entryFilledProtected()).isEqualTo(1);
+        assertThat(gateway.algoPayloads).hasSize(4);
+        assertThat(gateway.algoPayloads.get(0)).containsEntry("sz", "10").containsEntry("slTriggerPx", "98");
+        assertThat(order.status()).isEqualTo(OrderStatus.PROTECTION_SUBMITTED);
+        assertThat(budgetService.reservation(order.budgetReservationId()))
+                .get()
+                .extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.USED);
+    }
+
+    @Test
+    void retriesMissingProtectionAfterProtectionFailureWithOpenPosition() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        order.markProtectionFailed("PROTECTION_FAILED_AFTER_FULL_FILL");
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
+                order.id().toString(),
+                List.of("SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE")
+        )).thenReturn(List.of());
+        when(tradeOrderRepository.findByInstIdAndReduceOnlyTrueAndStatusIn(
+                "BTC-USDT-SWAP",
+                List.of("SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE")
+        )).thenReturn(List.of());
+        when(tradeOrderRepository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        LifecycleGateway gateway = new LifecycleGateway();
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "10", "101", "5", "1010"))),
+                null,
+                tradeOrderRepository
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T00:12:00Z"));
+
+        assertThat(result.entryFilledProtected()).isEqualTo(1);
+        assertThat(gateway.algoPayloads).hasSize(4);
+        assertThat(order.status()).isEqualTo(OrderStatus.PROTECTION_SUBMITTED);
+    }
+
+    @Test
+    void recoversProtectionForOpenPositionWithoutLocalPendingOrder() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        when(tradeOrderRepository.findByInstIdAndReduceOnlyTrueAndStatusIn(
+                "BTC-USDT-SWAP",
+                List.of("SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE")
+        )).thenReturn(List.of());
+        when(tradeOrderRepository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        LifecycleGateway gateway = new LifecycleGateway();
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "10", "100", "5", "1000"))),
+                null,
+                tradeOrderRepository
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T00:12:00Z"));
+
+        assertThat(result.orphanPositionProtected()).isEqualTo(1);
+        assertThat(gateway.algoPayloads).hasSize(4);
+        assertThat(gateway.algoPayloads.get(0)).containsEntry("sz", "10").containsEntry("slTriggerPx", "98");
+        assertThat(gateway.algoPayloads.get(1)).containsEntry("tpTriggerPx", "102");
+        assertThat(gateway.algoPayloads)
+                .extracting(payload -> payload.get("algoClOrdId"))
+                .doesNotHaveDuplicates();
+    }
+
+    @Test
     void positionSnapshotFailureDoesNotCancelReleaseOrClose() {
         AgentProperties properties = new AgentProperties();
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
@@ -330,104 +502,7 @@ class AutoTradeLifecycleServiceTest {
     }
 
     @Test
-    void sidewaysLongPositionTightensTakeProfitToSmallProfitExit() {
-        AgentProperties properties = new AgentProperties();
-        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
-        PendingOrderService pendingOrderService = new PendingOrderService(120);
-        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
-        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
-        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
-        LifecycleGateway gateway = new LifecycleGateway();
-        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
-                pendingOrderService,
-                budgetService,
-                properties,
-                gateway,
-                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "2", "100", "5", "1000")))
-        );
-
-        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T03:01:00Z"));
-
-        assertThat(result.sidewaysTpAdjusted()).isEqualTo(1);
-        assertThat(order.status()).isEqualTo(OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED);
-        assertThat(gateway.algoPayloads.get(0)).containsEntry("tpTriggerPx", "100.3");
-    }
-
-    @Test
-    void sidewaysTimeoutReplacesExistingTakeProfitsAndRecordsSidewaysProtection() {
-        AgentProperties properties = new AgentProperties();
-        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
-        PendingOrderService pendingOrderService = new PendingOrderService(120);
-        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
-        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
-        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
-        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
-        TradeOrderEntity tp1 = protection(order, "TP1", "tp1-cl");
-        TradeOrderEntity tp2 = protection(order, "TP2", "tp2-cl");
-        TradeOrderEntity tp3 = protection(order, "TP3", "tp3-cl");
-        TradeOrderEntity stopLoss = protection(order, "STOP_LOSS", "sl-cl");
-        when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
-                order.id().toString(),
-                List.of("SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE")
-        )).thenReturn(List.of(tp1, tp2, tp3, stopLoss));
-        when(tradeOrderRepository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        LifecycleGateway gateway = new LifecycleGateway();
-        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
-                pendingOrderService,
-                budgetService,
-                properties,
-                gateway,
-                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "2", "100", "5", "1000"))),
-                null,
-                tradeOrderRepository
-        );
-
-        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T03:01:00Z"));
-
-        assertThat(result.sidewaysTpAdjusted()).isEqualTo(1);
-        assertThat(gateway.cancelAlgoPayloads)
-                .containsExactly(
-                        Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "tp1-cl"),
-                        Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "tp2-cl"),
-                        Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "tp3-cl")
-                );
-        assertThat(tp1.getStatus()).isEqualTo("INVALID");
-        assertThat(tp2.getStatus()).isEqualTo("INVALID");
-        assertThat(tp3.getStatus()).isEqualTo("INVALID");
-        assertThat(stopLoss.getStatus()).isEqualTo("PROTECTION_SUBMITTED");
-        ArgumentCaptor<TradeOrderEntity> sidewaysRecord = ArgumentCaptor.forClass(TradeOrderEntity.class);
-        verify(tradeOrderRepository).save(sidewaysRecord.capture());
-        assertThat(sidewaysRecord.getValue().getOrderRole()).isEqualTo("SIDEWAYS_TP");
-        assertThat(sidewaysRecord.getValue().getPendingOrderId()).isEqualTo(order.id().toString());
-        assertThat(sidewaysRecord.getValue().getStatus()).isEqualTo("PROTECTION_SUBMITTED");
-        assertThat(sidewaysRecord.getValue().isReduceOnly()).isTrue();
-        assertThat(sidewaysRecord.getValue().getPrice()).isEqualByComparingTo("100.3");
-    }
-
-    @Test
-    void sidewaysShortPositionTightensTakeProfitBelowEntryPrice() {
-        AgentProperties properties = new AgentProperties();
-        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
-        PendingOrderService pendingOrderService = new PendingOrderService(120);
-        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("ETH-USDT-SWAP", TradePlanType.OPEN_SHORT));
-        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-2");
-        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
-        LifecycleGateway gateway = new LifecycleGateway();
-        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
-                pendingOrderService,
-                budgetService,
-                properties,
-                gateway,
-                new FixedPositionSnapshotService(List.of(position("ETH-USDT-SWAP", "short", "2", "100", "5", "1000")))
-        );
-
-        service.runOnce(Instant.parse("2026-06-18T03:01:00Z"));
-
-        assertThat(gateway.algoPayloads.get(0)).containsEntry("tpTriggerPx", "99.7");
-    }
-
-    @Test
-    void maxHoldTimeoutSubmitsClosePositionAndKeepsBudgetUntilClosedSync() {
+    void maxHoldTimeoutSubmitsClosePositionAfterSixtyMinutesAndKeepsBudgetUntilClosedSync() {
         AgentProperties properties = new AgentProperties();
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
         PendingOrderService pendingOrderService = new PendingOrderService(120);
@@ -447,7 +522,7 @@ class AutoTradeLifecycleServiceTest {
                 closeRepository
         );
 
-        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T08:01:00Z"));
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T01:01:00Z"));
 
         assertThat(result.maxHoldCloseSubmitted()).isEqualTo(1);
         assertThat(order.status()).isEqualTo(OrderStatus.CLOSE_SUBMITTED);
@@ -463,6 +538,31 @@ class AutoTradeLifecycleServiceTest {
                 .get()
                 .extracting(BudgetReservation::status)
                 .isEqualTo(BudgetReservationStatus.USED);
+    }
+
+    @Test
+    void losingPositionAfterThirtyMinutesSubmitsClosePosition() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder order = autoOrder(pendingOrderService, budgetService, samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
+        order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
+        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
+        budgetService.markUsed(order.budgetReservationId());
+        LifecycleGateway gateway = new LifecycleGateway();
+        AutoTradeLifecycleService service = new AutoTradeLifecycleService(
+                pendingOrderService,
+                budgetService,
+                properties,
+                gateway,
+                new FixedPositionSnapshotService(List.of(position("BTC-USDT-SWAP", "long", "2", "100", "-1", "1000")))
+        );
+
+        AutoTradeLifecycleService.LifecycleRunResult result = service.runOnce(Instant.parse("2026-06-18T00:31:00Z"));
+
+        assertThat(result.maxHoldCloseSubmitted()).isEqualTo(1);
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSE_SUBMITTED);
+        assertThat(gateway.closePayload).containsEntry("instId", "BTC-USDT-SWAP");
     }
 
     private static PendingOrder autoOrder(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
@@ -603,7 +703,7 @@ class AutoTradeLifecycleServiceTest {
         private final List<Map<String, String>> cancelAlgoPayloads = new ArrayList<>();
 
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             throw new UnsupportedOperationException("not used");
         }
 
@@ -652,6 +752,15 @@ class AutoTradeLifecycleServiceTest {
         @Override
         public JsonNode placeAlgoOrder(Map<String, String> payload) {
             throw new IllegalStateException("protection rejected");
+        }
+    }
+
+    private static class AlreadyClosedCancelGateway extends LifecycleGateway {
+        @Override
+        public JsonNode cancelOrder(Map<String, String> payload) {
+            super.cancelOrder(payload);
+            throw new IllegalStateException("OKX code=1, msg=All operations failed, details=[sCode=51400, "
+                    + "sMsg=Order cancellation failed as the order has been filled, canceled or does not exist.]");
         }
     }
 }

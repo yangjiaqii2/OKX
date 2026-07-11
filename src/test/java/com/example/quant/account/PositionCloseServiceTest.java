@@ -187,7 +187,7 @@ class PositionCloseServiceTest {
         private Map<String, String> closePayload;
 
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             throw new UnsupportedOperationException("not used");
         }
 

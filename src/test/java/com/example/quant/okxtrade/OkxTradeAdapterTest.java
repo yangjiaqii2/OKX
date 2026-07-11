@@ -69,6 +69,14 @@ class OkxTradeAdapterTest {
         assertThat(gateway.payload).containsEntry("px", "100");
         assertThat(gateway.payload).containsEntry("sz", "5");
         assertThat(gateway.payload).containsKey("clOrdId");
+        List<?> attached = (List<?>) gateway.payload.get("attachAlgoOrds");
+        assertThat(attached).hasSize(2);
+        assertThat(attachedPayload(attached, 0))
+                .containsEntry("slTriggerPx", "98.5")
+                .containsEntry("slOrdPx", "-1");
+        assertThat(attachedPayload(attached, 1))
+                .containsEntry("tpTriggerPx", "104")
+                .containsEntry("tpOrdPx", "-1");
         assertThat(gateway.algoPayloads).isEmpty();
     }
 
@@ -170,70 +178,21 @@ class OkxTradeAdapterTest {
     }
 
     @Test
-    void marketOrderProtectionUsesActualAverageFillPrice() {
+    void marketOrderUsesAttachedTakeProfitAndStopLoss() {
         CapturingGateway gateway = new CapturingGateway();
-        gateway.fillAvgPx = new BigDecimal("100.2");
-        gateway.fillSize = new BigDecimal("5");
-        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
-
-        adapter.placeOrder(marketOrder());
-
-        assertThat(gateway.queryOrderPayload).containsEntry("ordId", "123456");
-        assertThat(gateway.algoPayloads).hasSize(4);
-        assertThat(gateway.algoPayloads.get(0)).containsEntry("slTriggerPx", "98");
-        assertThat(gateway.algoPayloads.get(1)).containsEntry("tpTriggerPx", "102.4");
-        assertThat(gateway.algoPayloads.get(2)).containsEntry("tpTriggerPx", "104.6");
-        assertThat(gateway.algoPayloads.get(3)).containsEntry("tpTriggerPx", "106.8");
-        assertThat(gateway.algoPayloads)
-                .extracting(payload -> payload.get("sz"))
-                .containsExactly("5", "1", "2", "2");
-    }
-
-    @Test
-    void marketOrderWithoutConfirmedFillReturnsEntryFillUnconfirmed() {
-        CapturingGateway gateway = new CapturingGateway();
-        gateway.fillAvgPx = BigDecimal.ZERO;
-        gateway.fillSize = BigDecimal.ZERO;
         OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
 
         OrderExecutionResult result = adapter.placeOrder(marketOrder());
 
         assertThat(result.executed()).isTrue();
+        assertThat(result.filled()).isTrue();
         assertThat(result.externalOrderId()).isEqualTo("123456");
-        assertThat(result.message()).contains("ENTRY_FILL_UNCONFIRMED");
+        List<?> attached = (List<?>) gateway.payload.get("attachAlgoOrds");
+        assertThat(attached).hasSize(2);
+        assertThat(attachedPayload(attached, 0)).containsEntry("slTriggerPx", "98.5");
+        assertThat(attachedPayload(attached, 1)).containsEntry("tpTriggerPx", "106");
         assertThat(gateway.algoPayloads).isEmpty();
         assertThat(gateway.closePayload).isNull();
-    }
-
-    @Test
-    void marketOrderFillDeviationTooLargeClosesPositionInsteadOfSubmittingProtection() {
-        CapturingGateway gateway = new CapturingGateway();
-        gateway.fillAvgPx = new BigDecimal("101");
-        gateway.fillSize = new BigDecimal("5");
-        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
-
-        OrderExecutionResult result = adapter.placeOrder(marketOrder());
-
-        assertThat(result.executed()).isTrue();
-        assertThat(gateway.algoPayloads).isEmpty();
-        assertThat(gateway.closePayload).containsEntry("instId", "BTC-USDT-SWAP");
-        assertThat(result.message()).contains("保护单");
-    }
-
-    @Test
-    void smallMarketFillMergesTinyTakeProfitLegsIntoFinalRemainingLeg() {
-        CapturingGateway gateway = new CapturingGateway();
-        gateway.fillAvgPx = new BigDecimal("100");
-        gateway.fillSize = new BigDecimal("2");
-        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
-
-        adapter.placeOrder(marketOrderWithSize(new BigDecimal("2")));
-
-        assertThat(gateway.algoPayloads).hasSize(2);
-        assertThat(gateway.algoPayloads.get(0)).containsEntry("sz", "2");
-        assertThat(gateway.algoPayloads.get(0)).containsEntry("reduceOnly", "true");
-        assertThat(gateway.algoPayloads.get(1)).containsEntry("sz", "2");
-        assertThat(gateway.algoPayloads.get(1)).containsEntry("reduceOnly", "true");
     }
 
     @Test
@@ -338,9 +297,14 @@ class OkxTradeAdapterTest {
         );
     }
 
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> attachedPayload(List<?> attached, int index) {
+        return (Map<String, String>) attached.get(index);
+    }
+
     private static class CapturingGateway implements OkxOrderGateway {
         protected Map<String, String> leveragePayload;
-        protected Map<String, String> payload;
+        protected Map<String, Object> payload;
         protected Map<String, String> queryOrderPayload;
         protected Map<String, String> closePayload;
         protected final List<Map<String, String>> algoPayloads = new ArrayList<>();
@@ -354,7 +318,7 @@ class OkxTradeAdapterTest {
         }
 
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             this.payload = payload;
             ObjectNode root = new ObjectMapper().createObjectNode();
             root.putArray("data").addObject().put("ordId", "123456");
@@ -397,7 +361,7 @@ class OkxTradeAdapterTest {
         }
 
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             ObjectNode root = new ObjectMapper().createObjectNode();
             ObjectNode item = root.putArray("data").addObject();
             item.put("ordId", "");
@@ -409,7 +373,7 @@ class OkxTradeAdapterTest {
 
     private static class TimeoutThenFoundGateway extends CapturingGateway {
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             this.payload = payload;
             throw new IllegalStateException("OKX request timed out");
         }
@@ -428,7 +392,7 @@ class OkxTradeAdapterTest {
 
     private static class TimeoutThenMissingGateway extends CapturingGateway {
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             this.payload = payload;
             throw new IllegalStateException("OKX request timed out");
         }

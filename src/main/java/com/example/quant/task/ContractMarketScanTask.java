@@ -74,26 +74,23 @@ public class ContractMarketScanTask {
         try {
             List<ContractCandidate> candidates = contractAnalysisService.refreshCandidates();
             Duration elapsed = Duration.between(startedAt, Instant.now());
-            if (elapsed.compareTo(Duration.ofSeconds(agentProperties.timeout().scanRoundTimeoutSeconds())) > 0) {
-                ScanTaskLog result = new ScanTaskLog(
-                        "contract-market-scan",
-                        "FAILED",
-                        "scanId=" + scanId
-                                + ", reason=SCAN_TIMEOUT"
-                                + ", elapsedSeconds=" + elapsed.toSeconds(),
-                        Instant.now()
-                );
-                log.warn("{}: {}", result.taskName(), result.message());
-                return result;
+            boolean slowScan = elapsed.compareTo(
+                    Duration.ofSeconds(agentProperties.timeout().scanRoundTimeoutSeconds())) > 0;
+            if (slowScan) {
+                log.warn("contract-market-scan slow: scanId={}, elapsedSeconds={}", scanId, elapsed.toSeconds());
             }
             AutoTradeResult autoTrade = autoTradeService.evaluateAndExecute(candidates);
+            String timingMessage = slowScan
+                    ? ", warning=SCAN_SLOW, elapsedSeconds=" + elapsed.toSeconds()
+                    : "";
             ScanTaskLog result = new ScanTaskLog(
                     "contract-market-scan",
                     "SUCCESS",
                     "scanId=" + scanId
                             + ", Contract signal scan completed, recommendations=" + candidates.size()
                             + ", autoTrade=" + autoTrade.status()
-                            + ", autoMessage=" + compact(autoTrade.message()),
+                            + ", autoMessage=" + compact(autoTrade.message())
+                            + timingMessage,
                     Instant.now()
             );
             log.info("{}: {}", result.taskName(), result.message());

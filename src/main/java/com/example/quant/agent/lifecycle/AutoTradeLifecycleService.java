@@ -142,6 +142,7 @@ public class AutoTradeLifecycleService {
         int partialFillProtected = 0;
         int sidewaysTpAdjusted = 0;
         int maxHoldCloseSubmitted = 0;
+        int orphanPositionProtected = 0;
         PositionSyncResult positionSync = positions();
         if (!positionSync.available()) {
             List<PendingOrder> affectedOrders = pendingOrderService.allOrders().stream()
@@ -152,7 +153,7 @@ public class AutoTradeLifecycleService {
                         "POSITION_SYNC_UNAVAILABLE", "持仓查询失败，跳过本轮生命周期动作", null, order.clientOrderId(), null);
             }
             int affected = affectedOrders.size();
-            return new LifecycleRunResult(0, 0, 0, 0, 0, affected);
+            return new LifecycleRunResult(0, 0, 0, 0, 0, affected, 0);
         }
         List<PositionSummary> positions = positionSync.positions();
         for (PendingOrder order : pendingOrderService.allOrders()) {
@@ -181,6 +182,30 @@ public class AutoTradeLifecycleService {
                         order.markProtectionFailed("PROTECTION_FAILED_AFTER_FULL_FILL: " + compact(ex.getMessage()));
                         recordEvent(order, TradeEventType.PROTECTION_FAILED, OrderStatus.SUBMITTED.name(),
                                 OrderStatus.PROTECTION_FAILED.name(), "PROTECTION_FAILED_AFTER_FULL_FILL",
+                                ex.getMessage(), order.externalOrderId(), order.clientOrderId(), null);
+                    }
+                    continue;
+                }
+                if (position != null) {
+                    if (order.budgetReservationId() != null) {
+                        budgetService.markUsed(order.budgetReservationId());
+                    }
+                    try {
+                        BigDecimal positionSize = decimal(position.size());
+                        BigDecimal avgPx = positive(position.avgPrice(), positive(fill.avgPx(), order.price()));
+                        submitProtection(order, avgPx, positionSize, "POSITION_SYNC_FILL");
+                        order.markProtectionSubmitted("POSITION_SYNC_FILL_PROTECTION_SUBMITTED");
+                        recordEvent(order, TradeEventType.ENTRY_FILLED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.PROTECTION_SUBMITTED.name(), "POSITION_SYNC_ENTRY_FILLED",
+                                "账户已有持仓，按实际持仓数量补交保护单", order.externalOrderId(), order.clientOrderId(), null);
+                        recordEvent(order, TradeEventType.PROTECTION_SUBMITTED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.PROTECTION_SUBMITTED.name(), "POSITION_SYNC_PROTECTION_SUBMITTED",
+                                "按持仓快照补交保护单", order.externalOrderId(), order.clientOrderId(), null);
+                        entryFilledProtected++;
+                    } catch (RuntimeException ex) {
+                        order.markProtectionFailed("PROTECTION_FAILED_AFTER_POSITION_SYNC: " + compact(ex.getMessage()));
+                        recordEvent(order, TradeEventType.PROTECTION_FAILED, OrderStatus.SUBMITTED.name(),
+                                OrderStatus.PROTECTION_FAILED.name(), "PROTECTION_FAILED_AFTER_POSITION_SYNC",
                                 ex.getMessage(), order.externalOrderId(), order.clientOrderId(), null);
                     }
                     continue;
@@ -223,7 +248,13 @@ public class AutoTradeLifecycleService {
                 }
                 continue;
             }
-            if (position != null && shouldMaxHoldClose(order, age)) {
+            if (position != null && shouldRecoverMissingProtection(order)) {
+                if (recoverMissingProtection(order, position)) {
+                    entryFilledProtected++;
+                }
+                continue;
+            }
+            if (position != null && shouldForceClose(order, position, age)) {
                 maxHoldCloseSubmitted += submitMaxHoldClose(order, position, now);
                 continue;
             }
@@ -232,8 +263,9 @@ public class AutoTradeLifecycleService {
                 continue;
             }
         }
+        orphanPositionProtected = recoverOrphanPositions(positions);
         return new LifecycleRunResult(entryTimeoutCancelled, entryFilledProtected, partialFillProtected,
-                sidewaysTpAdjusted, maxHoldCloseSubmitted, 0);
+                sidewaysTpAdjusted, maxHoldCloseSubmitted, 0, orphanPositionProtected);
     }
 
     public List<AutoTradeLifecycleSnapshot> snapshots() {
@@ -400,6 +432,85 @@ public class AutoTradeLifecycleService {
                 && age.toMinutes() >= Math.max(1, agentProperties.lifecycle().entryTimeoutMinutes());
     }
 
+    private boolean shouldRecoverMissingProtection(PendingOrder order) {
+        return (order.status() == OrderStatus.ENTRY_TIMEOUT_CANCELLED
+                || order.status() == OrderStatus.PROTECTION_FAILED) && !hasActiveProtection(order);
+    }
+
+    private int recoverOrphanPositions(List<PositionSummary> positions) {
+        if (tradeOrderRepository == null || okxOrderGateway == null) {
+            return 0;
+        }
+        int recovered = 0;
+        for (PositionSummary position : positions) {
+            if (decimal(position.size()).signum() <= 0 || hasMatchingPendingOrder(position) || hasActiveProtection(position)) {
+                continue;
+            }
+            submitOrphanProtection(position);
+            recovered++;
+        }
+        return recovered;
+    }
+
+    private boolean hasMatchingPendingOrder(PositionSummary position) {
+        return pendingOrderService.allOrders().stream().anyMatch(order ->
+                order.instId().equalsIgnoreCase(position.instId())
+                        && (!hasText(order.posSide()) || !hasText(position.posSide())
+                        || order.posSide().equalsIgnoreCase(position.posSide())));
+    }
+
+    private boolean hasActiveProtection(PendingOrder order) {
+        if (tradeOrderRepository == null) {
+            return true;
+        }
+        String pendingOrderId = order.id().toString();
+        boolean boundProtection = tradeOrderRepository
+                .findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(pendingOrderId, ACTIVE_PROTECTION_STATUSES)
+                .stream()
+                .anyMatch(protection -> matchesOrderSide(order, protection));
+        if (boundProtection) {
+            return true;
+        }
+        return tradeOrderRepository.findByInstIdAndReduceOnlyTrueAndStatusIn(order.instId(), ACTIVE_PROTECTION_STATUSES)
+                .stream()
+                .anyMatch(protection -> matchesOrderSide(order, protection));
+    }
+
+    private boolean hasActiveProtection(PositionSummary position) {
+        return tradeOrderRepository.findByInstIdAndReduceOnlyTrueAndStatusIn(position.instId(), ACTIVE_PROTECTION_STATUSES)
+                .stream()
+                .anyMatch(protection -> !hasText(position.posSide()) || !hasText(protection.getPosSide())
+                        || position.posSide().equalsIgnoreCase(protection.getPosSide()));
+    }
+
+    private static boolean matchesOrderSide(PendingOrder order, TradeOrderEntity protection) {
+        return !hasText(order.posSide()) || !hasText(protection.getPosSide())
+                || order.posSide().equalsIgnoreCase(protection.getPosSide());
+    }
+
+    private boolean recoverMissingProtection(PendingOrder order, PositionSummary position) {
+        if (order.budgetReservationId() != null) {
+            budgetService.markUsed(order.budgetReservationId());
+        }
+        OrderStatus previousStatus = order.status();
+        try {
+            BigDecimal positionSize = decimal(position.size());
+            BigDecimal avgPx = positive(position.avgPrice(), order.price());
+            submitProtection(order, avgPx, positionSize, "MISSING_PROTECTION_RECOVERY");
+            order.markProtectionSubmitted("MISSING_PROTECTION_RECOVERED");
+            recordEvent(order, TradeEventType.PROTECTION_SUBMITTED, previousStatus.name(),
+                    OrderStatus.PROTECTION_SUBMITTED.name(), "MISSING_PROTECTION_RECOVERED",
+                    "检测到已有持仓但无有效保护单，已补交保护单", order.externalOrderId(), order.clientOrderId(), null);
+            return true;
+        } catch (RuntimeException ex) {
+            order.markProtectionFailed("MISSING_PROTECTION_RECOVERY_FAILED: " + compact(ex.getMessage()));
+            recordEvent(order, TradeEventType.PROTECTION_FAILED, previousStatus.name(),
+                    OrderStatus.PROTECTION_FAILED.name(), "MISSING_PROTECTION_RECOVERY_FAILED",
+                    ex.getMessage(), order.externalOrderId(), order.clientOrderId(), null);
+            return false;
+        }
+    }
+
     private boolean shouldAdjustSideways(PendingOrder order, PositionSummary position, Duration age) {
         if (order.status() == OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED
                 || order.status() == OrderStatus.CLOSE_SUBMITTED
@@ -413,11 +524,17 @@ public class AutoTradeLifecycleService {
         return pnlPct.abs().compareTo(agentProperties.lifecycle().sidewaysPnlRangePct()) <= 0;
     }
 
-    private boolean shouldMaxHoldClose(PendingOrder order, Duration age) {
+    private boolean shouldForceClose(PendingOrder order, PositionSummary position, Duration age) {
         if (order.status() == OrderStatus.CLOSE_SUBMITTED || order.status() == OrderStatus.CLOSED) {
             return false;
         }
-        return age.toHours() >= Math.max(1, agentProperties.lifecycle().maxHoldHours());
+        long minutes = age.toMinutes();
+        if (minutes >= Math.max(1, agentProperties.lifecycle().maxHoldMinutes())) {
+            return true;
+        }
+        return minutes >= Math.max(1, agentProperties.lifecycle().lossCloseMinutes())
+                && position.unrealizedPnl() != null
+                && position.unrealizedPnl().signum() < 0;
     }
 
     private int tightenTakeProfit(PendingOrder order, PositionSummary position) {
@@ -603,6 +720,55 @@ public class AutoTradeLifecycleService {
         tradeOrderRepository.save(entity);
     }
 
+    private void submitOrphanProtection(PositionSummary position) {
+        OkxInstrumentRules rules = instrumentRules(position.instId());
+        BigDecimal size = rules.floorToLot(decimal(position.size()));
+        BigDecimal avgPx = positive(position.avgPrice(), BigDecimal.ZERO);
+        BigDecimal risk = avgPx.multiply(new BigDecimal("0.02"));
+        if (size.signum() <= 0 || avgPx.signum() <= 0 || risk.signum() <= 0) {
+            return;
+        }
+        List<Map<String, String>> payloads = new ArrayList<>();
+        Map<String, String> stopLoss = orphanAlgoPayload(position, size, "ORPHAN_SL");
+        stopLoss.put("orderRole", "STOP_LOSS");
+        stopLoss.put("slTriggerPx", value(rules.normalizePrice(orphanStopLossPrice(position, avgPx, risk))));
+        stopLoss.put("slOrdPx", "-1");
+        payloads.add(stopLoss);
+        for (TakeProfitLeg leg : takeProfitLegs(size, rules)) {
+            Map<String, String> takeProfit = orphanAlgoPayload(position, leg.size(), "ORPHAN_" + leg.suffix());
+            takeProfit.put("orderRole", leg.suffix());
+            takeProfit.put("tpTriggerPx", value(rules.normalizePrice(orphanTakeProfitPrice(position, avgPx, risk, leg.rMultiple()))));
+            takeProfit.put("tpOrdPx", "-1");
+            payloads.add(takeProfit);
+        }
+        for (Map<String, String> payload : payloads) {
+            JsonNode response = okxOrderGateway.placeAlgoOrder(apiAlgoPayload(payload));
+            recordOrphanProtectionSubmitted(position, payload, response);
+        }
+    }
+
+    private void recordOrphanProtectionSubmitted(PositionSummary position, Map<String, String> payload, JsonNode response) {
+        Instant now = Instant.now();
+        TradeOrderEntity entity = new TradeOrderEntity();
+        entity.setOrderRole(payload.getOrDefault("orderRole", "TAKE_PROFIT"));
+        entity.setInstId(position.instId());
+        entity.setSide(payload.get("side"));
+        entity.setPosSide(position.posSide());
+        entity.setOrdType(payload.get("ordType"));
+        entity.setTdMode(position.marginMode());
+        entity.setSize(decimal(payload.get("sz")));
+        entity.setPrice(triggerPrice(payload));
+        entity.setReduceOnly(true);
+        entity.setClOrdId(payload.get("algoClOrdId"));
+        entity.setOkxOrdId(algoId(response));
+        entity.setOkxState("live");
+        entity.setStatus("PROTECTION_SUBMITTED");
+        entity.setErrorMessage("ORPHAN_POSITION_PROTECTION");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        tradeOrderRepository.save(entity);
+    }
+
     private OkxInstrumentRules instrumentRules(String instId) {
         try {
             OkxInstrumentRules rules = instrumentRulesProvider.rules(instId);
@@ -678,6 +844,15 @@ public class AutoTradeLifecycleService {
         return "short".equalsIgnoreCase(order.posSide()) ? avgPx.subtract(distance) : avgPx.add(distance);
     }
 
+    private static BigDecimal orphanStopLossPrice(PositionSummary position, BigDecimal avgPx, BigDecimal risk) {
+        return isShort(position) ? avgPx.add(risk) : avgPx.subtract(risk);
+    }
+
+    private static BigDecimal orphanTakeProfitPrice(PositionSummary position, BigDecimal avgPx, BigDecimal risk, BigDecimal multiple) {
+        BigDecimal distance = risk.multiply(multiple);
+        return isShort(position) ? avgPx.subtract(distance) : avgPx.add(distance);
+    }
+
     private static BigDecimal triggerPrice(Map<String, String> payload) {
         String value = payload.getOrDefault("slTriggerPx", payload.getOrDefault("tpTriggerPx", "0"));
         return decimal(value);
@@ -699,6 +874,21 @@ public class AutoTradeLifecycleService {
         payload.put("reduceOnly", "true");
         payload.put("sz", value(size));
         payload.put("algoClOrdId", lifecycleAlgoClOrdId(order, suffix));
+        return payload;
+    }
+
+    private Map<String, String> orphanAlgoPayload(PositionSummary position, BigDecimal size, String suffix) {
+        Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("instId", position.instId());
+        payload.put("tdMode", hasText(position.marginMode()) ? position.marginMode() : "cross");
+        payload.put("side", isShort(position) ? "buy" : "sell");
+        if (positionMode() == OkxPositionMode.LONG_SHORT && hasText(position.posSide())) {
+            payload.put("posSide", position.posSide());
+        }
+        payload.put("ordType", "conditional");
+        payload.put("reduceOnly", "true");
+        payload.put("sz", value(size));
+        payload.put("algoClOrdId", orphanAlgoClOrdId(position, suffix));
         return payload;
     }
 
@@ -734,7 +924,23 @@ public class AutoTradeLifecycleService {
         } else if (hasText(order.clientOrderId())) {
             payload.put("clOrdId", order.clientOrderId());
         }
-        okxOrderGateway.cancelOrder(payload);
+        try {
+            okxOrderGateway.cancelOrder(payload);
+        } catch (RuntimeException ex) {
+            if (isAlreadyClosedCancel(ex)) {
+                return;
+            }
+            throw ex;
+        }
+    }
+
+    private static boolean isAlreadyClosedCancel(RuntimeException ex) {
+        String message = ex.getMessage();
+        if (!hasText(message)) {
+            return false;
+        }
+        String lower = message.toLowerCase();
+        return lower.contains("51400") || lower.contains("has been filled, canceled or does not exist");
     }
 
     private PositionSummary matchingPosition(PendingOrder order, List<PositionSummary> positions) {
@@ -844,10 +1050,20 @@ public class AutoTradeLifecycleService {
         return "buy".equalsIgnoreCase(order.side()) ? "sell" : "buy";
     }
 
+    private static boolean isShort(PositionSummary position) {
+        return "short".equalsIgnoreCase(position.posSide());
+    }
+
     private static String lifecycleAlgoClOrdId(PendingOrder order, String suffix) {
         String cleanSuffix = suffix == null ? "" : suffix.replaceAll("[^A-Za-z0-9]", "").toUpperCase();
         String typeCode = lifecycleTypeCode(cleanSuffix);
         return "lc" + shortHash(order.id().toString(), 12) + typeCode + shortHash(cleanSuffix, 8);
+    }
+
+    private static String orphanAlgoClOrdId(PositionSummary position, String suffix) {
+        String cleanSuffix = suffix == null ? "" : suffix.replaceAll("[^A-Za-z0-9]", "").toUpperCase();
+        String seed = position.instId() + ":" + position.posSide();
+        return "op" + shortHash(seed, 12) + lifecycleTypeCode(cleanSuffix) + shortHash(cleanSuffix, 8);
     }
 
     private static String lifecycleTypeCode(String cleanSuffix) {
@@ -969,11 +1185,18 @@ public class AutoTradeLifecycleService {
             int partialFillProtected,
             int sidewaysTpAdjusted,
             int maxHoldCloseSubmitted,
-            int positionSyncUnavailable
+            int positionSyncUnavailable,
+            int orphanPositionProtected
     ) {
         public LifecycleRunResult(int entryTimeoutCancelled, int partialFillProtected, int sidewaysTpAdjusted,
                                   int maxHoldCloseSubmitted) {
-            this(entryTimeoutCancelled, 0, partialFillProtected, sidewaysTpAdjusted, maxHoldCloseSubmitted, 0);
+            this(entryTimeoutCancelled, 0, partialFillProtected, sidewaysTpAdjusted, maxHoldCloseSubmitted, 0, 0);
+        }
+
+        public LifecycleRunResult(int entryTimeoutCancelled, int entryFilledProtected, int partialFillProtected,
+                                  int sidewaysTpAdjusted, int maxHoldCloseSubmitted, int positionSyncUnavailable) {
+            this(entryTimeoutCancelled, entryFilledProtected, partialFillProtected, sidewaysTpAdjusted,
+                    maxHoldCloseSubmitted, positionSyncUnavailable, 0);
         }
     }
 }

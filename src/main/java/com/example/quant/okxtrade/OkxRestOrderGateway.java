@@ -26,7 +26,7 @@ public class OkxRestOrderGateway implements OkxOrderGateway {
     }
 
     @Override
-    public JsonNode placeOrder(Map<String, String> payload) {
+    public JsonNode placeOrder(Map<String, Object> payload) {
         log.info("POST OKX /api/v5/trade/order instId={} side={} posSide={} ordType={} sz={} clOrdId={}",
                 payload.get("instId"), payload.get("side"), payload.get("posSide"), payload.get("ordType"),
                 payload.get("sz"), payload.getOrDefault("clOrdId", ""));

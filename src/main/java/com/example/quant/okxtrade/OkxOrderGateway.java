@@ -8,7 +8,7 @@ public interface OkxOrderGateway {
         return null;
     }
 
-    JsonNode placeOrder(Map<String, String> payload);
+    JsonNode placeOrder(Map<String, Object> payload);
 
     default JsonNode queryOrder(Map<String, String> payload) {
         return null;

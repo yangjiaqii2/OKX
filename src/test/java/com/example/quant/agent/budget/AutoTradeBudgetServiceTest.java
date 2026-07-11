@@ -143,6 +143,23 @@ class AutoTradeBudgetServiceTest {
     }
 
     @Test
+    void allocatesConfiguredHundredUsdtAcrossThreeSlots() {
+        AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties());
+
+        BudgetAllocation first = service.allocate(request("100", 1, "70", "100"));
+        service.reserveBudget(UUID.randomUUID(), UUID.randomUUID(), "BTC-USDT-SWAP", first.finalOrderMarginUsdt(), new BigDecimal("100"));
+        BudgetAllocation second = service.allocate(request("100", 2, "70", "100"));
+        service.reserveBudget(UUID.randomUUID(), UUID.randomUUID(), "ETH-USDT-SWAP", second.finalOrderMarginUsdt(), new BigDecimal("100"));
+        BudgetAllocation third = service.allocate(request("100", 3, "70", "100"));
+
+        assertThat(first.finalOrderMarginUsdt()).isEqualByComparingTo("45");
+        assertThat(second.finalOrderMarginUsdt()).isEqualByComparingTo("30");
+        assertThat(third.finalOrderMarginUsdt()).isEqualByComparingTo("25");
+        assertThat(first.finalOrderMarginUsdt().add(second.finalOrderMarginUsdt()).add(third.finalOrderMarginUsdt()))
+                .isEqualByComparingTo("100");
+    }
+
+    @Test
     void scoreFactorDoesNotReduceSpendableSlotBudget() {
         AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties());
 

@@ -50,6 +50,29 @@ class OkxCurrentOrderSyncServiceTest {
     }
 
     @Test
+    void normalizesBlankClientOrderIdsToNullBeforeSaving() {
+        TradeOrderRepository repository = mock(TradeOrderRepository.class);
+        when(repository.findFirstByOkxOrdId(any())).thenReturn(Optional.empty());
+        when(repository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        OkxCurrentOrderSyncService service = new OkxCurrentOrderSyncService(
+                new OkxCurrentOrderService(new BlankClientIdCurrentOrderGateway()),
+                repository
+        );
+
+        OkxCurrentOrderSyncService.SyncResult result = service.syncOnce();
+
+        assertThat(result.failed()).isFalse();
+        ArgumentCaptor<TradeOrderEntity> captor = ArgumentCaptor.forClass(TradeOrderEntity.class);
+        verify(repository, org.mockito.Mockito.times(2)).save(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(TradeOrderEntity::getClOrdId)
+                .containsExactly(null, null);
+        assertThat(captor.getAllValues())
+                .extracting(TradeOrderEntity::getOkxOrdId)
+                .containsExactly("ord-blank-cl", "algo-blank-cl");
+    }
+
+    @Test
     void updatesExistingLocalOrderByClientOrderId() {
         TradeOrderEntity existing = new TradeOrderEntity();
         existing.setOrderRole("ENTRY");
@@ -111,9 +134,41 @@ class OkxCurrentOrderSyncServiceTest {
         assertThat(stale.getErrorMessage()).contains("OKX_ACTIVE_ORDER_NOT_FOUND");
     }
 
+    @Test
+    void marksLocalActiveProtectionInactiveWhenOkxNoLongerReportsIt() {
+        TradeOrderEntity staleProtection = new TradeOrderEntity();
+        staleProtection.setOrderRole("STOP_LOSS");
+        staleProtection.setInstId("ETH-USDT-SWAP");
+        staleProtection.setSide("sell");
+        staleProtection.setPosSide("long");
+        staleProtection.setOrdType("conditional");
+        staleProtection.setTdMode("cross");
+        staleProtection.setReduceOnly(true);
+        staleProtection.setClOrdId("algostale");
+        staleProtection.setOkxOrdId("algo-stale");
+        staleProtection.setStatus("PROTECTION_SUBMITTED");
+        TradeOrderRepository repository = mock(TradeOrderRepository.class);
+        when(repository.findByStatus("SUBMITTED")).thenReturn(List.of());
+        when(repository.findByStatus("PROTECTION_SUBMITTED")).thenReturn(List.of(staleProtection));
+        when(repository.findByStatus("PARTIALLY_FILLED")).thenReturn(List.of());
+        when(repository.findByStatus("OPEN")).thenReturn(List.of());
+        when(repository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        OkxCurrentOrderSyncService service = new OkxCurrentOrderSyncService(
+                new OkxCurrentOrderService(new EmptyCurrentOrderGateway()),
+                repository
+        );
+
+        service.syncOnce();
+
+        assertThat(staleProtection.getStatus()).isEqualTo("INACTIVE");
+        assertThat(staleProtection.getOkxState()).isEqualTo("NOT_FOUND_ON_OKX");
+        assertThat(staleProtection.getErrorMessage()).contains("OKX_ACTIVE_ORDER_NOT_FOUND");
+        verify(repository).save(staleProtection);
+    }
+
     private static class CurrentOrderGateway implements OkxOrderGateway {
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             throw new UnsupportedOperationException("not used");
         }
 
@@ -155,9 +210,48 @@ class OkxCurrentOrderSyncServiceTest {
         }
     }
 
+    private static class BlankClientIdCurrentOrderGateway extends CurrentOrderGateway {
+        @Override
+        public JsonNode currentOrders(Map<String, String> payload) {
+            ObjectNode root = new ObjectMapper().createObjectNode();
+            ObjectNode item = root.putArray("data").addObject();
+            item.put("instId", "BTC-USDT-SWAP");
+            item.put("ordId", "ord-blank-cl");
+            item.put("clOrdId", "");
+            item.put("side", "buy");
+            item.put("posSide", "long");
+            item.put("ordType", "limit");
+            item.put("tdMode", "cross");
+            item.put("reduceOnly", "false");
+            item.put("sz", "5");
+            item.put("px", "100");
+            item.put("state", "live");
+            item.put("cTime", "1780000000000");
+            return root;
+        }
+
+        @Override
+        public JsonNode currentAlgoOrders(Map<String, String> payload) {
+            ObjectNode root = new ObjectMapper().createObjectNode();
+            ObjectNode item = root.putArray("data").addObject();
+            item.put("instId", "BTC-USDT-SWAP");
+            item.put("algoId", "algo-blank-cl");
+            item.put("algoClOrdId", "");
+            item.put("side", "sell");
+            item.put("posSide", "long");
+            item.put("ordType", "conditional");
+            item.put("tdMode", "cross");
+            item.put("sz", "5");
+            item.put("slTriggerPx", "98");
+            item.put("state", "live");
+            item.put("cTime", "1780000000000");
+            return root;
+        }
+    }
+
     private static class EmptyCurrentOrderGateway implements OkxOrderGateway {
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             throw new UnsupportedOperationException("not used");
         }
 

@@ -686,6 +686,69 @@ class AutoTradeServiceTest {
     }
 
     @Test
+    void currentOrderDoesNotConsumePositionCapacityForDifferentSymbol() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(100));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of(
+                        new PositionSummary("BTC-USDT-SWAP", "long", "1", BigDecimal.valueOf(100), BigDecimal.ZERO, "OKX_REAL"),
+                        new PositionSummary("ETH-USDT-SWAP", "short", "1", BigDecimal.valueOf(100), BigDecimal.ZERO, "OKX_REAL")
+                )),
+                new com.example.quant.agent.budget.AutoTradeBudgetService(new AgentProperties()),
+                new FixedCurrentOrderSyncService(new OkxCurrentOrderSyncService.SyncResult(
+                        1, 1, 2, false, null, List.of("OLD-USDT-SWAP")))
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate("SOL-USDT-SWAP", 95)));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+    }
+
+    @Test
+    void inFlightOrdersDoNotConsumePositionCapacityForDifferentSymbol() {
+        AgentProperties agentProperties = new AgentProperties();
+        agentProperties.autoTrade().setMinOpenPositions(3);
+        agentProperties.autoTrade().setMaxOpenPositions(3);
+        SequencedOrderConfirmService confirmService = new SequencedOrderConfirmService(List.of(
+                OrderExecutionResult.submitted("okx-order-1", "入场委托已提交，等待成交"),
+                OrderExecutionResult.submitted("okx-order-2", "入场委托已提交，等待成交"),
+                OrderExecutionResult.filled("okx-order-3", "入场已成交")
+        ));
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(100));
+        AutoTradeService service = new AutoTradeService(
+                agentProperties,
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of(
+                        new PositionSummary("BTC-USDT-SWAP", "long", "1", BigDecimal.valueOf(100), BigDecimal.ZERO, "OKX_REAL")
+                ))
+        );
+
+        service.evaluateAndExecute(List.of(candidate("OLD1-USDT-SWAP", 95), candidate("OLD2-USDT-SWAP", 94)));
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate("SOL-USDT-SWAP", 93)));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(result.instId()).isEqualTo("SOL-USDT-SWAP");
+        assertThat(confirmService.confirmCount).isEqualTo(3);
+    }
+
+    @Test
     void skipsRoundWhenOkxCurrentOrderSyncFails() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());

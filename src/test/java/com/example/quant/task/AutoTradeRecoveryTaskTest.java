@@ -507,7 +507,7 @@ class AutoTradeRecoveryTaskTest {
         }
 
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             throw new UnsupportedOperationException("not used");
         }
 
@@ -525,7 +525,7 @@ class AutoTradeRecoveryTaskTest {
 
     private static class QueryMissingOrderGateway implements OkxOrderGateway {
         @Override
-        public JsonNode placeOrder(Map<String, String> payload) {
+        public JsonNode placeOrder(Map<String, Object> payload) {
             throw new UnsupportedOperationException("not used");
         }
 

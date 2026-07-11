@@ -10,13 +10,17 @@ import com.example.quant.agent.execution.TradeOrderRepository;
 import com.example.quant.agent.review.TradeReviewService;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.okxtrade.OkxOrderGateway;
+import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -27,6 +31,18 @@ public class ClosePositionRecoveryService {
     private static final int PROTECTION_CANCEL_MAX_ATTEMPTS = 3;
     private static final List<String> ACTIVE_PROTECTION_STATUSES = List.of(
             "SUBMITTED", "PROTECTION_SUBMITTED", "OPEN", "ACTIVE"
+    );
+    private static final Set<OrderStatus> POSITION_CONFIRMED_STATUSES = EnumSet.of(
+            OrderStatus.ENTRY_FILLED,
+            OrderStatus.EXECUTED,
+            OrderStatus.PROTECTION_SUBMITTED,
+            OrderStatus.ACTIVE,
+            OrderStatus.ACTIVE_WITH_TP_WARNING,
+            OrderStatus.SIDEWAYS_TIMEOUT,
+            OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED,
+            OrderStatus.MAX_HOLD_TIMEOUT,
+            OrderStatus.PROTECTION_FAILED,
+            OrderStatus.EMERGENCY_ATTENTION_REQUIRED
     );
 
     private final ClosePositionRecordRepository closePositionRecordRepository;
@@ -108,7 +124,56 @@ public class ClosePositionRecoveryService {
                     "CLOSE_CONFIRMED", "OKX当前持仓已消失，平仓确认完成");
             closed++;
         }
+        closed += closeOrdersWithoutPositions(positions, now);
         return new CloseRecoveryResult(closed, retryResult.retried(), retryResult.attentionRequired());
+    }
+
+    private int closeOrdersWithoutPositions(List<PositionSummary> positions, Instant now) {
+        int closed = 0;
+        for (PendingOrder order : pendingOrderService.allOrders()) {
+            if (!POSITION_CONFIRMED_STATUSES.contains(order.status()) || hasOpenPosition(order, positions)) {
+                continue;
+            }
+            OrderStatus previousStatus = order.status();
+            ClosePositionRecordEntity record = naturalCloseRecord(order, now);
+            order.markClosed("POSITION_GONE");
+            if (order.budgetReservationId() != null) {
+                budgetService.release(order.budgetReservationId(), "POSITION_GONE");
+                recordEvent(record, TradeEventType.BUDGET_RELEASED, "USED", "RELEASED",
+                        "POSITION_GONE", "持仓消失后释放自动交易预算");
+            }
+            invalidateProtectionOrders(record, now);
+            createTradeReview(record);
+            recordEvent(record, TradeEventType.CLOSE_CONFIRMED, previousStatus.name(), "CLOSED",
+                    "POSITION_GONE", "OKX当前持仓已消失，自动关闭本地交易生命周期");
+            closed++;
+        }
+        return closed;
+    }
+
+    private ClosePositionRecordEntity naturalCloseRecord(PendingOrder order, Instant now) {
+        List<ClosePositionRecordEntity> records = closePositionRecordRepository
+                .findByUserNameAndPendingOrderIdOrderByCreatedAtDesc(currentUsername(), order.id().toString());
+        if (records != null && !records.isEmpty()) {
+            ClosePositionRecordEntity record = records.get(0);
+            record.setStatus("CLOSED");
+            record.setUpdatedAt(now);
+            return closePositionRecordRepository.save(record);
+        }
+
+        ClosePositionRecordEntity record = new ClosePositionRecordEntity();
+        record.setUserName(currentUsername());
+        record.setInstId(order.instId());
+        record.setPosSide(order.posSide());
+        record.setMarginMode(order.tdMode());
+        record.setSize(order.size());
+        record.setAvgPx(order.price());
+        record.setStatus("CLOSED");
+        record.setSource("POSITION_GONE");
+        record.setPendingOrderId(order.id().toString());
+        record.setCreatedAt(now);
+        record.setUpdatedAt(now);
+        return closePositionRecordRepository.save(record);
     }
 
     private ProtectionCancelRetryResult retryFailedProtectionCancels(Instant now) {
@@ -172,11 +237,23 @@ public class ClosePositionRecoveryService {
     }
 
     private void invalidateProtectionOrders(ClosePositionRecordEntity record, Instant now) {
-        if (!hasText(record.getPendingOrderId())) {
+        if (tradeOrderRepository == null || !hasText(record.getInstId())) {
             return;
         }
-        List<TradeOrderEntity> protections = tradeOrderRepository
-                .findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(record.getPendingOrderId(), ACTIVE_PROTECTION_STATUSES);
+        List<TradeOrderEntity> protections = new ArrayList<>(tradeOrderRepository
+                .findByInstIdAndReduceOnlyTrueAndStatusIn(record.getInstId(), ACTIVE_PROTECTION_STATUSES).stream()
+                .filter(protection -> matchesPositionSide(record, protection))
+                .toList());
+        if (hasText(record.getPendingOrderId())) {
+            List<TradeOrderEntity> boundProtections = tradeOrderRepository
+                    .findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(
+                            record.getPendingOrderId(), ACTIVE_PROTECTION_STATUSES);
+            for (TradeOrderEntity protection : boundProtections) {
+                if (matchesPositionSide(record, protection) && !protections.contains(protection)) {
+                    protections.add(protection);
+                }
+            }
+        }
         for (TradeOrderEntity protection : protections) {
             if (cancelProtectionOrder(protection)) {
                 protection.setStatus("INVALID");
@@ -192,6 +269,32 @@ public class ClosePositionRecoveryService {
         if (!protections.isEmpty()) {
             tradeOrderRepository.saveAll(protections);
         }
+        invalidateClosedEntryOrders(record, now);
+    }
+
+    private void invalidateClosedEntryOrders(ClosePositionRecordEntity record, Instant now) {
+        if (!hasText(record.getPendingOrderId())) {
+            return;
+        }
+        List<TradeOrderEntity> inactiveEntries = tradeOrderRepository
+                .findByPendingOrderIdOrderByCreatedAtAsc(record.getPendingOrderId()).stream()
+                .filter(order -> !order.isReduceOnly())
+                .filter(order -> ACTIVE_PROTECTION_STATUSES.contains(order.getStatus()))
+                .toList();
+        for (TradeOrderEntity entry : inactiveEntries) {
+            entry.setStatus("INACTIVE");
+            entry.setOkxState("POSITION_CLOSED");
+            entry.setErrorMessage("POSITION_CLOSED");
+            entry.setUpdatedAt(now);
+        }
+        if (!inactiveEntries.isEmpty()) {
+            tradeOrderRepository.saveAll(inactiveEntries);
+        }
+    }
+
+    private boolean matchesPositionSide(ClosePositionRecordEntity record, TradeOrderEntity protection) {
+        return !hasText(record.getPosSide())
+                || record.getPosSide().equalsIgnoreCase(protection.getPosSide());
     }
 
     private boolean cancelProtectionOrder(TradeOrderEntity protection) {
@@ -259,6 +362,13 @@ public class ClosePositionRecoveryService {
         return positions.stream()
                 .filter(position -> record.getInstId().equalsIgnoreCase(position.instId()))
                 .filter(position -> !hasText(record.getPosSide()) || record.getPosSide().equalsIgnoreCase(position.posSide()))
+                .anyMatch(position -> decimal(position.size()).signum() > 0);
+    }
+
+    private boolean hasOpenPosition(PendingOrder order, List<PositionSummary> positions) {
+        return positions.stream()
+                .filter(position -> order.instId().equalsIgnoreCase(position.instId()))
+                .filter(position -> !hasText(order.posSide()) || order.posSide().equalsIgnoreCase(position.posSide()))
                 .anyMatch(position -> decimal(position.size()).signum() > 0);
     }
 
