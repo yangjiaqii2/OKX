@@ -1,0 +1,1 @@
+ALTER TABLE agent_contract_candidate_score ADD COLUMN base_oi_change_missing BOOLEAN;

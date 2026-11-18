@@ -37,6 +37,12 @@ public class AgentContractCandidateScoreEntity {
     @Column(name = "scan_action", length = 32)
     private String scanAction;
 
+    @Column(name = "base_oi_change_missing")
+    private Boolean baseOiChangeMissing;
+
+    public Boolean getBaseOiChangeMissing() { return baseOiChangeMissing; }
+    public void setBaseOiChangeMissing(Boolean value) { baseOiChangeMissing = value; }
+
     public Integer getAnalysisScore() { return analysisScore; }
     public void setAnalysisScore(Integer value) { analysisScore = value; }
     public String getAnalysisAction() { return analysisAction; }

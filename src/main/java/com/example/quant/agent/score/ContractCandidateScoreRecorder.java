@@ -203,6 +203,7 @@ public class ContractCandidateScoreRecorder {
         row.setDirection(String.valueOf(candidate.trendDirection()));
         row.setTotalScore(candidate.score());
         row.setScanAction(candidate.action());
+        row.setBaseOiChangeMissing(candidate.openInterestChange() == null);
         if (candidate.klineAnalysis() != null) {
             row.setAnalysisScore(candidate.klineAnalysis().analysisScore());
             row.setAnalysisAction(candidate.klineAnalysis().analysisAction());

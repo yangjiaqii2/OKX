@@ -74,6 +74,7 @@ class ContractSignalAnalyzerTest {
         );
 
         assertThat(signal.openInterestChange()).isNull();
+        assertThat(signal.scoreBreakdown().oiFunding()).isEqualTo(68);
         assertThat(signal.riskTagList()).contains("OI变化不可用，不能作为增仓确认");
     }
 

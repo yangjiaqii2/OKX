@@ -56,6 +56,7 @@ public class ContractSignalAnalyzer {
         BigDecimal entry = positive(lastPrice) ? lastPrice : lastClose(twentyMinute);
         BigDecimal todayOpen = defaultPositive(open24h, entry);
         BigDecimal todayChangePct = percent(entry.subtract(todayOpen), todayOpen);
+        // No comparable previous observation means unknown change, distinct from a measured zero change.
         BigDecimal oiChange = positive(openInterest) && positive(previousOpenInterest)
                 ? percent(openInterest.subtract(previousOpenInterest), previousOpenInterest)
                 : null;

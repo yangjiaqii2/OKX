@@ -343,8 +343,9 @@ public class OkxContractScanner {
                 snapshot.volume24h(),
                 fundingRate,
                 openInterest,
-                BigDecimal.ZERO,
-                 klineSet
+                // The scan has no comparable previous OI. Historical OI belongs to V2 derivatives scoring.
+                null,
+                klineSet
         );
         ContractScoreBreakdown scoreBreakdown = adjustedScoreBreakdown(signal.scoreBreakdown(), liquidity, environment,
                 signal.directionBias(), newsRisk, snapshot.volume24h());

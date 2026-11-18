@@ -75,6 +75,7 @@ class ContractCandidateScoreRecorderTest {
         assertThat(row.getSnapshotRank()).isEqualTo(1);
         assertThat(row.getReferencePrice()).isEqualByComparingTo("4400");
         assertThat(row.getAnalysisScore()).isEqualTo(64);
+        assertThat(row.getBaseOiChangeMissing()).isTrue();
         assertThat(row.getAnalysisAction()).isEqualTo("WAIT_CONFIRM");
         assertThat(row.getScanAction()).isEqualTo("AUTO_TRADE_ALLOWED");
         assertThat(row.getScoringVersion()).isEqualTo("V2_WAVE_4_2");
@@ -184,7 +185,7 @@ class ContractCandidateScoreRecorderTest {
         return new ContractCandidate(
                 MarketType.OKX_SWAP, "XAU-USDT-SWAP", "XAU", "USDT", new BigDecimal("4400"),
                 BigDecimal.ONE, BigDecimal.ZERO, new BigDecimal("100000000"), BigDecimal.ONE,
-                new BigDecimal("0.0001"), BigDecimal.ZERO, BigDecimal.ZERO, DirectionBias.BULLISH,
+                new BigDecimal("0.0001"), BigDecimal.ZERO, null, DirectionBias.BULLISH,
                 new BigDecimal("0.02"), 80, new ContractFactorScore(20, 15, 10, 10, 10, 10, 7),
                 new BigDecimal("4400"), new BigDecimal("4356"), new BigDecimal("4488"), 1,
                 BigDecimal.valueOf(2), BigDecimal.ONE, new BigDecimal("100000"), new BigDecimal("100000"),

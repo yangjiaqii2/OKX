@@ -78,6 +78,7 @@ class OkxContractScannerTest {
         assertThat(candidates.get(0).trendDirection()).isEqualTo(DirectionBias.BULLISH);
         assertThat(candidates.get(0).klineAnalysis().analysisScore()).isNotNull();
         assertThat(candidates.get(0).klineAnalysis().analysisAction()).isNotBlank();
+        assertThat(candidates.get(0).openInterestChange()).isNull();
     }
 
     @ParameterizedTest
