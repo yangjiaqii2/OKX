@@ -28,6 +28,22 @@ public class AgentContractCandidateScoreEntity {
     @Column(name = "total_score", nullable = false)
     private int totalScore;
 
+    @Column(name = "analysis_score")
+    private Integer analysisScore;
+
+    @Column(name = "analysis_action", length = 32)
+    private String analysisAction;
+
+    @Column(name = "scan_action", length = 32)
+    private String scanAction;
+
+    public Integer getAnalysisScore() { return analysisScore; }
+    public void setAnalysisScore(Integer value) { analysisScore = value; }
+    public String getAnalysisAction() { return analysisAction; }
+    public void setAnalysisAction(String value) { analysisAction = value; }
+    public String getScanAction() { return scanAction; }
+    public void setScanAction(String value) { scanAction = value; }
+
     @Column(name = "trend_score", nullable = false)
     private int trendScore;
 

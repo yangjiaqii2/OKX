@@ -15,6 +15,10 @@ import com.example.quant.agent.scan.AgentScanRunRepository;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.crypto.dto.ContractFactorScore;
+import com.example.quant.crypto.dto.ContractKlineAnalysis;
+import com.example.quant.crypto.dto.ContractNewsRiskAnalysis;
+import com.example.quant.crypto.dto.ContractScoreBreakdown;
+import com.example.quant.crypto.dto.ContractSignalType;
 import com.example.quant.crypto.selection.V2ScoreDimension;
 import com.example.quant.crypto.selection.V2SelectionScoreResult;
 import com.example.quant.market.DirectionBias;
@@ -70,6 +74,9 @@ class ContractCandidateScoreRecorderTest {
         AgentContractCandidateScoreEntity row = rows.getValue().get(0);
         assertThat(row.getSnapshotRank()).isEqualTo(1);
         assertThat(row.getReferencePrice()).isEqualByComparingTo("4400");
+        assertThat(row.getAnalysisScore()).isEqualTo(64);
+        assertThat(row.getAnalysisAction()).isEqualTo("WAIT_CONFIRM");
+        assertThat(row.getScanAction()).isEqualTo("AUTO_TRADE_ALLOWED");
         assertThat(row.getScoringVersion()).isEqualTo("V2_WAVE_4_2");
         assertThat(row.getV2NormalizedScore()).isNotNull();
         assertThat(row.getV2RankingScore()).isNotNull();
@@ -182,6 +189,11 @@ class ContractCandidateScoreRecorderTest {
                 new BigDecimal("4400"), new BigDecimal("4356"), new BigDecimal("4488"), 1,
                 BigDecimal.valueOf(2), BigDecimal.ONE, new BigDecimal("100000"), new BigDecimal("100000"),
                 BigDecimal.ONE, DirectionBias.BULLISH, DirectionBias.BULLISH, RiskLevel.LOW,
-                List.of("QA_E2E"), List.of(), now);
+                List.of("QA_E2E"), List.of(), now,
+                ContractSignalType.STRONG_LONG, "AUTO_TRADE_ALLOWED", "LIMIT",
+                BigDecimal.ONE, BigDecimal.valueOf(2), BigDecimal.ZERO, BigDecimal.valueOf(80),
+                new ContractScoreBreakdown(80, 80, 80, 80, 80, 80, 100),
+                ContractKlineAnalysis.unavailable("FIXTURE").withAnalysisDecision(64, "WAIT_CONFIRM"),
+                ContractNewsRiskAnalysis.low());
     }
 }

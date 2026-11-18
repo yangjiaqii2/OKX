@@ -439,7 +439,7 @@ public class ContractSignalAnalyzer {
         return new PlanPrices(safeEntry, stopLoss, takeProfit);
     }
 
-    private static String action(ContractSignalType signalType, int score, String entryTiming5m,
+    static String action(ContractSignalType signalType, int score, String entryTiming5m,
                                  ContractNewsRiskAnalysis newsRisk) {
         if (signalType == ContractSignalType.NO_TRADE || "CRITICAL".equals(newsRisk.newsRiskLevel())
                 || "HIGH".equals(newsRisk.newsRiskLevel())) {

@@ -17,8 +17,21 @@ public record ContractKlineAnalysis(
         BigDecimal atrPct20m,
         BigDecimal distanceFromEma20Pct,
         boolean twentyMinuteStructureClear,
-        Instant decisionCandleTimestamp
+        Instant decisionCandleTimestamp,
+        Integer analysisScore,
+        String analysisAction
 ) {
+    public ContractKlineAnalysis(
+            String trend20m, String trend1h, String trend4h, String emaState20m, String macdState20m,
+            BigDecimal rsi20m, BigDecimal adx20m, String structure, String entryTiming5m,
+            BigDecimal volumeRatio20m, BigDecimal atrPct20m, BigDecimal distanceFromEma20Pct,
+            boolean twentyMinuteStructureClear, Instant decisionCandleTimestamp
+    ) {
+        this(trend20m, trend1h, trend4h, emaState20m, macdState20m, rsi20m, adx20m, structure,
+                entryTiming5m, volumeRatio20m, atrPct20m, distanceFromEma20Pct,
+                twentyMinuteStructureClear, decisionCandleTimestamp, null, null);
+    }
+
     public ContractKlineAnalysis(
             String trend20m, String trend1h, String trend4h, String emaState20m, String macdState20m,
             BigDecimal rsi20m, BigDecimal adx20m, String structure, String entryTiming5m,
@@ -53,6 +66,13 @@ public record ContractKlineAnalysis(
         return new ContractKlineAnalysis(
                 trend20m, trend1h, trend4h, emaState20m, macdState20m, rsi20m, adx20m, structure,
                 entryTiming5m, volumeRatio20m, atrPct20m, distanceFromEma20Pct,
-                twentyMinuteStructureClear, timestamp);
+                twentyMinuteStructureClear, timestamp, analysisScore, analysisAction);
+    }
+
+    public ContractKlineAnalysis withAnalysisDecision(int score, String action) {
+        return new ContractKlineAnalysis(
+                trend20m, trend1h, trend4h, emaState20m, macdState20m, rsi20m, adx20m, structure,
+                entryTiming5m, volumeRatio20m, atrPct20m, distanceFromEma20Pct,
+                twentyMinuteStructureClear, decisionCandleTimestamp, score, action);
     }
 }

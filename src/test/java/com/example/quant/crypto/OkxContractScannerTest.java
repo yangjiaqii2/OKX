@@ -4,9 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.quant.agent.market.MarketEnvironmentService;
 import com.example.quant.agent.market.OrderBookLiquidityService;
+import com.example.quant.agent.market.OrderBookLiquiditySnapshot;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.crypto.dto.ContractCandle;
+import com.example.quant.crypto.dto.ContractNewsRiskAnalysis;
+import com.example.quant.crypto.dto.ContractSignalType;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
 import com.example.quant.news.NewsSearchService;
@@ -23,6 +26,23 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 class OkxContractScannerTest {
+    @Test
+    void scanUsesRecalculatedScoreForActionAndRetainsExistingGates() {
+        var client = new FakeOkxRestClient();
+        var scanner = new OkxContractScanner(client, new OkxMarketService(client), null, null, null, null,
+                new AgentProperties());
+        var book = new OrderBookLiquiditySnapshot("TREND-USDT-SWAP", null, null, null,
+                null, null, null, null, true, "", Instant.EPOCH);
+        var news = ContractNewsRiskAnalysis.low();
+        var type = ContractSignalType.PULLBACK_LONG;
+        assertThat(ContractSignalAnalyzer.action(type, 64, "READY", news)).isEqualTo("WAIT_CONFIRM");
+        assertThat(scanner.adjustedAction(type, "READY", 69, news, book, new BigDecimal("69")))
+                .isEqualTo("AUTO_TRADE_ALLOWED");
+        assertThat(scanner.adjustedAction(type, "NOT_READY", 69, news, book, new BigDecimal("69")))
+                .isEqualTo("WAIT_CONFIRM");
+        assertThat(scanner.adjustedAction(type, "READY", 69, news, book, new BigDecimal("60")))
+                .isEqualTo("WAIT");
+    }
 
     @Test
     void ranksByCompositeSignalInsteadOfRawVolumeOnly() throws Exception {
@@ -56,6 +76,8 @@ class OkxContractScannerTest {
         assertThat(candidates.get(0).stopLossPrice()).isLessThan(candidates.get(0).lastPrice());
         assertThat(candidates.get(0).takeProfitPrice()).isGreaterThan(candidates.get(0).lastPrice());
         assertThat(candidates.get(0).trendDirection()).isEqualTo(DirectionBias.BULLISH);
+        assertThat(candidates.get(0).klineAnalysis().analysisScore()).isNotNull();
+        assertThat(candidates.get(0).klineAnalysis().analysisAction()).isNotBlank();
     }
 
     @ParameterizedTest

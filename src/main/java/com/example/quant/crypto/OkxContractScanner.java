@@ -351,7 +351,8 @@ public class OkxContractScanner {
         ContractFactorScore factorScore = scoreBreakdown.weightedFactorScore();
         int adjustedScore = Math.max(0, Math.min(100, scoreBreakdown.weightedTotal()));
         BigDecimal finalRankScore = finalRankScore(adjustedScore, scoreBreakdown, signal, liquidity);
-        String action = adjustedAction(signal, newsRisk, liquidity, finalRankScore);
+        String action = adjustedAction(signal.signalType(), signal.klineAnalysis().entryTiming5m(), adjustedScore,
+                newsRisk, liquidity, finalRankScore);
         int leverage = "AUTO_TRADE_ALLOWED".equals(action) || "WAIT_CONFIRM".equals(action)
                 ? signal.suggestedLeverage()
                 : 0;
@@ -396,7 +397,7 @@ public class OkxContractScanner {
                     signal.stopLossPct(),
                     finalRankScore,
                     scoreBreakdown,
-                    signal.klineAnalysis(),
+                    signal.klineAnalysis().withAnalysisDecision(signal.score(), signal.action()),
                     newsRisk,
                     // V2: Universe / Market Quality, 由 analyzeSnapshotV2 注入
                      null, null, null, null, null, null, null, null, null, oiReading.usdNotional()
@@ -1539,8 +1540,9 @@ public class OkxContractScanner {
         return finalScore.setScale(2, RoundingMode.HALF_UP);
     }
 
-    private String adjustedAction(ContractSignal signal, ContractNewsRiskAnalysis newsRisk,
-                                  OrderBookLiquiditySnapshot liquidity, BigDecimal finalRankScore) {
+    String adjustedAction(ContractSignalType signalType, String entryTiming5m, int adjustedScore,
+                          ContractNewsRiskAnalysis newsRisk, OrderBookLiquiditySnapshot liquidity,
+                          BigDecimal finalRankScore) {
         if (!liquidity.tradable() || "CRITICAL".equals(newsRisk.newsRiskLevel()) || "HIGH".equals(newsRisk.newsRiskLevel())) {
             return "NO_TRADE";
         }
@@ -1550,7 +1552,7 @@ public class OkxContractScanner {
         if (finalRankScore.compareTo(BigDecimal.valueOf(agentProperties.ranking().minFinalRankScore())) < 0) {
             return "WAIT";
         }
-        return signal.action();
+        return ContractSignalAnalyzer.action(signalType, adjustedScore, entryTiming5m, newsRisk);
     }
 
     private BigDecimal safeFundingRate(String instId) {

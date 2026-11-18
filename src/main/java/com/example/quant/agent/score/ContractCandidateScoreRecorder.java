@@ -202,6 +202,11 @@ public class ContractCandidateScoreRecorder {
         row.setInstId(candidate.instId());
         row.setDirection(String.valueOf(candidate.trendDirection()));
         row.setTotalScore(candidate.score());
+        row.setScanAction(candidate.action());
+        if (candidate.klineAnalysis() != null) {
+            row.setAnalysisScore(candidate.klineAnalysis().analysisScore());
+            row.setAnalysisAction(candidate.klineAnalysis().analysisAction());
+        }
         row.setTrendScore(factor.trendScore());
         row.setVolumeScore(factor.volumeScore());
         row.setVolatilityScore(factor.volatilityScore());
