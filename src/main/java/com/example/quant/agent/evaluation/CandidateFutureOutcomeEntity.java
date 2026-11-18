@@ -58,6 +58,9 @@ public class CandidateFutureOutcomeEntity {
     @Column(name = "first_barrier_touch", length = 24)
     private String firstBarrierTouch;
 
+    @Column(name = "pullback_reference_touched")
+    private Boolean pullbackReferenceTouched;
+
     @Column(name = "error_reason", columnDefinition = "TEXT")
     private String errorReason;
 
@@ -116,6 +119,8 @@ public class CandidateFutureOutcomeEntity {
     public void setDirectionalMaxDrawdown(BigDecimal value) { directionalMaxDrawdown = value; }
     public String getFirstBarrierTouch() { return firstBarrierTouch; }
     public void setFirstBarrierTouch(String value) { firstBarrierTouch = value; }
+    public Boolean getPullbackReferenceTouched() { return pullbackReferenceTouched; }
+    public void setPullbackReferenceTouched(Boolean value) { pullbackReferenceTouched = value; }
     public String getErrorReason() { return errorReason; }
     public void setErrorReason(String value) { errorReason = value; }
     public Instant getUpdatedAt() { return updatedAt; }

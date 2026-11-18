@@ -262,6 +262,10 @@ public class HistoricalCandidateOutcomeReconciliationService {
         outcome.setRawReturn(raw);
         outcome.setMaxUpside(maxUpside);
         outcome.setMaxDownside(maxDownside);
+        if ("PULLBACK_LONG".equals(snapshot.getSignalType())) {
+            // Historical snapshots do not reliably have a planned pullback entry price.
+            outcome.setPullbackReferenceTouched(minLow.compareTo(p0) <= 0);
+        }
         String direction = directionValue(snapshot);
         if (direction.contains("SHORT") || "BEARISH".equals(direction)) {
             outcome.setDirectionalReturn(raw.negate());

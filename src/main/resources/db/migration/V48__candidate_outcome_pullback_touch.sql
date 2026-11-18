@@ -1,0 +1,1 @@
+ALTER TABLE candidate_future_outcome ADD COLUMN pullback_reference_touched BOOLEAN;

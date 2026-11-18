@@ -24,11 +24,13 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.data.domain.PageRequest;
 
 class HistoricalCandidateOutcomeReconciliationServiceTest {
     @Test
-    void rateLimitRecordsFailureAndDefersHistoryAcrossRuns() {
+    void rateLimitDefersHistoryAcrossRunsButRecentOutcomesStillComplete() {
         var snapshots = mock(AgentContractCandidateScoreRepository.class);
         var outcomes = mock(CandidateFutureOutcomeRepository.class);
         var market = mock(OkxMarketService.class);
@@ -36,9 +38,18 @@ class HistoricalCandidateOutcomeReconciliationServiceTest {
         Instant maturity = Instant.parse("2026-09-18T11:00:00Z");
         var first = pending(6L, 60, maturity);
         var next = pending(7L, 60, maturity);
+        var recent = pending(8L, 60, Instant.parse("2026-11-09T11:00:00Z"));
+        var recentSnapshot = snapshot(8L, "SOL-USDT-SWAP", "LONG");
+        recentSnapshot.setCreatedAt(Instant.parse("2026-11-09T10:00:00Z"));
         when(outcomes.findHistoricalDue(any(), any(), any(), any())).thenReturn(List.of(first, next));
         when(snapshots.findById(6L)).thenReturn(Optional.of(snapshot(6L, "BTC-USDT-SWAP", "LONG")));
         when(snapshots.findById(7L)).thenReturn(Optional.of(snapshot(7L, "ETH-USDT-SWAP", "LONG")));
+        when(snapshots.findById(8L)).thenReturn(Optional.of(recentSnapshot));
+        when(outcomes.findRecentDue(any(), any(), any(), any())).thenReturn(List.of(), List.of(recent));
+        when(market.candles("SOL-USDT-SWAP", "15m", 300)).thenReturn(IntStream.range(0, 4)
+                .mapToObj(i -> new ContractCandle(recentSnapshot.getCreatedAt().plusSeconds(i * 900L),
+                        BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.ONE))
+                .toList());
         when(market.historicalCandlesBefore("BTC-USDT-SWAP", "15m", maturity))
                 .thenThrow(new OkxMarketService.HistoryRateLimitedException(new IllegalStateException("OKX HTTP 429")));
         var service = new HistoricalCandidateOutcomeReconciliationService(snapshots, outcomes, market,
@@ -48,8 +59,32 @@ class HistoricalCandidateOutcomeReconciliationServiceTest {
         assertThat(first.getErrorReason()).isEqualTo("HISTORY_RATE_LIMIT_HTTP_429");
         assertThat(first.getNextRetryAt()).isEqualTo(now.plusSeconds(300));
         assertThat(next.getStatus()).isEqualTo("PENDING");
-        assertThat(service.reconcile(now.plusSeconds(120)).processed()).isZero();
+        assertThat(service.reconcile(now.plusSeconds(120)).completed()).isEqualTo(1);
+        assertThat(recent.getStatus()).isEqualTo("COMPLETE");
         verify(market, times(1)).historicalCandlesBefore(any(), any(), any());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"100,true", "99,true", "101,false"})
+    void pullbackTouchUsesTheReferenceAndOnlyTheCompleteAfterSnapshotWindow(String lowestPrice, boolean touched) {
+        var snapshots = mock(AgentContractCandidateScoreRepository.class);
+        var outcomes = mock(CandidateFutureOutcomeRepository.class);
+        var market = mock(OkxMarketService.class);
+        var snapshot = snapshot(22L, "BTC-USDT-SWAP", "LONG");
+        snapshot.setSignalType("PULLBACK_LONG");
+        var outcome = pending(22L, 60, Instant.parse("2026-09-18T11:00:00Z"));
+        when(snapshots.findById(22L)).thenReturn(Optional.of(snapshot));
+        when(outcomes.findRecentDue(any(), any(), any(), any())).thenReturn(List.of(outcome));
+        List<ContractCandle> candles = new java.util.ArrayList<>(oneHourWindow("107", lowestPrice, "103"));
+        candles.add(candle("2026-09-18T09:45:00Z", "100", "101", "98", "100"));
+        candles.add(candle("2026-09-18T11:00:00Z", "100", "101", "98", "100"));
+        when(market.candles("BTC-USDT-SWAP", "15m", 300)).thenReturn(candles);
+
+        new HistoricalCandidateOutcomeReconciliationService(snapshots, outcomes, market, Clock.systemUTC())
+                .reconcile(Instant.parse("2026-09-18T11:05:00Z"));
+
+        assertThat(outcome.getStatus()).isEqualTo("COMPLETE");
+        assertThat(outcome.getPullbackReferenceTouched()).isEqualTo(touched);
     }
 
     @Test
