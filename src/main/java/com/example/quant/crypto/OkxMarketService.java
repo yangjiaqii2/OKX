@@ -8,11 +8,14 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.springframework.stereotype.Service;
 
 @Service
 public class OkxMarketService {
+    private static final long HISTORY_REQUEST_SPACING_NANOS = TimeUnit.MILLISECONDS.toNanos(150);
     private final OkxRestClient okxRestClient;
+    private long lastHistoryRequestNanos = System.nanoTime() - HISTORY_REQUEST_SPACING_NANOS;
 
     public OkxMarketService(OkxRestClient okxRestClient) {
         this.okxRestClient = okxRestClient;
@@ -42,7 +45,17 @@ public class OkxMarketService {
         return confirmedCandles(root);
     }
 
-    public List<ContractCandle> historicalCandlesBefore(String instId, String bar, Instant before) {
+    public synchronized List<ContractCandle> historicalCandlesBefore(String instId, String bar, Instant before) {
+        long waitNanos = HISTORY_REQUEST_SPACING_NANOS - (System.nanoTime() - lastHistoryRequestNanos);
+        if (waitNanos > 0) {
+            try {
+                TimeUnit.NANOSECONDS.sleep(waitNanos);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Historical candle request interrupted", ex);
+            }
+        }
+        lastHistoryRequestNanos = System.nanoTime();
         JsonNode root = okxRestClient.publicGet("/api/v5/market/history-candles?instId="
                 + OkxRestClient.encode(instId)
                 + "&bar=" + OkxRestClient.encode(normalizeBar(bar))

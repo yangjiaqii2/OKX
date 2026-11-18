@@ -130,11 +130,15 @@ public class HistoricalCandidateOutcomeReconciliationService {
     private ReconciliationResult reconcileLocked(Instant now) {
         Instant cutoff = now.minus(RECENT_MATURITY_WINDOW);
         int historicalCapacity = Math.max(1, batchSize / 5);
+        List<CandidateFutureOutcomeEntity> controls = historicalCapacity < 2 ? List.of()
+                : outcomeRepository.findHistoricalControlDue(RETRYABLE_STATUSES, cutoff, now,
+                        PageRequest.of(0, Math.max(1, historicalCapacity / 5)));
         List<CandidateFutureOutcomeEntity> historical = outcomeRepository.findHistoricalDue(
-                RETRYABLE_STATUSES, cutoff, now, PageRequest.of(0, historicalCapacity));
+                RETRYABLE_STATUSES, cutoff, now, PageRequest.of(0, historicalCapacity - controls.size()));
         List<CandidateFutureOutcomeEntity> due = new ArrayList<>(outcomeRepository.findRecentDue(
-                RETRYABLE_STATUSES, cutoff, now, PageRequest.of(0, batchSize - historical.size())));
+                RETRYABLE_STATUSES, cutoff, now, PageRequest.of(0, batchSize - historical.size() - controls.size())));
         due.addAll(historical);
+        due.addAll(controls);
         Map<MarketWindow, List<Work>> byMarketWindow = new LinkedHashMap<>();
         int skipped = 0;
         int failed = 0;
@@ -246,14 +250,18 @@ public class HistoricalCandidateOutcomeReconciliationService {
             outcome.setDirectionalReturn(raw.negate());
             outcome.setDirectionalMfe(maxDownside.negate().max(BigDecimal.ZERO));
             outcome.setDirectionalMae(maxUpside.max(BigDecimal.ZERO));
+            recordWindowRisk(snapshot, outcome, window, p0, false);
         } else if (direction.contains("LONG") || "BULLISH".equals(direction)) {
             outcome.setDirectionalReturn(raw);
             outcome.setDirectionalMfe(maxUpside.max(BigDecimal.ZERO));
             outcome.setDirectionalMae(maxDownside.negate().max(BigDecimal.ZERO));
+            recordWindowRisk(snapshot, outcome, window, p0, true);
         } else {
             outcome.setDirectionalReturn(null);
             outcome.setDirectionalMfe(null);
             outcome.setDirectionalMae(null);
+            outcome.setDirectionalMaxDrawdown(null);
+            outcome.setFirstBarrierTouch("UNAVAILABLE");
         }
         outcome.setStatus("COMPLETE");
         outcome.setErrorReason(null);
@@ -261,6 +269,35 @@ public class HistoricalCandidateOutcomeReconciliationService {
         outcome.setUpdatedAt(now);
         outcomeRepository.save(outcome);
         return OutcomeResult.COMPLETE;
+    }
+
+    private static void recordWindowRisk(AgentContractCandidateScoreEntity snapshot, CandidateFutureOutcomeEntity outcome,
+                                         List<ContractCandle> window, BigDecimal reference, boolean isLong) {
+        BigDecimal stop = snapshot.getSnapshotStopLossPrice();
+        BigDecimal target = snapshot.getSnapshotTakeProfitPrice();
+        boolean hasBarriers = stop != null && target != null && stop.signum() > 0 && target.signum() > 0
+                && (isLong ? stop.compareTo(reference) < 0 && target.compareTo(reference) > 0
+                           : target.compareTo(reference) < 0 && stop.compareTo(reference) > 0);
+        String firstTouch = hasBarriers ? "NONE" : "UNAVAILABLE";
+        BigDecimal best = reference;
+        BigDecimal drawdown = BigDecimal.ZERO;
+        for (ContractCandle bar : window) {
+            best = isLong ? best.max(bar.high()) : best.min(bar.low());
+            BigDecimal adverseMove = isLong ? best.subtract(bar.low()) : bar.high().subtract(best);
+            drawdown = drawdown.max(adverseMove);
+            if (!"NONE".equals(firstTouch)) {
+                continue;
+            }
+            boolean stopHit = isLong ? bar.low().compareTo(stop) <= 0 : bar.high().compareTo(stop) >= 0;
+            boolean targetHit = isLong ? bar.high().compareTo(target) >= 0 : bar.low().compareTo(target) <= 0;
+            if (stopHit) {
+                firstTouch = "STOP_LOSS";
+            } else if (targetHit) {
+                firstTouch = "TAKE_PROFIT";
+            }
+        }
+        outcome.setDirectionalMaxDrawdown(ratio(drawdown, reference));
+        outcome.setFirstBarrierTouch(firstTouch);
     }
 
     private List<ContractCandle> eligibleWindow(List<ContractCandle> source, Instant t0, Instant maturity) {

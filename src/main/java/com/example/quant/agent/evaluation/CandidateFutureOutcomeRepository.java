@@ -13,29 +13,59 @@ public interface CandidateFutureOutcomeRepository extends JpaRepository<Candidat
     List<CandidateFutureOutcomeEntity> findByStatusInAndMaturityAtLessThanEqual(
             Collection<String> statuses, Instant maturityAt);
 
-    @Query("""
-            select o from CandidateFutureOutcomeEntity o
-            where o.status in :statuses
-              and o.maturityAt >= :cutoff and o.maturityAt <= :now
-              and (o.nextRetryAt is null or o.nextRetryAt <= :now)
-            order by case when o.lastAttemptAt is null then 0 else 1 end,
-                     o.lastAttemptAt asc, o.maturityAt asc, o.id asc
-            """)
+    String CONTROL_SIGNALS = "('NEUTRAL','NO_TRADE','WAIT_OVERHEATED','WAIT_OVERSOLD')";
+
+    String DUE_COHORT = """
+            with control_cohort as (
+                select s.id, row_number() over (
+                    partition by s.signal_type, cast(s.created_at as date)
+                    order by mod(s.id * 104729, 1000003), s.id
+                ) as sample_rank
+                from agent_contract_candidate_score s
+                where s.scan_run_id is not null and s.signal_type in
+            """ + CONTROL_SIGNALS + """
+            )
+            select o.* from candidate_future_outcome o
+            join agent_contract_candidate_score s on s.id = o.snapshot_id
+            left join control_cohort c on c.id = s.id
+            where o.status in (:statuses)
+              and (o.next_retry_at is null or o.next_retry_at <= :now)
+              and (c.id is null or mod(c.sample_rank - 1, 20) = 0)
+            """;
+
+    String RETRY_ORDER = """
+              case when o.last_attempt_at is null then 0 else 1 end,
+              o.last_attempt_at, o.maturity_at, o.id
+            """;
+
+    @Query(value = DUE_COHORT + """
+              and o.maturity_at >= :cutoff and o.maturity_at <= :now
+            order by
+            """ + RETRY_ORDER, nativeQuery = true)
     List<CandidateFutureOutcomeEntity> findRecentDue(
             @Param("statuses") Collection<String> statuses,
             @Param("cutoff") Instant cutoff,
             @Param("now") Instant now,
             Pageable pageable);
 
-    @Query("""
-            select o from CandidateFutureOutcomeEntity o
-            where o.status in :statuses
-              and o.maturityAt < :cutoff
-              and (o.nextRetryAt is null or o.nextRetryAt <= :now)
-            order by case when o.lastAttemptAt is null then 0 else 1 end,
-                     o.lastAttemptAt asc, o.maturityAt asc, o.id asc
-            """)
+    @Query(value = DUE_COHORT + """
+              and o.maturity_at < :cutoff
+              and c.id is null
+              and (s.allow_trade = true or s.total_score >= 65
+                   or s.signal_type in ('TREND_SHORT','TREND_LONG','PULLBACK_LONG','STRONG_LONG'))
+            order by
+            """ + RETRY_ORDER, nativeQuery = true)
     List<CandidateFutureOutcomeEntity> findHistoricalDue(
+            @Param("statuses") Collection<String> statuses,
+            @Param("cutoff") Instant cutoff,
+            @Param("now") Instant now,
+            Pageable pageable);
+
+    @Query(value = DUE_COHORT + """
+              and o.maturity_at < :cutoff and c.id is not null
+            order by
+            """ + RETRY_ORDER, nativeQuery = true)
+    List<CandidateFutureOutcomeEntity> findHistoricalControlDue(
             @Param("statuses") Collection<String> statuses,
             @Param("cutoff") Instant cutoff,
             @Param("now") Instant now,

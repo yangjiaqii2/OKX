@@ -87,6 +87,12 @@ public class AgentContractCandidateScoreEntity {
     @Column(name = "reference_price", precision = 18, scale = 12)
     private BigDecimal referencePrice;
 
+    @Column(name = "snapshot_stop_loss_price", precision = 30, scale = 12)
+    private BigDecimal snapshotStopLossPrice;
+
+    @Column(name = "snapshot_take_profit_price", precision = 30, scale = 12)
+    private BigDecimal snapshotTakeProfitPrice;
+
     @Column(name = "scoring_version", length = 32)
     private String scoringVersion;
 
@@ -311,6 +317,10 @@ public class AgentContractCandidateScoreEntity {
     public void setSnapshotRank(Integer snapshotRank) { this.snapshotRank = snapshotRank; }
     public BigDecimal getReferencePrice() { return referencePrice; }
     public void setReferencePrice(BigDecimal referencePrice) { this.referencePrice = referencePrice; }
+    public BigDecimal getSnapshotStopLossPrice() { return snapshotStopLossPrice; }
+    public void setSnapshotStopLossPrice(BigDecimal value) { snapshotStopLossPrice = value; }
+    public BigDecimal getSnapshotTakeProfitPrice() { return snapshotTakeProfitPrice; }
+    public void setSnapshotTakeProfitPrice(BigDecimal value) { snapshotTakeProfitPrice = value; }
     public String getScoringVersion() { return scoringVersion; }
     public void setScoringVersion(String scoringVersion) { this.scoringVersion = scoringVersion; }
     public BigDecimal getV2NormalizedScore() { return v2NormalizedScore; }

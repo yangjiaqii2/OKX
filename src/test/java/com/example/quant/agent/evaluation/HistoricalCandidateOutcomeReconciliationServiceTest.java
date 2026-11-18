@@ -199,6 +199,34 @@ class HistoricalCandidateOutcomeReconciliationServiceTest {
         assertThat(oneHour.getDirectionalReturn()).isEqualByComparingTo("-0.05");
         assertThat(oneHour.getDirectionalMfe()).isEqualByComparingTo("0.08");
         assertThat(oneHour.getDirectionalMae()).isEqualByComparingTo("0.15");
+        assertThat(oneHour.getFirstBarrierTouch()).isEqualTo("UNAVAILABLE");
+    }
+
+    @Test
+    void sameCandleTouchesStopFirstAndDrawdownUsesTheWholeWindow() {
+        AgentContractCandidateScoreRepository snapshots = mock(AgentContractCandidateScoreRepository.class);
+        CandidateFutureOutcomeRepository outcomes = mock(CandidateFutureOutcomeRepository.class);
+        OkxMarketService market = mock(OkxMarketService.class);
+        AgentContractCandidateScoreEntity snapshot = snapshot(21L, "BTC-USDT-SWAP", "LONG");
+        snapshot.setSnapshotStopLossPrice(new BigDecimal("95"));
+        snapshot.setSnapshotTakeProfitPrice(new BigDecimal("105"));
+        CandidateFutureOutcomeEntity outcome = pending(21L, 60, Instant.parse("2026-09-18T11:00:00Z"));
+        when(outcomes.findRecentDue(any(), any(), any(), any())).thenReturn(List.of(outcome));
+        when(snapshots.findById(21L)).thenReturn(Optional.of(snapshot));
+        when(market.candles("BTC-USDT-SWAP", "15m", 300)).thenReturn(List.of(
+                candle("2026-09-18T09:45:00Z", "100", "200", "1", "100"),
+                candle("2026-09-18T10:00:00Z", "100", "110", "92", "103"),
+                candle("2026-09-18T10:15:00Z", "103", "108", "97", "104"),
+                candle("2026-09-18T10:30:00Z", "104", "120", "101", "112"),
+                candle("2026-09-18T10:45:00Z", "112", "117", "99", "108")));
+
+        new HistoricalCandidateOutcomeReconciliationService(snapshots, outcomes, market, Clock.systemUTC())
+                .reconcile(Instant.parse("2026-09-18T11:05:00Z"));
+
+        assertThat(outcome.getFirstBarrierTouch()).isEqualTo("STOP_LOSS");
+        assertThat(outcome.getDirectionalMfe()).isEqualByComparingTo("0.20");
+        assertThat(outcome.getDirectionalMaxDrawdown()).isEqualByComparingTo("0.21");
+        assertThat(outcome.getDirectionalReturn()).isEqualByComparingTo("0.08");
     }
 
     @Test

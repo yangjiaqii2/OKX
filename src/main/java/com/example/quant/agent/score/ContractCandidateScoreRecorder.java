@@ -232,6 +232,8 @@ public class ContractCandidateScoreRecorder {
         V2SelectionScoreResult result = suppliedResult == null ? v2Calculator.calculate(candidate) : suppliedResult;
         row.setSnapshotRank(rank);
         row.setReferencePrice(candidate.lastPrice());
+        row.setSnapshotStopLossPrice(candidate.stopLossPrice());
+        row.setSnapshotTakeProfitPrice(candidate.takeProfitPrice());
         row.setScoringVersion(V2_SCORING_VERSION);
         row.setV2NormalizedScore(result.normalizedScore());
         row.setV2RankingScore(result.rankingScore());

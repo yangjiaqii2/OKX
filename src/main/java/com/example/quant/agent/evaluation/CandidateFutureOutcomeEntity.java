@@ -52,6 +52,12 @@ public class CandidateFutureOutcomeEntity {
     @Column(name = "directional_mae", precision = 18, scale = 12)
     private BigDecimal directionalMae;
 
+    @Column(name = "directional_max_drawdown", precision = 18, scale = 12)
+    private BigDecimal directionalMaxDrawdown;
+
+    @Column(name = "first_barrier_touch", length = 24)
+    private String firstBarrierTouch;
+
     @Column(name = "error_reason", columnDefinition = "TEXT")
     private String errorReason;
 
@@ -106,6 +112,10 @@ public class CandidateFutureOutcomeEntity {
     public void setDirectionalMfe(BigDecimal value) { directionalMfe = value; }
     public BigDecimal getDirectionalMae() { return directionalMae; }
     public void setDirectionalMae(BigDecimal value) { directionalMae = value; }
+    public BigDecimal getDirectionalMaxDrawdown() { return directionalMaxDrawdown; }
+    public void setDirectionalMaxDrawdown(BigDecimal value) { directionalMaxDrawdown = value; }
+    public String getFirstBarrierTouch() { return firstBarrierTouch; }
+    public void setFirstBarrierTouch(String value) { firstBarrierTouch = value; }
     public String getErrorReason() { return errorReason; }
     public void setErrorReason(String value) { errorReason = value; }
     public Instant getUpdatedAt() { return updatedAt; }
