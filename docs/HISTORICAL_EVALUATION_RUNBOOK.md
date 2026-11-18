@@ -34,6 +34,12 @@ HistoricalCandidateEvaluationService.evaluate(scoringVersion, minimumSampleSize)
 
 当前仓库没有 `application-prod.yml`；生产运行时使用 `application.yml` 和环境变量覆盖。根目录 `.env` 会被 Compose 读取，`deploy.sh` 默认显式传入，Windows 开发脚本直接运行 Compose。评估使用受限且被 Git 忽略的独立环境文件，明确设定 `DISABLED / false`，并核对渲染结果。关键默认值如下：
 
+```bash
+bash scripts/check-evaluation-compose.sh
+```
+
+检查脚本按顺序加载 `.env` 和 `.env.evaluation`，只渲染配置。实际评估启动命令须沿用同一 Compose 文件和配置顺序，并保留 `evaluation` profile。评估 profile 在创建应用上下文前拒绝 LIVE 或自动交易开启。
+
 | 项目 | 当前值 | 来源 |
 | --- | ---: | --- |
 | contract scan | 60 秒 fixed rate，另有 ApplicationReady 首次运行 | `quant.contract.scan-interval-seconds` |

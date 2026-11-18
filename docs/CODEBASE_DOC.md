@@ -1,5 +1,11 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-18 - 评估模式启动保护
+
+- 本地评估使用被 Git 忽略的 `.env.evaluation`。 `bash scripts/check-evaluation-compose.sh` 只渲染 Compose 配置，检查评估 profile、`DISABLED` 和自动交易 `false`。
+- `EvaluationTradingGuard` 在配置加载后、应用上下文创建前拒绝评估模式里的 LIVE 或自动交易。Compose 会转发 `SPRING_PROFILES_ACTIVE`。
+- 已验证安全 Compose 配置通过、LIVE 或自动交易开启被拒绝。Java 17 离线全量 1,078 个测试通过，包括 Spring 启动前拒绝测试。
+
 ### 2026-11-18 - 回踩触价和历史回填验证
 
 - V48 在已完成的 `PULLBACK_LONG` 回填结果中记录是否触及快照参考价。其他信号、未完成结果和旧行该字段为空。回归测试验证等于参考价、越过参考价及未触价三种情况，并验证历史 429 退避期间近期回填继续完成。
