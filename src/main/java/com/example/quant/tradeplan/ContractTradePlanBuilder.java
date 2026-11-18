@@ -12,6 +12,7 @@ import com.example.quant.ai.AiAnalysisService;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.OkxContractScanner;
 import com.example.quant.crypto.dto.ContractCandidate;
+import com.example.quant.crypto.dto.ContractScoreBreakdown;
 import com.example.quant.leverage.LeverageDecisionRequest;
 import com.example.quant.leverage.LeverageDecisionResult;
 import com.example.quant.leverage.LeverageDecisionService;
@@ -686,7 +687,7 @@ public class ContractTradePlanBuilder {
         payload.put("stopLossPrice", draft.stopLossPrice());
         payload.put("takeProfitPrice", draft.takeProfitPrice());
         payload.put("gateWarnings", gateWarnings);
-        payload.put("scoreWeights", "trend=23, volume=22, liquidity=25, volatility=10, oiFunding=10, marketEnv=5, newsRisk=5");
+        payload.put("scoreWeights", ContractScoreBreakdown.weightSummary());
         return payload;
     }
 

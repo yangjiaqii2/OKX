@@ -2,6 +2,10 @@ package com.example.quant.tradeplan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import com.example.quant.account.AccountSnapshotService;
 import com.example.quant.account.dto.AccountSummary;
@@ -29,6 +33,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class ContractTradePlanBuilderTest {
@@ -57,6 +62,7 @@ class ContractTradePlanBuilderTest {
     void buildTopCandidatePlanUsesHighestScoreWhenNoInstIdRequested() {
         ContractCandidate sol = autoTradeCandidate("SOL-USDT-SWAP", 90);
         ContractCandidate eth = autoTradeCandidate("ETH-USDT-SWAP", 70);
+        TradePlanRecordService records = mock(TradePlanRecordService.class);
         ContractTradePlanBuilder builder = new ContractTradePlanBuilder(
                 new FixedCandidatesScanner(List.of(sol, eth)),
                 new LimitOrderAiAnalysisService(),
@@ -65,12 +71,15 @@ class ContractTradePlanBuilderTest {
                 new LeverageDecisionService(),
                 passingRiskService(),
                 new AgentProperties(),
-                new NoopTradePlanRecordService()
+                records
         );
 
         TradePlan plan = builder.buildTopCandidatePlan();
 
         assertThat(plan.instId()).isEqualTo("SOL-USDT-SWAP");
+        verify(records).record(any(), any(), any(), argThat(payload ->
+                payload instanceof Map<?, ?> audit
+                        && ContractScoreBreakdown.weightSummary().equals(audit.get("scoreWeights"))));
     }
 
     @Test
