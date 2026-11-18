@@ -226,7 +226,7 @@ included  = firstOpen..lastOpen 的每一根已确认 candle
 
 ## Burn-in 验收
 
-每次验收只使用 `scoring_version = 'V2_WAVE_4_2'` 的记录，并保留查询时间和 SQL 输出：
+每次验收选定一个 `scoring_version` 并保留查询时间和 SQL 输出。新增记录使用 `V2_WAVE_4_3`，已有 `V2_WAVE_4_2` 样本仍按原标签读取：
 
 1. 一个成功 scan 后，`agent_scan_run` 出现新 cohort，snapshot 数等于 `candidate_count`，rank 与该次 scanner 最终顺序一致。
 2. 每个 V2 snapshot 有且只有 `60/240/1440` 三条唯一 outcome，初始为 `PENDING`。

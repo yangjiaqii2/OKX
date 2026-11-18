@@ -19,11 +19,15 @@ class HistoricalCandidateEvaluationServiceTest {
         AgentContractCandidateScoreRepository snapshots = mock(AgentContractCandidateScoreRepository.class);
         CandidateFutureOutcomeRepository outcomes = mock(CandidateFutureOutcomeRepository.class);
         AgentContractCandidateScoreEntity wave42 = snapshot(1L, 1, "V2_WAVE_4_2", "0.85");
+        AgentContractCandidateScoreEntity wave43 = snapshot(9L, 1, "V2_WAVE_4_3", "0.90");
         AgentContractCandidateScoreEntity old = snapshot(2L, 1, "V2_WAVE_4", "0.95");
         CandidateFutureOutcomeEntity outcome = outcome(1L, 60, "0.10", "0.10");
         when(snapshots.findByScoringVersionOrderBySnapshotRankAsc("V2_WAVE_4_2"))
                 .thenReturn(List.of(wave42));
         when(outcomes.findBySnapshotIdIn(List.of(1L))).thenReturn(List.of(outcome));
+        when(snapshots.findByScoringVersionOrderBySnapshotRankAsc("V2_WAVE_4_3"))
+                .thenReturn(List.of(wave43));
+        when(outcomes.findBySnapshotIdIn(List.of(9L))).thenReturn(List.of(outcome(9L, 60, "-0.05", "-0.05")));
 
         HistoricalCandidateEvaluationService service =
                 new HistoricalCandidateEvaluationService(snapshots, outcomes);
@@ -41,6 +45,10 @@ class HistoricalCandidateEvaluationServiceTest {
         assertThat(hour.rankBuckets().get("RANK_1_5").averageRawReturn())
                 .isEqualByComparingTo("0.10");
         assertThat(hour.coverageBuckets().get("HIGH").sampleCount()).isEqualTo(1);
+        var newReport = service.evaluate("V2_WAVE_4_3", 20);
+        assertThat(newReport.candidateCount()).isEqualTo(1);
+        assertThat(newReport.horizons().get(60).rankBuckets().get("RANK_1_5").averageRawReturn())
+                .isEqualByComparingTo("-0.05");
     }
 
     @Test

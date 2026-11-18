@@ -1,5 +1,9 @@
 # OKX 量化交易系统代码库说明
 
+### 候选评分版本 V2_WAVE_4_3
+
+- 新快照写入 `V2_WAVE_4_3`。历史评估仍按调用方传入的版本精确读取，旧快照和旧评估结果保持原标签。版本隔离测试分别验证旧版和新版样本。
+
 ### 候选基础 OI 缺失标记
 
 - 扫描器显式传入空的上期 OI，保留基础一致性缺失时的 50 分。V46 为新快照记 `base_oi_change_missing`，旧快照仍为空。历史 OI 保留在 V2 衍生品评分。分析器保留有效上期数据调用时的 85 分分支。
@@ -846,7 +850,7 @@
 
 ### 2026-09-18 - Wave 5 Historical Candidate Snapshot 与离线 Outcome Evaluation
 
-- V2 生产扫描结果继续由 `OkxContractScanner.scanV2()` 决定；`ContractAnalysisService` 仅将已产生的候选列表通过 observational side path 交给 `ContractCandidateScoreRecorder`。同一次扫描使用 `AgentScanRunEntity.id` 作为 durable evaluation cohort，V2 snapshot 的 `scoringVersion` 当前为 `V2_WAVE_4_2`。
+- V2 生产扫描结果继续由 `OkxContractScanner.scanV2()` 决定；`ContractAnalysisService` 仅将已产生的候选列表通过 observational side path 交给 `ContractCandidateScoreRecorder`。同一次扫描使用 `AgentScanRunEntity.id` 作为 durable evaluation cohort，该历史阶段的 V2 snapshot 写入 `V2_WAVE_4_2`。
 - V2 snapshot 扩展现有 `agent_contract_candidate_score`，保存 scan/rank/instId/reference price、`normalizedScore`、`rankingScore`、available weight、coverage ratio、七个维度分数、已存在的 OI/Funding/RS/ATH/市场质量原始 feature 和 DataQuality。缺失维度保持 SQL `NULL`；snapshot 保存后不由未来行情或当前 calculator 重算覆盖。
 - Flyway V38 新增 `candidate_future_outcome`。每个 snapshot 建立 1h、4h、24h 三个 horizon；`(snapshot_id, horizon_minutes)` 唯一约束保证幂等，Outcome 与 immutable snapshot 分离。Outcome 保存 future price、raw return、directional return、raw max upside/downside、directional MFE/MAE、状态和错误原因。
 - Outcome reconciliation 由定时任务从数据库扫描 `PENDING/PARTIAL/FAILED` 且已成熟的记录；以现有 `OkxMarketService` 的已确认 15m candles 一次按 instId 取数，并从同一批 candles 派生 horizon price 和 MFE/MAE。缺 candle/API 错误不写零收益，而是保留 `PARTIAL`/`FAILED` 及原因，后续可重试；重启不依赖内存 timer。
