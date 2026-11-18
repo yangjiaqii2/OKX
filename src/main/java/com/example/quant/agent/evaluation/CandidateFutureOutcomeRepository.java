@@ -18,7 +18,7 @@ public interface CandidateFutureOutcomeRepository extends JpaRepository<Candidat
     String DUE_COHORT = """
             with control_cohort as (
                 select s.id, row_number() over (
-                    partition by s.signal_type, cast(s.created_at as date)
+                    partition by s.signal_type, floor(unix_timestamp(s.created_at) / 86400)
                     order by mod(s.id * 104729, 1000003), s.id
                 ) as sample_rank
                 from agent_contract_candidate_score s
@@ -33,6 +33,11 @@ public interface CandidateFutureOutcomeRepository extends JpaRepository<Candidat
               and (c.id is null or mod(c.sample_rank - 1, 20) = 0)
             """;
 
+    String FOCUS = """
+            (s.allow_trade = true or s.total_score >= 65
+             or s.signal_type in ('TREND_SHORT','TREND_LONG','PULLBACK_LONG','STRONG_LONG'))
+            """;
+
     String RETRY_ORDER = """
               case when o.last_attempt_at is null then 0 else 1 end,
               o.last_attempt_at, o.maturity_at, o.id
@@ -40,8 +45,8 @@ public interface CandidateFutureOutcomeRepository extends JpaRepository<Candidat
 
     @Query(value = DUE_COHORT + """
               and o.maturity_at >= :cutoff and o.maturity_at <= :now
-            order by
-            """ + RETRY_ORDER, nativeQuery = true)
+            order by case when o.horizon_minutes = 240 and c.id is null and
+            """ + FOCUS + " then 0 else 1 end, " + RETRY_ORDER, nativeQuery = true)
     List<CandidateFutureOutcomeEntity> findRecentDue(
             @Param("statuses") Collection<String> statuses,
             @Param("cutoff") Instant cutoff,
@@ -51,9 +56,9 @@ public interface CandidateFutureOutcomeRepository extends JpaRepository<Candidat
     @Query(value = DUE_COHORT + """
               and o.maturity_at < :cutoff
               and c.id is null
-              and (s.allow_trade = true or s.total_score >= 65
-                   or s.signal_type in ('TREND_SHORT','TREND_LONG','PULLBACK_LONG','STRONG_LONG'))
-            order by
+              and
+            """ + FOCUS + """
+            order by case when o.horizon_minutes = 240 then 0 else 1 end,
             """ + RETRY_ORDER, nativeQuery = true)
     List<CandidateFutureOutcomeEntity> findHistoricalDue(
             @Param("statuses") Collection<String> statuses,

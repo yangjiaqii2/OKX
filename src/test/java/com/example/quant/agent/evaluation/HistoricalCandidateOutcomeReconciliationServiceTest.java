@@ -28,6 +28,31 @@ import org.springframework.data.domain.PageRequest;
 
 class HistoricalCandidateOutcomeReconciliationServiceTest {
     @Test
+    void rateLimitRecordsFailureAndDefersHistoryAcrossRuns() {
+        var snapshots = mock(AgentContractCandidateScoreRepository.class);
+        var outcomes = mock(CandidateFutureOutcomeRepository.class);
+        var market = mock(OkxMarketService.class);
+        Instant now = Instant.parse("2026-11-09T11:05:00Z");
+        Instant maturity = Instant.parse("2026-09-18T11:00:00Z");
+        var first = pending(6L, 60, maturity);
+        var next = pending(7L, 60, maturity);
+        when(outcomes.findHistoricalDue(any(), any(), any(), any())).thenReturn(List.of(first, next));
+        when(snapshots.findById(6L)).thenReturn(Optional.of(snapshot(6L, "BTC-USDT-SWAP", "LONG")));
+        when(snapshots.findById(7L)).thenReturn(Optional.of(snapshot(7L, "ETH-USDT-SWAP", "LONG")));
+        when(market.historicalCandlesBefore("BTC-USDT-SWAP", "15m", maturity))
+                .thenThrow(new OkxMarketService.HistoryRateLimitedException(new IllegalStateException("OKX HTTP 429")));
+        var service = new HistoricalCandidateOutcomeReconciliationService(snapshots, outcomes, market,
+                Clock.fixed(now, ZoneOffset.UTC), 100, 0);
+
+        assertThat(service.reconcile(now).failed()).isEqualTo(1);
+        assertThat(first.getErrorReason()).isEqualTo("HISTORY_RATE_LIMIT_HTTP_429");
+        assertThat(first.getNextRetryAt()).isEqualTo(now.plusSeconds(300));
+        assertThat(next.getStatus()).isEqualTo("PENDING");
+        assertThat(service.reconcile(now.plusSeconds(120)).processed()).isZero();
+        verify(market, times(1)).historicalCandlesBefore(any(), any(), any());
+    }
+
+    @Test
     void reservesBothQueuesAndRecoversAnOldOutcomeOutsideTheRollingCandleWindow() {
         AgentContractCandidateScoreRepository snapshots = mock(AgentContractCandidateScoreRepository.class);
         CandidateFutureOutcomeRepository outcomes = mock(CandidateFutureOutcomeRepository.class);

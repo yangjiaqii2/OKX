@@ -42,6 +42,7 @@ public class HistoricalCandidateOutcomeReconciliationService {
     private final long retryDelayMs;
     private final long stuckThresholdMs;
     private final ReentrantLock reconciliationLock = new ReentrantLock();
+    private Instant historicalBackoffUntil = Instant.MIN;
 
     @Autowired
     public HistoricalCandidateOutcomeReconciliationService(
@@ -130,10 +131,11 @@ public class HistoricalCandidateOutcomeReconciliationService {
     private ReconciliationResult reconcileLocked(Instant now) {
         Instant cutoff = now.minus(RECENT_MATURITY_WINDOW);
         int historicalCapacity = Math.max(1, batchSize / 5);
-        List<CandidateFutureOutcomeEntity> controls = historicalCapacity < 2 ? List.of()
+        boolean canFetchHistory = !now.isBefore(historicalBackoffUntil);
+        List<CandidateFutureOutcomeEntity> controls = !canFetchHistory || historicalCapacity < 2 ? List.of()
                 : outcomeRepository.findHistoricalControlDue(RETRYABLE_STATUSES, cutoff, now,
                         PageRequest.of(0, Math.max(1, historicalCapacity / 5)));
-        List<CandidateFutureOutcomeEntity> historical = outcomeRepository.findHistoricalDue(
+        List<CandidateFutureOutcomeEntity> historical = !canFetchHistory ? List.of() : outcomeRepository.findHistoricalDue(
                 RETRYABLE_STATUSES, cutoff, now, PageRequest.of(0, historicalCapacity - controls.size()));
         List<CandidateFutureOutcomeEntity> due = new ArrayList<>(outcomeRepository.findRecentDue(
                 RETRYABLE_STATUSES, cutoff, now, PageRequest.of(0, batchSize - historical.size() - controls.size())));
@@ -166,11 +168,26 @@ public class HistoricalCandidateOutcomeReconciliationService {
         for (Map.Entry<MarketWindow, List<Work>> entry : byMarketWindow.entrySet()) {
             MarketWindow window = entry.getKey();
             List<Work> work = entry.getValue();
+            if (window.before() != null && now.isBefore(historicalBackoffUntil)) {
+                skipped += work.size();
+                continue;
+            }
             List<ContractCandle> candles;
             try {
                 candles = window.before() == null
                         ? marketService.candles(window.instId(), "15m", 300)
                         : marketService.historicalCandlesBefore(window.instId(), "15m", window.before());
+            } catch (OkxMarketService.HistoryRateLimitedException ex) {
+                Instant observed = clock.instant();
+                Instant backoffStart = observed.isAfter(now) ? observed : now;
+                historicalBackoffUntil = backoffStart.plusMillis(Math.max(300_000L, retryDelayMs));
+                log.warn("Historical candle rate limited HTTP 429 instId={} after={} resumeAt={}",
+                        window.instId(), window.before(), historicalBackoffUntil);
+                for (Work item : work) {
+                    markFailure(item.outcome(), now, "HISTORY_RATE_LIMIT_HTTP_429", historicalBackoffUntil);
+                    failed++;
+                }
+                continue;
             } catch (RuntimeException ex) {
                 for (Work item : work) {
                     markFailure(item.outcome(), now, "MARKET_DATA_ERROR:" + compact(ex.getMessage()));
@@ -359,10 +376,14 @@ public class HistoricalCandidateOutcomeReconciliationService {
     }
 
     private void markFailure(CandidateFutureOutcomeEntity outcome, Instant now, String reason) {
+        markFailure(outcome, now, reason, now.plusMillis(retryDelayMs));
+    }
+
+    private void markFailure(CandidateFutureOutcomeEntity outcome, Instant now, String reason, Instant nextRetryAt) {
         markAttempt(outcome, now);
         outcome.setStatus("FAILED");
         outcome.setErrorReason(reason);
-        outcome.setNextRetryAt(now.plusMillis(retryDelayMs));
+        outcome.setNextRetryAt(nextRetryAt);
         outcome.setUpdatedAt(now);
         outcomeRepository.save(outcome);
     }

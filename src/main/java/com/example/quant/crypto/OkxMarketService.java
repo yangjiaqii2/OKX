@@ -56,11 +56,25 @@ public class OkxMarketService {
             }
         }
         lastHistoryRequestNanos = System.nanoTime();
-        JsonNode root = okxRestClient.publicGet("/api/v5/market/history-candles?instId="
-                + OkxRestClient.encode(instId)
-                + "&bar=" + OkxRestClient.encode(normalizeBar(bar))
-                + "&limit=100&after=" + before.toEpochMilli());
-        return confirmedCandles(root);
+        try {
+            JsonNode root = okxRestClient.publicGet("/api/v5/market/history-candles?instId="
+                    + OkxRestClient.encode(instId)
+                    + "&bar=" + OkxRestClient.encode(normalizeBar(bar))
+                    + "&limit=100&after=" + before.toEpochMilli());
+            return confirmedCandles(root);
+        } catch (IllegalStateException ex) {
+            if (ex.getMessage() != null && (ex.getMessage().equals("OKX HTTP 429")
+                    || ex.getMessage().startsWith("OKX HTTP 429:"))) {
+                throw new HistoryRateLimitedException(ex);
+            }
+            throw ex;
+        }
+    }
+
+    public static final class HistoryRateLimitedException extends IllegalStateException {
+        public HistoryRateLimitedException(Throwable cause) {
+            super("OKX history candles HTTP 429", cause);
+        }
     }
 
     private static List<ContractCandle> confirmedCandles(JsonNode root) {
