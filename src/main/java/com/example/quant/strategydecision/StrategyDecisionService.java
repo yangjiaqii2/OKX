@@ -92,6 +92,9 @@ public class StrategyDecisionService {
         row.setPendingOrderId(blankToNull(pendingOrderId));
         row.setOkxOrderId(blankToNull(okxOrderId));
         row.setReason(compact(reason));
+        row.setSignalExclusionReason(status == StrategyDecisionStatus.NO_SIGNAL
+                && ("auto_trade_disabled_by_config".equals(reason) || "auto_trade_runtime_switch_off".equals(reason))
+                ? reason : null);
         row.setUpdatedAt(now == null ? Instant.now() : now);
         repository.save(row);
     }

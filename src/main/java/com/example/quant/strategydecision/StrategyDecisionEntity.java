@@ -46,6 +46,9 @@ public class StrategyDecisionEntity {
     @Column(name = "reason", length = 240)
     private String reason;
 
+    @Column(name = "signal_exclusion_reason", length = 64)
+    private String signalExclusionReason;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -74,6 +77,8 @@ public class StrategyDecisionEntity {
     public void setOkxOrderId(String okxOrderId) { this.okxOrderId = okxOrderId; }
     public String getReason() { return reason; }
     public void setReason(String reason) { this.reason = reason; }
+    public String getSignalExclusionReason() { return signalExclusionReason; }
+    public void setSignalExclusionReason(String value) { signalExclusionReason = value; }
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

@@ -22,6 +22,29 @@ class StrategyDecisionServiceTest {
     private StrategyDecisionRepository repository;
 
     @Test
+    void signalCountExcludesNewAndHistoricalControlSkipsWithoutChangingDecisionStatus() {
+        String owner = UUID.randomUUID().toString();
+        Instant now = Instant.parse("2026-08-09T12:00:00Z");
+        StrategyDecisionService service = new StrategyDecisionService(repository);
+        var disabled = service.claim(owner, "TEST", "BTC-USDT-SWAP", "5m", now, now);
+        service.complete(disabled.decisionId(), StrategyDecisionStatus.NO_SIGNAL, null, null,
+                "auto_trade_disabled_by_config", now);
+        var legacy = service.claim(owner, "TEST", "ETH-USDT-SWAP", "5m", now, now);
+        var legacyRow = repository.findById(legacy.decisionId()).orElseThrow();
+        legacyRow.setStatus(StrategyDecisionStatus.NO_SIGNAL);
+        legacyRow.setReason("auto_trade_disabled_by_config");
+        repository.saveAndFlush(legacyRow);
+        var observed = service.claim(owner, "TEST", "SOL-USDT-SWAP", "5m", now, now);
+        service.complete(observed.decisionId(), StrategyDecisionStatus.NO_SIGNAL, null, null, "no_candidates", now);
+
+        var row = repository.findById(disabled.decisionId()).orElseThrow();
+        assertThat(row.getStatus()).isEqualTo(StrategyDecisionStatus.NO_SIGNAL);
+        assertThat(row.getSignalExclusionReason()).isEqualTo("auto_trade_disabled_by_config");
+        assertThat(legacyRow.getSignalExclusionReason()).isNull();
+        assertThat(repository.countObservedSignals(owner, StrategyDecisionStatus.NO_SIGNAL)).isEqualTo(1);
+    }
+
+    @Test
     void sameOwnerStrategyAndClosedCandleCanOnlyBeClaimedOnceAcrossServiceRestart() {
         String instId = "IDEMP-" + UUID.randomUUID() + "-USDT-SWAP";
         Instant candle = Instant.parse("2026-08-09T12:00:00Z");
