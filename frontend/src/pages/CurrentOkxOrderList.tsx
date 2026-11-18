@@ -1,5 +1,5 @@
 import RefreshIcon from '@mui/icons-material/Refresh';
-import { Box, Button, CircularProgress, Stack, Tab, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tabs, Typography } from '@mui/material';
+import { Alert, Box, Button, CircularProgress, Stack, Tab, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tabs, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
@@ -17,17 +17,27 @@ export function CurrentOkxOrderList() {
   const [algoOrders, setAlgoOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [availabilityMessage, setAvailabilityMessage] = useState('');
 
   async function load(silent = false) {
     silent ? setRefreshing(true) : setLoading(true);
     try {
+      const binding = await quantApi.accountBindingStatus() as { bound?: boolean };
+      if (!binding.bound) {
+        setNormalOrders([]);
+        setAlgoOrders([]);
+        setAvailabilityMessage('当前账号未绑定 OKX API，无法查询交易所活动委托。');
+        return;
+      }
       const [normal, algo] = await Promise.all([
         quantApi.currentOkxOrders(),
         quantApi.currentOkxAlgoOrders(),
       ]);
       setNormalOrders(Array.isArray(normal) ? normal as OrderRow[] : []);
       setAlgoOrders(Array.isArray(algo) ? algo as OrderRow[] : []);
+      setAvailabilityMessage('');
     } catch (error) {
+      setAvailabilityMessage('OKX 活动委托查询失败；已显示的数据可能过期，请检查接口状态后重试。');
       notify(error instanceof Error ? error.message : 'OKX委托加载失败', { type: 'error' });
     } finally {
       setLoading(false);
@@ -60,6 +70,8 @@ export function CurrentOkxOrderList() {
             </Button>
           }
         />
+
+        {availabilityMessage ? <Alert severity="warning">{availabilityMessage}</Alert> : null}
 
         <Box sx={{ ...glassCard }}>
           <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ px: 1 }}>

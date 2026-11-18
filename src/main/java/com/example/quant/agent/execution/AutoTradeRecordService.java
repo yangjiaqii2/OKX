@@ -5,6 +5,8 @@ import com.example.quant.account.OkxCredentialStore;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.common.PageResult;
 import com.example.quant.crypto.dto.ContractCandidate;
+import com.example.quant.agent.selection.ContractSelectionDecision;
+import com.example.quant.market.DirectionBias;
 import jakarta.persistence.criteria.Predicate;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -30,6 +32,12 @@ public class AutoTradeRecordService {
 
     @Transactional
     public void record(AutoTradeResult result, int candidateCount, ContractCandidate candidate) {
+        record(result, candidateCount, candidate, null);
+    }
+
+    @Transactional
+    public void record(AutoTradeResult result, int candidateCount, ContractCandidate candidate,
+                       ContractSelectionDecision selection) {
         if (repository == null || result == null) {
             return;
         }
@@ -43,8 +51,9 @@ public class AutoTradeRecordService {
             entity.setTradePlanId(result.tradePlanId());
             entity.setPendingOrderId(result.pendingOrderId());
             entity.setOkxOrderId(result.okxOrderId());
-            entity.setAction(result.action());
-            entity.setPosSide(result.posSide());
+            DirectionHint direction = resolveOpenDirection(result, candidate, selection);
+            entity.setAction(direction.action());
+            entity.setPosSide(direction.posSide());
             entity.setLeverage(result.leverage());
             entity.setMarginAmount(result.marginAmount());
             entity.setEntryPrice(result.entryPrice());
@@ -66,6 +75,7 @@ public class AutoTradeRecordService {
             entity.setReasonMessage(result.message());
             entity.setStage(stageFor(result.status()));
             entity.setFallbackAllowed(fallbackAllowed(result.status()));
+            applySelection(entity, result, selection);
             entity.setCreatedAt(now);
             entity.setUpdatedAt(now);
             repository.save(entity);
@@ -75,12 +85,31 @@ public class AutoTradeRecordService {
         }
     }
 
+    private static void applySelection(AutoTradeRecordEntity entity, AutoTradeResult result,
+                                       ContractSelectionDecision selection) {
+        if (selection == null) {
+            return;
+        }
+        entity.setDecisionSource(selection.source().name());
+        ContractSelectionDecision.RankedCandidate ranked = selection.rankedCandidates().stream()
+                .filter(item -> result.instId() != null && result.instId().equals(item.instId()))
+                .findFirst()
+                .orElse(null);
+        entity.setAiConfidence(ranked == null ? selection.confidence() : ranked.confidence());
+        var direction = ranked == null ? selection.direction() : ranked.direction();
+        entity.setAiDirection(direction == null ? null : direction.name());
+        entity.setAiEntryMode(ranked == null ? selection.entryMode() : ranked.entryMode());
+        List<String> reasons = ranked == null ? List.of() : ranked.reasonList();
+        String reason = reasons.isEmpty() ? null : String.join("；", reasons);
+        entity.setSelectionReason(hasText(reason) ? reason : null);
+    }
+
     @Transactional(readOnly = true)
     public PageResult<AutoTradeRecordView> list(String status, String instId, int page, int size) {
         int safePage = Math.max(0, page);
         int safeSize = Math.max(1, Math.min(size, 200));
         Page<AutoTradeRecordEntity> result = repository.findAll(spec(status, instId),
-                PageRequest.of(safePage, safeSize, Sort.by(Sort.Direction.DESC, "createdAt")));
+                PageRequest.of(safePage, safeSize, Sort.by(Sort.Direction.DESC, "id")));
         return new PageResult<>(
                 result.getContent().stream().map(AutoTradeRecordView::from).toList(),
                 result.getTotalElements(),
@@ -126,6 +155,7 @@ public class AutoTradeRecordService {
         return switch (status) {
             case "EXECUTED" -> "SUBMIT";
             case "ENTRY_SUBMITTED" -> "ENTRY";
+            case "WAITING_ENTRY" -> "WAIT_ENTRY";
             case "SKIPPED" -> "SCAN";
             case "REJECTED" -> "CONFIRM";
             case "UNKNOWN_SUBMIT_STATUS" -> "OKX_SUBMIT";
@@ -138,6 +168,37 @@ public class AutoTradeRecordService {
             return null;
         }
         return "SKIPPED".equals(status) || "REJECTED".equals(status);
+    }
+
+    /**
+     * 跳过/未成单记录往往没有 action/posSide；用 AI 方向或候选趋势补开仓方向，便于复盘展示。
+     */
+    private static DirectionHint resolveOpenDirection(AutoTradeResult result, ContractCandidate candidate,
+                                                      ContractSelectionDecision selection) {
+        if (hasText(result.action()) || hasText(result.posSide())) {
+            return new DirectionHint(result.action(), result.posSide());
+        }
+        DirectionBias bias = null;
+        if (selection != null) {
+            ContractSelectionDecision.RankedCandidate ranked = selection.rankedCandidates().stream()
+                    .filter(item -> result.instId() != null && result.instId().equals(item.instId()))
+                    .findFirst()
+                    .orElse(null);
+            bias = ranked == null ? selection.direction() : ranked.direction();
+        }
+        if (bias == null && candidate != null) {
+            bias = candidate.trendDirection();
+        }
+        if (bias == DirectionBias.BULLISH) {
+            return new DirectionHint("OPEN_LONG", "long");
+        }
+        if (bias == DirectionBias.BEARISH) {
+            return new DirectionHint("OPEN_SHORT", "short");
+        }
+        return new DirectionHint(null, null);
+    }
+
+    private record DirectionHint(String action, String posSide) {
     }
 
     private static String currentUsername() {

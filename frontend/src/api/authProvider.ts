@@ -59,7 +59,9 @@ export const authProvider: AuthProvider = {
 
   async logout() {
     try {
-      await bestEffortAuthFetch('/auth/logout', { method: 'POST' });
+      if (getAuthToken()) {
+        await bestEffortAuthFetch('/auth/logout', { method: 'POST' });
+      }
     } catch {
       // Logout must clear local state even when the backend is unavailable or the session already expired.
     } finally {

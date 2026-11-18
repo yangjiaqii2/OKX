@@ -3,15 +3,19 @@ package com.example.quant.account;
 import com.example.quant.account.dto.OkxAccountBindRequest;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.TradingProperties;
+import com.example.quant.config.TradingMode;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationEventPublisher;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 class OkxAccountBindingServiceTest {
     @Test
@@ -27,8 +31,11 @@ class OkxAccountBindingServiceTest {
 
         assertTrue(status.bound());
         assertEquals("abc1****6789", status.maskedApiKey());
-        assertFalse(status.liveTradingEnabled());
+        assertEquals(TradingMode.DISABLED, status.tradingMode());
         assertTrue(store.findActive().isPresent());
+        StoredOkxCredential stored = store.findActive().orElseThrow();
+        assertTrue(stored.encodedSecret().startsWith("v1:"));
+        assertFalse(stored.encodedSecret().contains("secret-value"));
     }
 
     @Test
@@ -94,10 +101,24 @@ class OkxAccountBindingServiceTest {
         assertFalse(store.findActive().isPresent());
     }
 
+    @Test
+    void successfulBindingPublishesRecoveryEventWithoutCredentials() {
+        InMemoryOkxCredentialStore store = new InMemoryOkxCredentialStore();
+        OkxAccountBindingService service = newService(store);
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        service.configureEventPublisher(publisher);
+
+        AuthUserContext.runAs("alice", () -> service.bind(new OkxAccountBindRequest(
+                "abc123456789", "secret-value", "passphrase-value")));
+
+        verify(publisher).publishEvent(new OkxAccountBoundEvent("alice"));
+    }
+
     private static OkxAccountBindingService newService(OkxCredentialStore store) {
         return new OkxAccountBindingService(
                 new TradingProperties("SEMI_AUTO", true, false, 120, false),
-                store
+                store,
+                new AesGcmOkxCredentialCodec("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
         );
     }
 

@@ -1,5 +1,6 @@
 package com.example.quant.agent.execution;
 
+import com.example.quant.account.PositionSideMatcher;
 import com.example.quant.account.dto.PositionSummary;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.dto.ContractCandidate;
@@ -16,13 +17,18 @@ public class CorrelationExposureGuard {
     }
 
     public ExposureDecision evaluate(List<PositionSummary> positions, ContractCandidate candidate) {
+        return evaluate(positions, candidate, candidate.trendDirection());
+    }
+
+    public ExposureDecision evaluate(List<PositionSummary> positions, ContractCandidate candidate,
+                                     DirectionBias intendedDirection) {
         if (!agentProperties.exposure().enabled() || isMajor(candidate.instId())) {
             return ExposureDecision.allowed("exposure_guard_passed");
         }
-        String candidateSide = candidate.trendDirection() == DirectionBias.BEARISH ? "short" : "long";
+        String candidateSide = intendedDirection == DirectionBias.BEARISH ? "short" : "long";
         long sameDirectionAltCount = (positions == null ? List.<PositionSummary>of() : positions).stream()
                 .filter(position -> !isMajor(position.instId()))
-                .filter(position -> candidateSide.equalsIgnoreCase(position.posSide()))
+                .filter(position -> PositionSideMatcher.matches(position.instId(), candidateSide, null, position))
                 .count();
         int limit = agentProperties.exposure().maxSameDirectionAltPositions();
         if (candidate.marketRiskLevel().ordinal() >= com.example.quant.risk.RiskLevel.HIGH.ordinal()) {

@@ -1,9 +1,11 @@
 package com.example.quant.order;
 
 import com.example.quant.market.MarketType;
+import com.example.quant.tradeplan.CanonicalExecutablePlan;
 import com.example.quant.tradeplan.TradePlanType;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 public record PendingOrderView(
@@ -23,7 +25,11 @@ public record PendingOrderView(
         int leverage,
         String tdMode,
         BigDecimal stopLossPrice,
+        BigDecimal plannedTakeProfitPrice,
         BigDecimal takeProfitPrice,
+        List<CanonicalExecutablePlan.ExitLeg> executableTakeProfitLegs,
+        BigDecimal executableContractQuantity,
+        BigDecimal executableStopLossAmount,
         BigDecimal maxLossAmount,
         BigDecimal riskRewardRatio,
         int signalScore,
@@ -60,6 +66,11 @@ public record PendingOrderView(
                 order.tdMode(),
                 order.stopLossPrice(),
                 order.takeProfitPrice(),
+                order.takeProfitPrice(),
+                order.canonicalExecutablePlan() == null
+                        ? List.of() : order.canonicalExecutablePlan().takeProfitLegs(),
+                order.executableContractQuantity(),
+                order.executableStopLossAmount(),
                 order.maxLossAmount(),
                 order.riskRewardRatio(),
                 order.signalScore(),

@@ -22,10 +22,10 @@ public record MarketEnvironment(
                 DirectionBias.NEUTRAL,
                 DirectionBias.NEUTRAL,
                 RiskLevel.HIGH,
-                BigDecimal.ZERO,
-                BigDecimal.ZERO,
-                BigDecimal.ZERO,
-                BigDecimal.ZERO,
+                null,
+                null,
+                null,
+                null,
                 List.of(reason),
                 Instant.now()
         );

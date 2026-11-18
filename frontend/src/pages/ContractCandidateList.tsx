@@ -23,7 +23,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from '@mui/material';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
 import { ClosePositionDialog } from '../components/ClosePositionDialog';
@@ -35,8 +35,8 @@ import { formatLeverage, formatNumber, formatPercent, formatPrice, formatSide, f
 
 type ContractCandidate = Record<string, unknown>;
 type PositionRow = Record<string, unknown>;
-type HeldContract = ContractCandidate & {
-  position: PositionRow;
+type CandidateWithPosition = ContractCandidate & {
+  position?: PositionRow;
 };
 type Candle = {
   timestamp: string;
@@ -75,28 +75,34 @@ export function ContractCandidateList() {
   const [closingKey, setClosingKey] = useState('');
   const [error, setError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [aiSelection, setAiSelection] = useState<Record<string, unknown>>();
   const [sortField, setSortField] = useState<SortField>('default');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const loadRunning = useRef(false);
 
   async function load(silent = false) {
+    if (loadRunning.current) return;
+    loadRunning.current = true;
     if (silent) {
       setRefreshing(true);
     } else {
       setLoading(true);
     }
     try {
-      const [contractData, riskData, accountData, orderData, positionData] = await Promise.all([
+      const [contractData, riskData, accountData, orderData, positionData, selectionData] = await Promise.all([
         quantApi.contractCandidates(),
         quantApi.riskStatus(),
         quantApi.accountSummary(),
         quantApi.pendingOrders(),
         quantApi.positions(),
+        quantApi.aiContractSelection(),
       ]);
       setContracts(Array.isArray(contractData) ? (contractData as ContractCandidate[]) : []);
       setPositions(Array.isArray(positionData) ? (positionData as PositionRow[]) : []);
       setRisk(riskData as Record<string, unknown>);
       setAccount(accountData as Record<string, unknown>);
       setPendingCount(Array.isArray(orderData) ? orderData.length : 0);
+      setAiSelection(selectionData as Record<string, unknown>);
       setLastUpdatedAt(new Date());
       setError('');
     } catch (loadError) {
@@ -106,6 +112,7 @@ export function ContractCandidateList() {
         notify(message, { type: 'error' });
       }
     } finally {
+      loadRunning.current = false;
       setLoading(false);
       setRefreshing(false);
     }
@@ -153,7 +160,9 @@ export function ContractCandidateList() {
     }
     setBatchPlanning(true);
     try {
-      const topContract = [...contracts].sort((a, b) => Number(b.score ?? 0) - Number(a.score ?? 0))[0];
+      const selectedInstId = aiSelection?.source === 'AI_PRIMARY' ? String(aiSelection.selectedInstId ?? '') : '';
+      const topContract = contracts.find((item) => item.instId === selectedInstId)
+        ?? [...contracts].sort((a, b) => Number(b.finalRankScore ?? b.score ?? 0) - Number(a.finalRankScore ?? a.score ?? 0))[0];
       const order = (await quantApi.createPendingOrder(String(topContract.instId))) as Record<string, unknown>;
       notify(`最高分计划已创建：${String(order.instId)}，请到待确认订单查看`, { type: 'success' });
       await load(true);
@@ -170,7 +179,7 @@ export function ContractCandidateList() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const heldContracts = useMemo<HeldContract[]>(() => {
+  const heldContracts = useMemo<CandidateWithPosition[]>(() => {
     return positions
       .filter((position) => Number(position.size ?? 0) !== 0)
       .map((position) => {
@@ -179,10 +188,15 @@ export function ContractCandidateList() {
       });
   }, [contracts, positions]);
 
+  const candidateContracts = useMemo<CandidateWithPosition[]>(() => contracts.map((contract) => ({
+    ...contract,
+    position: positions.find((position) => String(position.instId) === String(contract.instId)),
+  })), [contracts, positions]);
+
   const sorted = useMemo(() => {
-    if (sortField === 'default') return heldContracts;
+    if (sortField === 'default') return candidateContracts;
     const dir = sortDir === 'asc' ? 1 : -1;
-    return [...heldContracts].sort((a, b) => {
+    return [...candidateContracts].sort((a, b) => {
       if (sortField === 'price') {
         const av = Number(a.lastPrice ?? 0);
         const bv = Number(b.lastPrice ?? 0);
@@ -195,7 +209,7 @@ export function ContractCandidateList() {
       }
       return 0;
     });
-  }, [heldContracts, sortField, sortDir]);
+  }, [candidateContracts, sortField, sortDir]);
 
   const filtered = useMemo(() => {
     const text = query.trim().toLowerCase();
@@ -209,13 +223,13 @@ export function ContractCandidateList() {
   }, [sorted, query]);
 
   const top = contracts[0] as ContractCandidate | undefined;
-  const totalPnl = heldContracts.reduce((sum, contract) => sum + Number(contract.position.unrealizedPnl ?? 0), 0);
+  const totalPnl = heldContracts.reduce((sum, contract) => sum + Number(contract.position?.unrealizedPnl ?? 0), 0);
 
   return (
-    <PageShell title="OKX当前持仓">
+    <PageShell title="合约机会">
       <Stack spacing={2.25}>
         <PageHeader
-          title="OKX当前持仓"
+          title="AI 合约机会"
           subtitle={`${lastUpdatedAt ? `行情刷新 ${lastUpdatedAt.toLocaleTimeString()}` : '行情准备中'}${refreshing ? ' · 更新中' : ''}`}
           eyebrow="Market Scanner"
           actions={
@@ -295,13 +309,20 @@ export function ContractCandidateList() {
             gap: 1.5,
           }}
         >
-          <MarketStat label="当前持仓" value={heldContracts.length} helper="页面只显示已买入合约" />
+          <MarketStat label="准入候选" value={contracts.length} helper={`当前持仓 ${heldContracts.length}`} />
           <MarketStat label="最高分候选" value={String(top?.instId ?? '--')} helper={`${formatTrend(top?.trendDirection)} · ${formatNumber(top?.score, 0)}分`} />
           <MarketStat label="持仓浮盈亏" value={formatUSDT(totalPnl)} helper="OKX未实现盈亏" />
         </Box>
 
         <Alert severity="info">
-          评分权重：趋势25，成交量25，流动性15，波动10，持仓/资金费率10，市场环境8，新闻风险7。
+          AI 在规则准入池内主导合约、方向和入场模式；规则继续计算价格、仓位并执行所有硬风控。
+        </Alert>
+        <Alert severity={aiSelection?.source === 'RULE_FALLBACK' ? 'warning' : 'info'}>
+          {aiSelection?.source === 'AI_PRIMARY'
+            ? `AI 主选 ${String(aiSelection.selectedInstId)} · ${formatSide(aiSelection.direction)} · ${String(aiSelection.entryMode)} · 置信度 ${formatPercent(Number(aiSelection.confidence ?? 0) * 100)}`
+            : aiSelection?.source === 'AI_WAIT' ? 'AI 本轮选择等待，不会触发规则保底下单。'
+              : aiSelection?.source === 'RULE_FALLBACK' ? `AI 不可用，已进入规则保底：${String(aiSelection.fallbackReason ?? '原因不可用')}`
+                : 'AI 尚未完成本轮选择。'}
         </Alert>
 
         {loading ? (
@@ -326,15 +347,15 @@ export function ContractCandidateList() {
                 contract={contract}
                 rank={index + 1}
                 planning={planningInstId === contract.instId || batchPlanning}
-                closing={closingKey === positionKey(contract.position)}
+                closing={Boolean(contract.position) && closingKey === positionKey(contract.position!)}
                 onCreatePlan={() => void createAiPlan(String(contract.instId))}
-                onClosePosition={() => setCloseDialogPosition(contract.position)}
+                onClosePosition={() => contract.position && setCloseDialogPosition(contract.position)}
                 onOpenChart={() => setChartInstId(String(contract.instId))}
               />
             ))}
             {filtered.length === 0 && (
               <Box sx={{ ...glassCard, p: 2, borderRadius: 1, color: 'text.secondary' }}>
-                当前没有OKX持仓。自动交易仍会按最高分候选尝试开仓。
+                当前没有满足数据准入条件的合约候选。
               </Box>
             )}
           </Box>
@@ -361,7 +382,7 @@ function ContractCard({
   onClosePosition,
   onOpenChart,
 }: {
-  contract: HeldContract;
+  contract: CandidateWithPosition;
   rank: number;
   planning: boolean;
   closing: boolean;
@@ -371,11 +392,12 @@ function ContractCard({
 }) {
   const change = Number(contract.changePercent24h);
   const position = contract.position ?? {};
+  const held = Boolean(contract.position);
   const pnl = Number(position.unrealizedPnl ?? 0);
-  const positive = pnl >= 0;
+  const positive = held ? pnl >= 0 : change >= 0;
   const TrendIcon = positive ? TrendingUpIcon : TrendingDownIcon;
-  const trendText = formatSide(position.posSide);
-  const trendColor = positive ? '#22c55e' : '#ef4444';
+  const trendText = held ? formatSide(position.posSide) : formatTrend(contract.trendDirection);
+  const trendColor = positive ? '#00E676' : '#FF3B30';
 
   return (
     <Box
@@ -429,7 +451,7 @@ function ContractCard({
             />
           </Box>
           <Stack direction="row" gap={0.75} flexWrap="wrap" justifyContent="flex-end">
-            <Button
+            {held && <Button
               size="small"
               color="error"
               variant="outlined"
@@ -442,7 +464,7 @@ function ContractCard({
               sx={{ minWidth: 72 }}
             >
               {closing ? '提交中' : '平仓'}
-            </Button>
+            </Button>}
             <Button
               size="small"
               variant="contained"
@@ -469,10 +491,10 @@ function ContractCard({
         >
           <Box>
             <Typography variant="caption" color="text.secondary">
-              未实现盈亏
+              {held ? '未实现盈亏' : '最新价格'}
             </Typography>
             <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 22, fontWeight: 900 }}>
-              {formatUSDT(position.unrealizedPnl)}
+              {held ? formatUSDT(position.unrealizedPnl) : formatPrice(contract.lastPrice)}
             </Typography>
           </Box>
           <Stack direction="row" alignItems="center" spacing={0.5} sx={{ color: positive ? 'success.main' : 'error.main' }}>
@@ -484,16 +506,16 @@ function ContractCard({
         </Box>
 
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
-          <MiniMetric label="持仓数量" value={formatNumber(position.size)} />
-          <MiniMetric label="持仓均价" value={formatPrice(position.avgPrice)} />
-          <MiniMetric label="真实保证金" value={formatUSDT(position.margin)} />
-          <MiniMetric label="保证金模式" value={`${formatSide(position.marginMode)} ${formatLeverage(position.leverage)}`} />
+          <MiniMetric label="持仓数量" value={held ? formatNumber(position.size) : '未持仓'} />
+          <MiniMetric label="持仓均价" value={held ? formatPrice(position.avgPrice) : '不可用'} />
+          <MiniMetric label="真实保证金" value={held ? formatUSDT(position.margin) : '不可用'} />
+          <MiniMetric label="保证金模式" value={held ? `${formatSide(position.marginMode)} ${formatLeverage(position.leverage)}` : '不可用'} />
           <MiniMetric label="最新价" value={formatPrice(contract.lastPrice)} />
           <MiniMetric label="综合评分" value={formatNumber(contract.score, 0)} />
           <MiniMetric label="建议杠杆" value={formatLeverage(contract.suggestedLeverage)} />
           <MiniMetric label="24h成交量" value={formatVolume(contract.volume24h)} />
           <MiniMetric label="量能放大" value={`${formatNumber(contract.volumeSpikeRatio, 2)}x`} />
-          <MiniMetric label="方向" value={formatSide(position.posSide)} />
+          <MiniMetric label="方向" value={formatTrend(contract.trendDirection)} />
         </Box>
 
         <Stack direction="row" gap={0.75} flexWrap="wrap" sx={{ minHeight: 26 }}>
@@ -521,7 +543,10 @@ function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean
     }
     let active = true;
     let firstLoad = true;
+    let requestRunning = false;
     async function loadCandles() {
+      if (requestRunning) return;
+      requestRunning = true;
       if (firstLoad) {
         setLoading(true);
       }
@@ -536,6 +561,7 @@ function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean
           setCandles([]);
         }
       } finally {
+        requestRunning = false;
         if (active) {
           setLoading(false);
           firstLoad = false;
@@ -543,7 +569,7 @@ function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean
       }
     }
     void loadCandles();
-    const timer = window.setInterval(() => void loadCandles(), 1000);
+    const timer = window.setInterval(() => void loadCandles(), 5000);
     return () => {
       active = false;
       window.clearInterval(timer);

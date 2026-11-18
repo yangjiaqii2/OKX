@@ -37,6 +37,7 @@ class ContractSignalAnalyzerScenarioTest {
         assertThat(signal.klineAnalysis().entryTiming5m()).isEqualTo("READY");
         assertThat(signal.scoreBreakdown().trend()).isGreaterThanOrEqualTo(80);
         assertThat(signal.score()).isGreaterThanOrEqualTo(80);
+        assertThat(signal.suggestedLeverage()).isBetween(6, 10);
     }
 
     @Test
@@ -100,7 +101,7 @@ class ContractSignalAnalyzerScenarioTest {
     }
 
     @Test
-    void highTodayGainAndSharpDropWithStructureBreakAllowsReversalShortCandidate() {
+    void highTodayGainAndSharpDropKeepsReversalShortInShadowOnly() {
         ContractSignal signal = analyzer.analyze(
                 "PUMP-SHORT-USDT-SWAP",
                 new BigDecimal("180"),
@@ -115,7 +116,7 @@ class ContractSignalAnalyzerScenarioTest {
 
         assertThat(signal.signalType()).isEqualTo(ContractSignalType.REVERSAL_SHORT);
         assertThat(signal.directionBias().name()).isEqualTo("BEARISH");
-        assertThat(signal.action()).isIn("AUTO_TRADE_ALLOWED", "WAIT_CONFIRM");
+        assertThat(signal.action()).isEqualTo("WAIT");
         assertThat(signal.stopLossPrice()).isGreaterThan(signal.entryPrice());
     }
 
@@ -136,6 +137,7 @@ class ContractSignalAnalyzerScenarioTest {
 
         assertThat(signal.signalType()).isEqualTo(ContractSignalType.REVERSAL_SHORT);
         assertThat(signal.directionBias().name()).isEqualTo("BEARISH");
+        assertThat(signal.action()).isEqualTo("WAIT");
         assertThat(signal.suggestedLeverage()).isLessThanOrEqualTo(3);
         assertThat(signal.stopLossPrice()).isGreaterThan(signal.entryPrice());
     }

@@ -3,6 +3,7 @@ package com.example.quant.crypto;
 import com.example.quant.crypto.dto.ContractCandle;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -26,14 +27,33 @@ public class OkxMarketService {
     }
 
     public List<ContractCandle> candles(String instId, String bar, int limit) {
+        return candles(instId, bar, limit, null);
+    }
+
+    public List<ContractCandle> candles(String instId, String bar, int limit, Duration timeout) {
         String normalizedBar = normalizeBar(bar);
-        JsonNode root = okxRestClient.publicGet("/api/v5/market/candles?instId="
+        String path = "/api/v5/market/candles?instId="
                 + OkxRestClient.encode(instId)
                 + "&bar=" + OkxRestClient.encode(normalizedBar)
-                + "&limit=" + Math.max(1, Math.min(300, limit)));
+                + "&limit=" + Math.max(1, Math.min(300, limit));
+        JsonNode root = timeout == null
+                ? okxRestClient.publicGet(path)
+                : okxRestClient.publicGet(path, timeout);
+        return confirmedCandles(root);
+    }
+
+    public List<ContractCandle> historicalCandlesBefore(String instId, String bar, Instant before) {
+        JsonNode root = okxRestClient.publicGet("/api/v5/market/history-candles?instId="
+                + OkxRestClient.encode(instId)
+                + "&bar=" + OkxRestClient.encode(normalizeBar(bar))
+                + "&limit=100&after=" + before.toEpochMilli());
+        return confirmedCandles(root);
+    }
+
+    private static List<ContractCandle> confirmedCandles(JsonNode root) {
         List<ContractCandle> candles = new ArrayList<>();
         for (JsonNode item : root.path("data")) {
-            if (!item.isArray() || item.size() < 6) {
+            if (!item.isArray() || item.size() < 9 || !"1".equals(item.get(8).asText())) {
                 continue;
             }
             candles.add(new ContractCandle(

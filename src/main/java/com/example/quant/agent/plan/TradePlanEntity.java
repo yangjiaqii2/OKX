@@ -68,6 +68,9 @@ public class TradePlanEntity {
     @Column(name = "plan_json", columnDefinition = "TEXT")
     private String planJson;
 
+    @Column(name = "canonical_plan_json", columnDefinition = "TEXT")
+    private String canonicalPlanJson;
+
     @Column(name = "status", nullable = false, length = 32)
     private String status;
 
@@ -155,6 +158,10 @@ public class TradePlanEntity {
 
     public void setPlanJson(String planJson) {
         this.planJson = planJson;
+    }
+
+    public void setCanonicalPlanJson(String canonicalPlanJson) {
+        this.canonicalPlanJson = canonicalPlanJson;
     }
 
     public void setStatus(String status) {

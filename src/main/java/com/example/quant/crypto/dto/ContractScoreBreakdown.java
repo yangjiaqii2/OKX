@@ -21,8 +21,8 @@ public record ContractScoreBreakdown(
 
     public int weightedTotal() {
         return clamp((int) Math.round(
-                trend * 0.23
-                        + volume * 0.22
+                trend * 0.25
+                        + volume * 0.20
                         + liquidity * 0.25
                         + volatility * 0.10
                         + oiFunding * 0.10
@@ -33,8 +33,8 @@ public record ContractScoreBreakdown(
 
     public ContractFactorScore weightedFactorScore() {
         return new ContractFactorScore(
-                weighted(trend, 23),
-                weighted(volume, 22),
+                weighted(trend, 25),
+                weighted(volume, 20),
                 weighted(volatility, 10),
                 weighted(liquidity, 25),
                 weighted(oiFunding, 10),

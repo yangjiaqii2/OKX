@@ -2,6 +2,7 @@ import { postParams, quantFetch } from './http';
 
 export const quantApi = {
   contractCandidates: () => quantFetch('/contract/candidates'),
+  aiContractSelection: () => quantFetch('/contract/ai-selection'),
   contractCandles: (instId: string, bar: string) =>
     quantFetch(`/contract/candles?instId=${encodeURIComponent(instId)}&bar=${encodeURIComponent(bar)}`),
   pendingOrders: () => quantFetch('/orders/pending'),
@@ -52,6 +53,7 @@ export const quantApi = {
     }),
   unbindOkxAccount: () => quantFetch('/account/unbind', { method: 'POST' }),
   systemStatus: () => quantFetch('/system/status'),
+  runtimeStatus: () => quantFetch('/system/runtime-status'),
   fxRate: (base = 'USD', quote = 'CNY') =>
     quantFetch(`/system/fx-rate?base=${encodeURIComponent(base)}&quote=${encodeURIComponent(quote)}`),
   autoTradeRecords: (params: { status?: string; instId?: string; page?: number; size?: number } = {}) => {
@@ -66,12 +68,19 @@ export const quantApi = {
   emergencyStop: () => quantFetch('/system/emergency-stop', { method: 'POST' }),
   resume: () => quantFetch('/system/resume', { method: 'POST' }),
   enableAutoTrade: (
-    marginUsdt: string,
+    budgetValue: string,
     riskMode: 'STRICT' | 'NO_RISK' = 'STRICT',
     noRiskMinScore?: string,
     minLeverage?: string,
+    budgetMode: 'FIXED_USDT' | 'AVAILABLE_BALANCE_PERCENT' = 'FIXED_USDT',
   ) => {
-    const params: Record<string, string> = { marginUsdt, riskMode };
+    const params: Record<string, string> = {
+      riskMode,
+      budgetMode,
+      ...(budgetMode === 'AVAILABLE_BALANCE_PERCENT'
+        ? { marginPct: budgetValue }
+        : { marginUsdt: budgetValue }),
+    };
     if (noRiskMinScore) {
       params.noRiskMinScore = noRiskMinScore;
     }

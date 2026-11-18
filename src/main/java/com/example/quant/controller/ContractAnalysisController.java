@@ -5,6 +5,8 @@ import com.example.quant.crypto.OkxMarketService;
 import com.example.quant.news.CryptoNewsService;
 import com.example.quant.task.ContractMarketScanTask;
 import com.example.quant.tradeplan.TradePlanService;
+import com.example.quant.agent.selection.AiContractSelectionService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,6 +21,7 @@ public class ContractAnalysisController {
     private final ContractMarketScanTask contractMarketScanTask;
     private final TradePlanService tradePlanService;
     private final OkxMarketService okxMarketService;
+    private AiContractSelectionService aiContractSelectionService;
 
     public ContractAnalysisController(ContractAnalysisService contractAnalysisService, CryptoNewsService cryptoNewsService,
                                       ContractMarketScanTask contractMarketScanTask, TradePlanService tradePlanService,
@@ -30,9 +33,20 @@ public class ContractAnalysisController {
         this.okxMarketService = okxMarketService;
     }
 
+    @Autowired(required = false)
+    void configureAiContractSelectionService(AiContractSelectionService service) {
+        this.aiContractSelectionService = service;
+    }
+
     @GetMapping("/candidates")
     public Object candidates() {
         return contractAnalysisService.candidates();
+    }
+
+    @GetMapping("/ai-selection")
+    public Object aiSelection() {
+        return aiContractSelectionService == null ? java.util.Map.of("source", "NOT_AVAILABLE")
+                : aiContractSelectionService.latest();
     }
 
     @GetMapping("/report")

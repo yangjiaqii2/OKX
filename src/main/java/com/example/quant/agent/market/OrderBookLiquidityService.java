@@ -2,13 +2,14 @@ package com.example.quant.agent.market;
 
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.OkxRestClient;
+import com.example.quant.okxtrade.OkxInstrumentRules;
+import com.example.quant.okxtrade.OkxInstrumentRulesProvider;
+import com.example.quant.okxtrade.OkxInstrumentRulesService;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
-import java.util.Locale;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -17,11 +18,18 @@ public class OrderBookLiquidityService {
 
     private final OkxRestClient okxRestClient;
     private final AgentProperties agentProperties;
-    private final ConcurrentMap<String, ContractSpec> contractSpecs = new ConcurrentHashMap<>();
+    private final OkxInstrumentRulesProvider instrumentRulesProvider;
 
     public OrderBookLiquidityService(OkxRestClient okxRestClient, AgentProperties agentProperties) {
+        this(okxRestClient, agentProperties, new OkxInstrumentRulesService(okxRestClient));
+    }
+
+    @Autowired
+    public OrderBookLiquidityService(OkxRestClient okxRestClient, AgentProperties agentProperties,
+                                     OkxInstrumentRulesProvider instrumentRulesProvider) {
         this.okxRestClient = okxRestClient;
         this.agentProperties = agentProperties;
+        this.instrumentRulesProvider = instrumentRulesProvider;
     }
 
     public OrderBookLiquiditySnapshot snapshot(String instId) {
@@ -53,9 +61,9 @@ public class OrderBookLiquidityService {
             BigDecimal maxSpreadBps = agentProperties.market().maxSpreadBps();
             BigDecimal bidFloor = mid.multiply(BigDecimal.ONE.subtract(maxSpreadBps.divide(TEN_THOUSAND, 12, RoundingMode.HALF_UP)));
             BigDecimal askCeiling = mid.multiply(BigDecimal.ONE.add(maxSpreadBps.divide(TEN_THOUSAND, 12, RoundingMode.HALF_UP)));
-            ContractSpec contractSpec = contractSpec(instId);
-            BigDecimal bidDepth = depthWithin(bids, bidFloor, true, contractSpec);
-            BigDecimal askDepth = depthWithin(asks, askCeiling, false, contractSpec);
+            OkxInstrumentRules rules = instrumentRulesProvider.rules(instId);
+            BigDecimal bidDepth = depthWithin(bids, bidFloor, true, rules);
+            BigDecimal askDepth = depthWithin(asks, askCeiling, false, rules);
             BigDecimal minDepth = agentProperties.market().minDepthUsdt();
             String denyReason = "";
             if (spreadBps.compareTo(maxSpreadBps) > 0) {
@@ -81,36 +89,12 @@ public class OrderBookLiquidityService {
                     Instant.now()
             );
         } catch (RuntimeException ex) {
-            return OrderBookLiquiditySnapshot.unavailable(instId, "OKX订单簿获取失败：" + ex.getMessage());
+            return OrderBookLiquiditySnapshot.unavailable(instId, "OKX订单簿或合约规则获取失败：" + ex.getMessage());
         }
-    }
-
-    private ContractSpec contractSpec(String instId) {
-        return contractSpecs.computeIfAbsent(instId, this::fetchContractSpec);
-    }
-
-    private ContractSpec fetchContractSpec(String instId) {
-        try {
-            JsonNode root = okxRestClient.publicGet("/api/v5/public/instruments?instType=SWAP&instId="
-                    + OkxRestClient.encode(instId));
-            JsonNode data = root.path("data");
-            if (data.isArray() && !data.isEmpty()) {
-                JsonNode instrument = data.get(0);
-                BigDecimal ctVal = decimal(instrument, "ctVal");
-                if (ctVal.signum() > 0) {
-                    String ctValCcy = instrument.path("ctValCcy").asText(baseCurrency(instId));
-                    return new ContractSpec(ctVal, ctValCcy == null || ctValCcy.isBlank()
-                            ? baseCurrency(instId)
-                            : ctValCcy);
-                }
-            }
-        } catch (RuntimeException ignored) {
-        }
-        return ContractSpec.defaultFor(instId);
     }
 
     private static BigDecimal depthWithin(JsonNode levels, BigDecimal boundaryPrice, boolean bidSide,
-                                          ContractSpec contractSpec) {
+                                          OkxInstrumentRules rules) {
         BigDecimal sum = BigDecimal.ZERO;
         for (JsonNode level : levels) {
             BigDecimal price = price(level);
@@ -121,7 +105,12 @@ public class OrderBookLiquidityService {
             if (!included) {
                 continue;
             }
-            sum = sum.add(contractSpec.notionalUsdt(price, size(level)));
+            BigDecimal contracts = size(level);
+            BigDecimal baseQuantity = contracts.multiply(rules.contractValue());
+            boolean quoteValue = rules.contractValueCurrency().equalsIgnoreCase("USDT")
+                    || rules.contractValueCurrency().equalsIgnoreCase("USD")
+                    || rules.contractValueCurrency().equalsIgnoreCase("USDC");
+            sum = sum.add(quoteValue ? baseQuantity : price.multiply(baseQuantity));
         }
         return sum.setScale(4, RoundingMode.HALF_UP);
     }
@@ -145,35 +134,4 @@ public class OrderBookLiquidityService {
         return new BigDecimal(value);
     }
 
-    private static BigDecimal decimal(JsonNode node, String field) {
-        String value = node.path(field).asText("0");
-        if (value == null || value.isBlank()) {
-            return BigDecimal.ZERO;
-        }
-        return new BigDecimal(value);
-    }
-
-    private static String baseCurrency(String instId) {
-        int index = instId.indexOf('-');
-        return index > 0 ? instId.substring(0, index) : instId;
-    }
-
-    private record ContractSpec(BigDecimal ctVal, String ctValCcy) {
-        static ContractSpec defaultFor(String instId) {
-            return new ContractSpec(BigDecimal.ONE, baseCurrency(instId));
-        }
-
-        BigDecimal notionalUsdt(BigDecimal price, BigDecimal size) {
-            BigDecimal contractValue = size.multiply(ctVal);
-            if (valueAlreadyInQuoteCurrency()) {
-                return contractValue;
-            }
-            return price.multiply(contractValue);
-        }
-
-        private boolean valueAlreadyInQuoteCurrency() {
-            String normalized = ctValCcy == null ? "" : ctValCcy.toUpperCase(Locale.ROOT);
-            return "USDT".equals(normalized) || "USD".equals(normalized);
-        }
-    }
 }

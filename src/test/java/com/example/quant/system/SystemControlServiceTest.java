@@ -89,6 +89,58 @@ class SystemControlServiceTest {
     }
 
     @Test
+    void calculatesAutoTradeBudgetFromLatestAvailableBalancePercentage() {
+        SystemControlService service = new SystemControlService(tradingProperties());
+
+        SystemControlService.SystemStatus status = service.enableAutoTradePercent(
+                BigDecimal.valueOf(80), AutoTradeRiskMode.STRICT);
+
+        assertThat(status.autoTradeBudgetMode()).isEqualTo(AutoTradeBudgetMode.AVAILABLE_BALANCE_PERCENT);
+        assertThat(status.autoTradeMarginPct()).isEqualByComparingTo("80");
+        assertThat(service.resolveAutoTradeTotalBudget(BigDecimal.valueOf(100)))
+                .isEqualByComparingTo("80");
+        assertThat(service.resolveAutoTradeTotalBudget(BigDecimal.valueOf(200)))
+                .isEqualByComparingTo("160");
+    }
+
+    @Test
+    void rejectsAvailableBalancePercentageOutsideOneToOneHundred() {
+        SystemControlService service = new SystemControlService(tradingProperties());
+
+        assertThatThrownBy(() -> service.enableAutoTradePercent(BigDecimal.ZERO, AutoTradeRiskMode.STRICT))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("可用余额百分比必须在0到100之间");
+        assertThatThrownBy(() -> service.enableAutoTradePercent(BigDecimal.valueOf(100.01), AutoTradeRiskMode.STRICT))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("可用余额百分比必须在0到100之间");
+    }
+
+    @Test
+    void persistsDynamicBudgetModeAndRestoresItAfterRestart() {
+        SystemControlRepository repository = mock(SystemControlRepository.class);
+        when(repository.findById("GLOBAL")).thenReturn(Optional.empty());
+        when(repository.save(any(SystemControlEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        SystemControlService service = new SystemControlService(tradingProperties(), repository);
+
+        service.enableAutoTradePercent(BigDecimal.valueOf(80), AutoTradeRiskMode.STRICT);
+
+        ArgumentCaptor<SystemControlEntity> captor = ArgumentCaptor.forClass(SystemControlEntity.class);
+        verify(repository).save(captor.capture());
+        SystemControlEntity saved = captor.getValue();
+        assertThat(saved.getAutoTradeBudgetMode()).isEqualTo("AVAILABLE_BALANCE_PERCENT");
+        assertThat(saved.getAutoTradeMarginPct()).isEqualByComparingTo("80");
+
+        SystemControlRepository restartedRepository = mock(SystemControlRepository.class);
+        when(restartedRepository.findById("GLOBAL")).thenReturn(Optional.of(saved));
+        SystemControlService restarted = new SystemControlService(tradingProperties(), restartedRepository);
+
+        assertThat(restarted.status().autoTradeBudgetMode()).isEqualTo(AutoTradeBudgetMode.AVAILABLE_BALANCE_PERCENT);
+        assertThat(restarted.status().autoTradeMarginPct()).isEqualByComparingTo("80");
+        assertThat(restarted.resolveAutoTradeTotalBudget(BigDecimal.valueOf(200)))
+                .isEqualByComparingTo("160");
+    }
+
+    @Test
     void storesUserSelectedNoRiskMinimumScore() {
         SystemControlService service = new SystemControlService(tradingProperties());
 

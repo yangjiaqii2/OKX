@@ -8,14 +8,12 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class LeverageDecisionService {
+    private static final int SYSTEM_MAX_LEVERAGE = 10;
 
     public LeverageDecisionResult decide(LeverageDecisionRequest request) {
         List<String> reasons = new ArrayList<>();
         List<String> risks = new ArrayList<>();
-        int maxAllowed = Math.max(1, request.maxLeverageConfig());
-        if (!isMajorContract(request.instId())) {
-            maxAllowed = Math.min(maxAllowed, 5);
-        }
+        int maxAllowed = Math.min(SYSTEM_MAX_LEVERAGE, Math.max(1, request.maxLeverageConfig()));
 
         if (request.newsRiskLevel() == RiskLevel.BLOCKED) {
             risks.add("风险等级BLOCKED，禁止开仓");
@@ -60,9 +58,5 @@ public class LeverageDecisionService {
 
     private static RiskLevel max(RiskLevel left, RiskLevel right) {
         return left.ordinal() >= right.ordinal() ? left : right;
-    }
-
-    private static boolean isMajorContract(String instId) {
-        return instId != null && (instId.startsWith("BTC-") || instId.startsWith("ETH-"));
     }
 }

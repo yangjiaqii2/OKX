@@ -15,9 +15,12 @@ public record OkxCurrentOrderView(
         String ordType,
         boolean reduceOnly,
         BigDecimal size,
+        BigDecimal filledSize,
         BigDecimal price,
+        BigDecimal averageFillPrice,
         BigDecimal triggerPrice,
         String status,
-        Instant createdAt
+        Instant createdAt,
+        Instant updatedAt
 ) {
 }

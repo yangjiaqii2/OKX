@@ -18,10 +18,14 @@ import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
+import com.example.quant.ledger.TradeFillLedgerService;
+import com.example.quant.ledger.TradeFillEntity;
+import com.example.quant.okxtrade.OkxCurrentOrderService;
 import com.example.quant.okxtrade.OkxOrderGateway;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
+import com.example.quant.risk.DailyRiskService;
 import com.example.quant.tradeplan.TradePlan;
 import com.example.quant.tradeplan.TradePlanType;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -33,8 +37,57 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class ClosePositionRecoveryServiceTest {
+
+    @Test
+    void reconcilesCloseOrderAndFillBeforeMarkingPositionClosed() {
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
+        PendingOrder order = autoOrder(pendingOrderService, budgetService);
+        order.markCloseSubmitted("close-placeholder", "MANUAL_CLOSE_SUBMITTED");
+        ClosePositionRecordEntity record = closeRecord(order);
+        record.setCloseOrderId("BTC-USDT-SWAP:long");
+        record.setCloseClOrdId("CLOSE123");
+        OkxCurrentOrderService currentOrders = mock(OkxCurrentOrderService.class);
+        TradeFillLedgerService fills = mock(TradeFillLedgerService.class);
+        DailyRiskService dailyRisk = mock(DailyRiskService.class);
+        OkxCurrentOrderService.Fill fill = new OkxCurrentOrderService.Fill(
+                "trade-close-1", "sell", "long", new BigDecimal("101"), BigDecimal.ONE,
+                new BigDecimal("-0.02"), "USDT", new BigDecimal("-1.00"),
+                Instant.parse("2026-06-18T00:09:00Z"));
+        when(closeRepository.findByUserNameAndStatus("local-admin", "CLOSE_SUBMITTED"))
+                .thenReturn(List.of(record));
+        when(closeRepository.save(any(ClosePositionRecordEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(currentOrders.orderDetail("BTC-USDT-SWAP", "", "CLOSE123"))
+                .thenReturn(new OkxCurrentOrderService.OrderDetail(
+                        "close-ord-1", "CLOSE123", "filled", BigDecimal.ONE, BigDecimal.ONE,
+                        new BigDecimal("101"), Instant.parse("2026-06-18T00:09:00Z")));
+        when(currentOrders.fills("BTC-USDT-SWAP", "close-ord-1")).thenReturn(List.of(fill));
+        ClosePositionRecoveryService service = new ClosePositionRecoveryService(
+                closeRepository, tradeOrderRepository, pendingOrderService, budgetService,
+                new FixedPositionSnapshotService(List.of()));
+        service.configureCloseLedger(currentOrders, fills);
+        service.configureDailyRisk(dailyRisk);
+
+        ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(
+                Instant.parse("2026-06-18T00:10:00Z"));
+
+        assertThat(result.closed()).isEqualTo(1);
+        assertThat(record.getStatus()).isEqualTo("CLOSED");
+        assertThat(record.getCloseOrderId()).isEqualTo("close-ord-1");
+        assertThat(record.getAvgPx()).isEqualByComparingTo("101");
+        assertThat(record.getRealizedPnl()).isEqualByComparingTo("-1.00");
+        assertThat(record.getFee()).isEqualByComparingTo("-0.02");
+        verify(fills).record(record, "close-ord-1", fill);
+        verify(dailyRisk).recordReconciledOutcome(
+                "local-admin", order.id().toString(), new BigDecimal("-1.02"),
+                Instant.parse("2026-06-18T00:10:00Z"));
+    }
 
     @Test
     void closesPostEntryOrderAndReleasesBudgetWhenPositionDisappears() {
@@ -61,12 +114,171 @@ class ClosePositionRecoveryServiceTest {
                 Instant.parse("2026-06-18T00:10:00Z")
         );
 
-        assertThat(result.closed()).isEqualTo(1);
-        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+        assertThat(result.closed()).isZero();
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED_RECONCILING);
         assertThat(budgetService.reservation(order.budgetReservationId()))
                 .get()
                 .extracting(BudgetReservation::status)
                 .isEqualTo(BudgetReservationStatus.RELEASED);
+    }
+
+    @Test
+    void closesNaturalPositionOnlyAfterChildFillLedgerIsComplete() {
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
+        PendingOrder order = autoOrder(pendingOrderService, budgetService);
+        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
+        TradeOrderEntity entry = protection(order.id(), "ENTRY");
+        entry.setReduceOnly(false);
+        entry.setFilledSize(new BigDecimal("717"));
+        TradeOrderEntity child = protection(order.id(), "STOP_LOSS");
+        child.setOkxOrdId("child-xau");
+        child.setPnlCompleteness("COMPLETE");
+        List<TradeFillEntity> fills = List.of(
+                fillRow("child-xau", "xau-1", "300", "-10.0000", "-0.650000"),
+                fillRow("child-xau", "xau-2", "417", "-13.2472", "-0.921664"));
+        when(closeRepository.findByUserNameAndStatus(any(), any())).thenReturn(List.of());
+        when(closeRepository.findByUserNameAndPendingOrderIdOrderByCreatedAtDesc(
+                "local-admin", order.id().toString())).thenReturn(List.of());
+        when(closeRepository.save(any(ClosePositionRecordEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(tradeOrderRepository.findByPendingOrderIdOrderByCreatedAtAsc(order.id().toString()))
+                .thenReturn(List.of(entry, child));
+        TradeFillLedgerService ledger = mock(TradeFillLedgerService.class);
+        when(ledger.fillsForPendingOrder("local-admin", order.id().toString())).thenReturn(fills);
+        ClosePositionRecoveryService service = new ClosePositionRecoveryService(
+                closeRepository, tradeOrderRepository, pendingOrderService, budgetService,
+                new FixedPositionSnapshotService(List.of()));
+        service.configureCloseLedger(null, ledger);
+
+        ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(
+                Instant.parse("2026-09-06T02:00:00Z"));
+
+        assertThat(result.closed()).isEqualTo(1);
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+        ArgumentCaptor<ClosePositionRecordEntity> captor = ArgumentCaptor.forClass(ClosePositionRecordEntity.class);
+        verify(closeRepository, org.mockito.Mockito.atLeastOnce()).save(captor.capture());
+        ClosePositionRecordEntity saved = captor.getAllValues().get(captor.getAllValues().size() - 1);
+        assertThat(saved.getStatus()).isEqualTo("CLOSED");
+        assertThat(saved.getPnlCompleteness()).isEqualTo("COMPLETE");
+        assertThat(saved.getRealizedPnl()).isEqualByComparingTo("-23.2472");
+        assertThat(saved.getFee()).isEqualByComparingTo("-1.571664");
+    }
+
+    @Test
+    void adoptsUniqueCompleteOrphanManualCloseForQaLifecycle() {
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
+        PendingOrder order = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, samplePlan());
+        order.setExecutableContractQuantity(BigDecimal.ONE);
+        order.markSubmitted(Instant.parse("2026-06-18T00:01:00Z"), "entry-qa-1");
+        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
+
+        ClosePositionRecordEntity lifecycleRecord = new ClosePositionRecordEntity();
+        lifecycleRecord.setUserName("local-admin");
+        lifecycleRecord.setInstId(order.instId());
+        lifecycleRecord.setPosSide(order.posSide());
+        lifecycleRecord.setMarginMode(order.tdMode());
+        lifecycleRecord.setPendingOrderId(order.id().toString());
+        lifecycleRecord.setStatus("CLOSED_RECONCILING");
+        lifecycleRecord.setPnlCompleteness("PARTIAL");
+        lifecycleRecord.setSource("POSITION_GONE");
+        lifecycleRecord.setCreatedAt(Instant.parse("2026-06-18T00:10:00Z"));
+        lifecycleRecord.setUpdatedAt(Instant.parse("2026-06-18T00:10:00Z"));
+
+        ClosePositionRecordEntity manualClose = new ClosePositionRecordEntity();
+        manualClose.setUserName("local-admin");
+        manualClose.setInstId(order.instId());
+        manualClose.setPosSide(order.posSide());
+        manualClose.setMarginMode(order.tdMode());
+        manualClose.setCloseOrderId("close-qa-1");
+        manualClose.setCloseClOrdId("CLOSEQA1");
+        manualClose.setSize(BigDecimal.ONE);
+        manualClose.setAvgPx(new BigDecimal("101"));
+        manualClose.setRealizedPnl(new BigDecimal("-1.00"));
+        manualClose.setFee(new BigDecimal("-0.02"));
+        manualClose.setStatus("CLOSED");
+        manualClose.setPnlCompleteness("COMPLETE");
+        manualClose.setSource("MANUAL");
+        manualClose.setRequestSent(true);
+        manualClose.setCreatedAt(Instant.parse("2026-06-18T00:09:00Z"));
+        manualClose.setUpdatedAt(Instant.parse("2026-06-18T00:09:30Z"));
+
+        when(closeRepository.findByUserNameAndStatus(any(), any())).thenReturn(List.of());
+        when(closeRepository.findByUserNameAndStatus("local-admin", "CLOSED"))
+                .thenReturn(List.of(manualClose));
+        when(closeRepository.findByUserNameAndPendingOrderIdOrderByCreatedAtDesc(
+                "local-admin", order.id().toString())).thenReturn(List.of(lifecycleRecord));
+        when(closeRepository.save(any(ClosePositionRecordEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(tradeOrderRepository.findByPendingOrderIdOrderByCreatedAtAsc(order.id().toString()))
+                .thenReturn(List.of());
+        when(tradeOrderRepository.findByInstIdAndReduceOnlyTrueAndStatusIn(any(), any()))
+                .thenReturn(List.of());
+        when(tradeOrderRepository.findByPendingOrderIdAndReduceOnlyTrueAndStatusIn(any(), any()))
+                .thenReturn(List.of());
+        ClosePositionRecoveryService service = new ClosePositionRecoveryService(
+                closeRepository, tradeOrderRepository, pendingOrderService, budgetService,
+                new FixedPositionSnapshotService(List.of()));
+
+        ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(
+                Instant.parse("2026-06-18T00:11:00Z"));
+
+        assertThat(result.closed()).isEqualTo(1);
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+        assertThat(lifecycleRecord.getStatus()).isEqualTo("CLOSED");
+        assertThat(lifecycleRecord.getCloseOrderId()).isEqualTo("close-qa-1");
+        assertThat(lifecycleRecord.getRealizedPnl()).isEqualByComparingTo("-1.00");
+        assertThat(lifecycleRecord.getFee()).isEqualByComparingTo("-0.02");
+        assertThat(lifecycleRecord.getPnlCompleteness()).isEqualTo("COMPLETE");
+        assertThat(lifecycleRecord.getRecoveryResult()).isEqualTo("ORPHAN_MANUAL_CLOSE_FACTS_MATCHED");
+        assertThat(manualClose.getPendingOrderId()).isNull();
+    }
+
+    @Test
+    void keepsQaLifecycleReconcilingWhenOrphanManualCloseIsAmbiguous() {
+        ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
+        TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
+        PendingOrder order = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, samplePlan());
+        order.setExecutableContractQuantity(BigDecimal.ONE);
+        order.markSubmitted(Instant.parse("2026-06-18T00:01:00Z"), "entry-qa-1");
+        order.markProtectionSubmitted("PROTECTION_SUBMITTED");
+
+        ClosePositionRecordEntity lifecycleRecord = closeRecord(order);
+        lifecycleRecord.setStatus("CLOSED_RECONCILING");
+        lifecycleRecord.setPnlCompleteness("PARTIAL");
+        lifecycleRecord.setSource("POSITION_GONE");
+        lifecycleRecord.setCreatedAt(Instant.parse("2026-06-18T00:10:00Z"));
+        lifecycleRecord.setUpdatedAt(Instant.parse("2026-06-18T00:10:00Z"));
+        ClosePositionRecordEntity first = completeOrphanManualClose(order, "close-qa-1", "CLOSEQA1");
+        ClosePositionRecordEntity second = completeOrphanManualClose(order, "close-qa-2", "CLOSEQA2");
+
+        when(closeRepository.findByUserNameAndStatus(any(), any())).thenReturn(List.of());
+        when(closeRepository.findByUserNameAndStatus("local-admin", "CLOSED"))
+                .thenReturn(List.of(first, second));
+        when(closeRepository.findByUserNameAndPendingOrderIdOrderByCreatedAtDesc(
+                "local-admin", order.id().toString())).thenReturn(List.of(lifecycleRecord));
+        when(closeRepository.save(any(ClosePositionRecordEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(tradeOrderRepository.findByPendingOrderIdOrderByCreatedAtAsc(order.id().toString()))
+                .thenReturn(List.of());
+        ClosePositionRecoveryService service = new ClosePositionRecoveryService(
+                closeRepository, tradeOrderRepository, pendingOrderService, budgetService,
+                new FixedPositionSnapshotService(List.of()));
+
+        ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(
+                Instant.parse("2026-06-18T00:11:00Z"));
+
+        assertThat(result.closed()).isZero();
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED_RECONCILING);
+        assertThat(lifecycleRecord.getStatus()).isEqualTo("CLOSED_RECONCILING");
+        assertThat(lifecycleRecord.getRecoveryResult()).isNotEqualTo("ORPHAN_MANUAL_CLOSE_FACTS_MATCHED");
     }
 
     @Test
@@ -99,7 +311,7 @@ class ClosePositionRecoveryServiceTest {
     }
 
     @Test
-    void cancelsOrphanProtectionsAndInvalidatesEntryWhenPositionDisappears() {
+    void cancelsOnlyBoundProtectionsAndInvalidatesEntryWhenPositionDisappears() {
         ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
         TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
         PendingOrderService pendingOrderService = new PendingOrderService(120);
@@ -140,12 +352,10 @@ class ClosePositionRecoveryServiceTest {
 
         service.runOnce(Instant.parse("2026-06-18T00:10:00Z"));
 
-        assertThat(gateway.cancelAlgoPayloads).containsExactlyInAnyOrder(
-                Map.of("instId", "BTC-USDT-SWAP", "algoId", "algo-bound"),
-                Map.of("instId", "BTC-USDT-SWAP", "algoClOrdId", "algo-orphan-cl")
-        );
+        assertThat(gateway.cancelAlgoPayloads).containsExactly(
+                Map.of("instId", "BTC-USDT-SWAP", "algoId", "algo-bound"));
         assertThat(boundProtection.getStatus()).isEqualTo("INVALID");
-        assertThat(orphanProtection.getStatus()).isEqualTo("INVALID");
+        assertThat(orphanProtection.getStatus()).isEqualTo("PROTECTION_SUBMITTED");
         assertThat(oppositeProtection.getStatus()).isEqualTo("PROTECTION_SUBMITTED");
         assertThat(entry.getStatus()).isEqualTo("INACTIVE");
         assertThat(entry.getErrorMessage()).isEqualTo("POSITION_CLOSED");
@@ -431,6 +641,43 @@ class ClosePositionRecoveryServiceTest {
         return entity;
     }
 
+    private static TradeFillEntity fillRow(String ordId, String tradeId, String size, String pnl, String fee) {
+        TradeFillEntity row = new TradeFillEntity();
+        row.setUserName("local-admin");
+        row.setPendingOrderId("pending-xau");
+        row.setInstId("BTC-USDT-SWAP");
+        row.setOrdId(ordId);
+        row.setTradeId(tradeId);
+        row.setFillSize(new BigDecimal(size));
+        row.setFillPrice(new BigDecimal("4416.4"));
+        row.setFillPnl(new BigDecimal(pnl));
+        row.setFee(new BigDecimal(fee));
+        return row;
+    }
+
+    private static ClosePositionRecordEntity completeOrphanManualClose(PendingOrder order,
+                                                                        String closeOrderId,
+                                                                        String closeClOrdId) {
+        ClosePositionRecordEntity record = new ClosePositionRecordEntity();
+        record.setUserName("local-admin");
+        record.setInstId(order.instId());
+        record.setPosSide(order.posSide());
+        record.setMarginMode(order.tdMode());
+        record.setCloseOrderId(closeOrderId);
+        record.setCloseClOrdId(closeClOrdId);
+        record.setSize(BigDecimal.ONE);
+        record.setAvgPx(new BigDecimal("101"));
+        record.setRealizedPnl(new BigDecimal("-1.00"));
+        record.setFee(new BigDecimal("-0.02"));
+        record.setStatus("CLOSED");
+        record.setPnlCompleteness("COMPLETE");
+        record.setSource("MANUAL");
+        record.setRequestSent(true);
+        record.setCreatedAt(Instant.parse("2026-06-18T00:09:00Z"));
+        record.setUpdatedAt(Instant.parse("2026-06-18T00:09:30Z"));
+        return record;
+    }
+
     private static class CapturingOkxGateway implements OkxOrderGateway {
         private final List<Map<String, String>> cancelAlgoPayloads = new ArrayList<>();
 
@@ -442,7 +689,9 @@ class ClosePositionRecoveryServiceTest {
         @Override
         public JsonNode cancelAlgoOrder(Map<String, String> payload) {
             cancelAlgoPayloads.add(Map.copyOf(payload));
-            return new ObjectMapper().createObjectNode().putArray("data").addObject().put("sCode", "0");
+            var root = new ObjectMapper().createObjectNode().put("code", "0");
+            root.putArray("data").addObject().put("sCode", "0");
+            return root;
         }
     }
 

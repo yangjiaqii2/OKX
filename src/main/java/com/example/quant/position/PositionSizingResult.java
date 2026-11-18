@@ -13,6 +13,10 @@ public record PositionSizingResult(
         BigDecimal riskRewardRatio,
         List<String> reasonList,
         List<String> warningList,
-        String rejectReason
+        String rejectReason,
+        BigDecimal estimatedStopLossAmount
 ) {
+    /** Configured loss allowance, retained as the legacy maxLossAmount API. */
+    public BigDecimal riskBudgetAmount() { return maxLossAmount; }
+
 }

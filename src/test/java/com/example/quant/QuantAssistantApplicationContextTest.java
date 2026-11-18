@@ -1,5 +1,8 @@
 package com.example.quant;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.example.quant.config.SystemFxRateProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -7,7 +10,7 @@ import org.springframework.context.ConfigurableApplicationContext;
 class QuantAssistantApplicationContextTest {
     @Test
     void contextLoads() {
-        try (ConfigurableApplicationContext ignored = new SpringApplicationBuilder(QuantAssistantApplication.class)
+        try (ConfigurableApplicationContext context = new SpringApplicationBuilder(QuantAssistantApplication.class)
                 .profiles("test")
                 .properties(
                         "spring.main.web-application-type=none",
@@ -15,6 +18,7 @@ class QuantAssistantApplicationContextTest {
                         "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect"
                 )
                 .run()) {
+            assertThat(context.getBean(SystemFxRateProperties.class).enabled()).isFalse();
         }
     }
 }

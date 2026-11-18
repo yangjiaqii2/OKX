@@ -79,6 +79,10 @@ public class AuthSessionService {
             sessions.remove(token);
             return null;
         }
+        if (authUserService.findEnabledUser(session.username()).isEmpty()) {
+            sessions.remove(token);
+            return null;
+        }
         return session;
     }
 

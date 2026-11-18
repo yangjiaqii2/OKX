@@ -7,6 +7,9 @@ import com.example.quant.account.dto.PositionSummary;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
+import java.util.Optional;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import org.junit.jupiter.api.Test;
 
 class PositionSnapshotServiceTest {
@@ -76,6 +79,27 @@ class PositionSnapshotServiceTest {
         assertThat(serialized.path("margin").decimalValue()).isEqualByComparingTo("18.4");
         assertThat(serialized.path("initialMargin").decimalValue()).isEqualByComparingTo("18.4");
         assertThat(serialized.path("marginMode").asText()).isEqualTo("cross");
+    }
+
+    @Test
+    void exposesPersistedUnmanagedOwnershipWithoutGuessingStrategyOwnership() throws Exception {
+        JsonNode root = objectMapper.readTree("""
+                {"code":"0","data":[{"instId":"BTC-USDT-SWAP","posSide":"long","pos":"1"}]}
+                """);
+        ExchangePositionEntity external = new ExchangePositionEntity();
+        external.setOwnership("UNMANAGED");
+        external.setReason("NO_TRACEABLE_LOCAL_FILL_CHAIN");
+        ExchangePositionRepository repository = mock(ExchangePositionRepository.class);
+        when(repository.findByUserNameAndInstIdAndPosSide("alice", "BTC-USDT-SWAP", "long"))
+                .thenReturn(Optional.of(external));
+        PositionSnapshotService service = new PositionSnapshotService(new FixedOkxRestClient(root));
+        service.configureOwnership(repository);
+
+        PositionSummary position = com.example.quant.auth.AuthUserContext.callAs(
+                "alice", () -> service.positions().get(0));
+
+        assertThat(position.ownership()).isEqualTo("UNMANAGED");
+        assertThat(position.reconciliationReason()).isEqualTo("NO_TRACEABLE_LOCAL_FILL_CHAIN");
     }
 
     private static class FixedOkxRestClient extends OkxRestClient {

@@ -49,6 +49,9 @@ public class ClosePositionRecordEntity {
     @Column(name = "funding_fee", precision = 30, scale = 12)
     private BigDecimal fundingFee;
 
+    @Column(name = "pnl_completeness", nullable = false, length = 16)
+    private String pnlCompleteness = "UNKNOWN";
+
     @Column(name = "status", nullable = false, length = 32)
     private String status;
 
@@ -63,6 +66,27 @@ public class ClosePositionRecordEntity {
 
     @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
+
+    @Column(name = "request_sent")
+    private Boolean requestSent;
+
+    @Column(name = "error_class", length = 32)
+    private String errorClass;
+
+    @Column(name = "recovery_result", length = 64)
+    private String recoveryResult;
+
+    @Column(name = "retry_count", nullable = false)
+    private int retryCount;
+
+    @Column(name = "last_attempt_at")
+    private Instant lastAttemptAt;
+
+    @Column(name = "next_attempt_at")
+    private Instant nextAttemptAt;
+
+    @Column(name = "trade_plan_id", length = 36)
+    private String tradePlanId;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
@@ -162,6 +186,14 @@ public class ClosePositionRecordEntity {
         this.fundingFee = fundingFee;
     }
 
+    public String getPnlCompleteness() {
+        return pnlCompleteness;
+    }
+
+    public void setPnlCompleteness(String pnlCompleteness) {
+        this.pnlCompleteness = pnlCompleteness;
+    }
+
     public String getStatus() {
         return status;
     }
@@ -197,6 +229,21 @@ public class ClosePositionRecordEntity {
     public String getErrorMessage() {
         return errorMessage;
     }
+
+    public Boolean getRequestSent() { return requestSent; }
+    public void setRequestSent(Boolean requestSent) { this.requestSent = requestSent; }
+    public String getErrorClass() { return errorClass; }
+    public void setErrorClass(String errorClass) { this.errorClass = errorClass; }
+    public String getRecoveryResult() { return recoveryResult; }
+    public void setRecoveryResult(String recoveryResult) { this.recoveryResult = recoveryResult; }
+    public int getRetryCount() { return retryCount; }
+    public void setRetryCount(int retryCount) { this.retryCount = Math.max(0, retryCount); }
+    public Instant getLastAttemptAt() { return lastAttemptAt; }
+    public void setLastAttemptAt(Instant lastAttemptAt) { this.lastAttemptAt = lastAttemptAt; }
+    public Instant getNextAttemptAt() { return nextAttemptAt; }
+    public void setNextAttemptAt(Instant nextAttemptAt) { this.nextAttemptAt = nextAttemptAt; }
+    public String getTradePlanId() { return tradePlanId; }
+    public void setTradePlanId(String tradePlanId) { this.tradePlanId = tradePlanId; }
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;

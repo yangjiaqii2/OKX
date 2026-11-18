@@ -1,6 +1,8 @@
 package com.example.quant.order;
 
 import com.example.quant.market.MarketType;
+import com.example.quant.tradeplan.CanonicalExecutablePlan;
+import com.example.quant.tradeplan.CanonicalPlanJsonCodec;
 import com.example.quant.tradeplan.TradePlanType;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -23,6 +25,12 @@ public class PendingOrder {
     private final BigDecimal stopLossPrice;
     private final BigDecimal takeProfitPrice;
     private BigDecimal maxLossAmount;
+    /** Base quantity after risk sizing but before exchange lot normalization. */
+    private BigDecimal intendedBaseQuantity;
+    private BigDecimal executableStopLossAmount;
+    private BigDecimal executableContractQuantity;
+    private CanonicalExecutablePlan canonicalExecutablePlan;
+    private String canonicalPlanJson;
     private BigDecimal marginAmount;
     private UUID budgetReservationId;
     private String budgetAllocationJson;
@@ -63,6 +71,7 @@ public class PendingOrder {
         this.stopLossPrice = stopLossPrice;
         this.takeProfitPrice = takeProfitPrice;
         this.maxLossAmount = maxLossAmount;
+        this.intendedBaseQuantity = size;
         this.riskRewardRatio = riskRewardRatio;
         this.signalScore = signalScore;
         this.fundingRate = fundingRate;
@@ -84,11 +93,78 @@ public class PendingOrder {
     public String orderType() { return orderType; }
     public BigDecimal price() { return price; }
     public BigDecimal size() { return size; }
+    public synchronized void replaceExecutableSize(BigDecimal normalizedBaseSize) {
+        if (normalizedBaseSize == null || normalizedBaseSize.signum() <= 0) {
+            throw new IllegalArgumentException("最终可执行数量无效");
+        }
+        this.size = normalizedBaseSize;
+        this.executableStopLossAmount = price.subtract(stopLossPrice).abs().multiply(normalizedBaseSize)
+                .setScale(4, RoundingMode.HALF_UP);
+        changed();
+    }
     public int leverage() { return leverage; }
     public String tdMode() { return tdMode; }
     public BigDecimal stopLossPrice() { return stopLossPrice; }
     public BigDecimal takeProfitPrice() { return takeProfitPrice; }
     public BigDecimal maxLossAmount() { return maxLossAmount; }
+    public BigDecimal intendedBaseQuantity() {
+        return intendedBaseQuantity == null ? size : intendedBaseQuantity;
+    }
+    public synchronized void captureIntendedBaseQuantity() {
+        this.intendedBaseQuantity = this.size;
+    }
+    public BigDecimal executableStopLossAmount() { return executableStopLossAmount; }
+
+    /**
+     * Overwrites the pre-canonical risk estimate with the value computed by the
+     * canonical plan compiler. The canonical plan is the single executable
+     * truth, so downstream consumers must read this value rather than the one
+     * derived in {@link #replaceExecutableSize} from raw prices.
+     */
+    public synchronized void setExecutableStopLossAmount(BigDecimal value) {
+        this.executableStopLossAmount = value;
+        changed();
+    }
+    public BigDecimal executableContractQuantity() { return executableContractQuantity; }
+    public synchronized void setExecutableContractQuantity(BigDecimal value) {
+        this.executableContractQuantity = value;
+        changed();
+    }
+    public CanonicalExecutablePlan canonicalExecutablePlan() {
+        if (canonicalExecutablePlan == null && canonicalPlanJson != null && !canonicalPlanJson.isBlank()) {
+            try {
+                canonicalExecutablePlan = CanonicalPlanJsonCodec.read(canonicalPlanJson);
+            } catch (IllegalStateException ex) {
+                // Closed historical records remain queryable even after a
+                // future schema is introduced. Active lifecycles fail closed.
+                if (status == OrderStatus.CLOSED || status == OrderStatus.CLOSED_RECONCILING) {
+                    return null;
+                }
+                throw ex;
+            }
+        }
+        return canonicalExecutablePlan;
+    }
+    public String canonicalPlanJson() { return canonicalPlanJson; }
+    public synchronized void setCanonicalExecutablePlan(CanonicalExecutablePlan plan) {
+        if (plan == null || !plan.accepted()) {
+            throw new IllegalArgumentException("只能绑定已接受的 canonical executable plan");
+        }
+        setCanonicalPlanSnapshot(plan);
+    }
+
+    /**
+     * Persist a compiler result for audit. Rejected results are intentionally
+     * not executable; consumers must still check {@link CanonicalExecutablePlan#accepted()}.
+     */
+    public synchronized void setCanonicalPlanSnapshot(CanonicalExecutablePlan plan) {
+        if (plan == null) {
+            throw new IllegalArgumentException("canonical executable plan 不能为空");
+        }
+        this.canonicalExecutablePlan = plan;
+        this.canonicalPlanJson = CanonicalPlanJsonCodec.write(plan);
+        changed();
+    }
     public BigDecimal marginAmount() { return marginAmount; }
     public UUID budgetReservationId() { return budgetReservationId; }
     public String budgetAllocationJson() { return budgetAllocationJson; }
@@ -133,6 +209,17 @@ public class PendingOrder {
         this.rejectReason = rejectReason;
     }
 
+    void restoreExecutableRiskFacts(BigDecimal executableContractQuantity,
+                                    BigDecimal executableStopLossAmount) {
+        this.executableContractQuantity = executableContractQuantity;
+        this.executableStopLossAmount = executableStopLossAmount;
+    }
+
+    void restoreCanonicalPlanJson(String canonicalPlanJson) {
+        this.canonicalPlanJson = canonicalPlanJson;
+        this.canonicalExecutablePlan = null;
+    }
+
     public boolean isExpired(Instant now) {
         return now.isAfter(expireAt);
     }
@@ -157,9 +244,10 @@ public class PendingOrder {
         if (price == null || price.signum() <= 0) {
             throw new IllegalArgumentException("计划入场价无效，不能换算下单数量");
         }
-        this.marginAmount = amount.setScale(4, RoundingMode.HALF_UP);
+        this.marginAmount = amount.setScale(4, RoundingMode.DOWN);
         this.size = amount.multiply(BigDecimal.valueOf(leverage))
                 .divide(price, 8, RoundingMode.DOWN);
+        this.intendedBaseQuantity = this.size;
         this.maxLossAmount = price.subtract(stopLossPrice).abs()
                 .multiply(size)
                 .setScale(4, RoundingMode.HALF_UP);
@@ -173,6 +261,14 @@ public class PendingOrder {
         this.budgetAllocationJson = allocationJson;
         this.clientOrderId = clientOrderId;
         this.status = OrderStatus.BUDGET_RESERVED;
+        changed();
+    }
+
+    synchronized void assignClientOrderId(String clientOrderId) {
+        if (clientOrderId == null || clientOrderId.isBlank() || clientOrderId.length() > 32) {
+            throw new IllegalArgumentException("客户端订单号必须为1到32个字符");
+        }
+        this.clientOrderId = clientOrderId;
         changed();
     }
 
@@ -218,6 +314,7 @@ public class PendingOrder {
         this.status = OrderStatus.SUBMITTED;
         this.submittedAt = now;
         this.externalOrderId = externalOrderId;
+        this.rejectReason = null;
         changed();
     }
 
@@ -227,8 +324,24 @@ public class PendingOrder {
         changed();
     }
 
+    public boolean requiresLegacyAccountingReconciliation() {
+        return rejectReason != null && rejectReason.startsWith("LEGACY_ACK_ACCOUNTING_RECONCILIATION_REQUIRED");
+    }
+
     public void markProtectionFailed(String reason) {
         this.status = OrderStatus.PROTECTION_FAILED;
+        this.rejectReason = reason;
+        changed();
+    }
+
+    public void markProtectionReplanRequired(String reason) {
+        this.status = OrderStatus.PROTECTION_REPLAN_REQUIRED;
+        this.rejectReason = reason;
+        changed();
+    }
+
+    public void markProtectionRulesStale(String reason) {
+        this.status = OrderStatus.PROTECTION_RULES_STALE;
         this.rejectReason = reason;
         changed();
     }
@@ -272,6 +385,12 @@ public class PendingOrder {
 
     public void markClosed(String reason) {
         this.status = OrderStatus.CLOSED;
+        this.rejectReason = reason;
+        changed();
+    }
+
+    public void markClosedReconciling(String reason) {
+        this.status = OrderStatus.CLOSED_RECONCILING;
         this.rejectReason = reason;
         changed();
     }

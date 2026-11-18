@@ -1,11 +1,13 @@
 package com.example.quant.account.dto;
 
+import com.example.quant.config.TradingMode;
+
 public record OkxAccountBindingStatus(
         boolean bound,
         String maskedApiKey,
-        boolean liveTradingEnabled
+        TradingMode tradingMode
 ) {
-    public static OkxAccountBindingStatus unbound(boolean liveTradingEnabled) {
-        return new OkxAccountBindingStatus(false, "", liveTradingEnabled);
+    public static OkxAccountBindingStatus unbound(TradingMode tradingMode) {
+        return new OkxAccountBindingStatus(false, "", tradingMode);
     }
 }

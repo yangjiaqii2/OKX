@@ -10,6 +10,7 @@ import com.example.quant.config.OkxProperties;
 import com.example.quant.config.StockProperties;
 import com.example.quant.config.SystemFxRateProperties;
 import com.example.quant.config.TradingProperties;
+import com.example.quant.notification.NotificationProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -27,7 +28,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         AkShareProperties.class,
         TradingProperties.class,
         AuthProperties.class,
-        SystemFxRateProperties.class
+        SystemFxRateProperties.class,
+        NotificationProperties.class
 })
 public class QuantAssistantApplication {
 

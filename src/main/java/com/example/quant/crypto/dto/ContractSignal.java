@@ -69,7 +69,7 @@ public record ContractSignal(
                 reasonList,
                 riskTagList,
                 directionBias == DirectionBias.BEARISH ? ContractSignalType.TREND_SHORT : ContractSignalType.STRONG_LONG,
-                score >= 80 ? "AUTO_TRADE_ALLOWED" : "WAIT_CONFIRM",
+                score >= 65 ? "AUTO_TRADE_ALLOWED" : "WAIT_CONFIRM",
                 "LIMIT",
                 BigDecimal.ZERO,
                 BigDecimal.ZERO,

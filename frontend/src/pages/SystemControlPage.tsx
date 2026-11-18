@@ -24,6 +24,8 @@ type SystemStatus = {
   emergencyStop?: boolean;
   autoTradeEnabled?: boolean;
   autoTradeMarginUsdt?: number | string;
+  autoTradeBudgetMode?: AutoTradeBudgetMode;
+  autoTradeMarginPct?: number | string;
   autoTradeRiskMode?: AutoTradeRiskMode;
   noRiskMinScore?: number | string;
   autoTradeMinLeverage?: number | string;
@@ -31,6 +33,7 @@ type SystemStatus = {
 };
 
 type AutoTradeRiskMode = 'STRICT' | 'NO_RISK';
+type AutoTradeBudgetMode = 'FIXED_USDT' | 'AVAILABLE_BALANCE_PERCENT';
 
 function usdtAmount(value: unknown) {
   const number = Number(value);
@@ -45,6 +48,7 @@ export function SystemControlPage() {
   const [autoDisableOpen, setAutoDisableOpen] = useState(false);
   const [status, setStatus] = useState<SystemStatus>({});
   const [autoTradeMarginUsdt, setAutoTradeMarginUsdt] = useState('100');
+  const [autoTradeBudgetMode, setAutoTradeBudgetMode] = useState<AutoTradeBudgetMode>('FIXED_USDT');
   const [autoTradeRiskMode, setAutoTradeRiskMode] = useState<AutoTradeRiskMode>('STRICT');
   const [noRiskMinScore, setNoRiskMinScore] = useState('70');
   const [autoTradeMinLeverage, setAutoTradeMinLeverage] = useState('1');
@@ -54,9 +58,15 @@ export function SystemControlPage() {
     try {
       const nextStatus = (await quantApi.systemStatus()) as SystemStatus;
       setStatus(nextStatus);
-      const margin = Number(nextStatus.autoTradeMarginUsdt ?? 0);
-      if (Number.isFinite(margin) && margin > 0) {
-        setAutoTradeMarginUsdt(String(margin));
+      const budgetValue = nextStatus.autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT'
+        ? Number(nextStatus.autoTradeMarginPct ?? 0)
+        : Number(nextStatus.autoTradeMarginUsdt ?? 0);
+      if (Number.isFinite(budgetValue) && budgetValue > 0) {
+        setAutoTradeMarginUsdt(String(budgetValue));
+      }
+      if (nextStatus.autoTradeBudgetMode === 'FIXED_USDT'
+        || nextStatus.autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT') {
+        setAutoTradeBudgetMode(nextStatus.autoTradeBudgetMode);
       }
       if (nextStatus.autoTradeRiskMode === 'STRICT' || nextStatus.autoTradeRiskMode === 'NO_RISK') {
         setAutoTradeRiskMode(nextStatus.autoTradeRiskMode);
@@ -101,14 +111,19 @@ export function SystemControlPage() {
   }
 
   async function enableAutoTrade() {
-    const margin = Number(autoTradeMarginUsdt);
-    if (!Number.isFinite(margin) || margin <= 0) {
-      notify('自动交易总预算必须大于0', { type: 'warning' });
+    const budgetValue = Number(autoTradeMarginUsdt);
+    const validBudget = autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT'
+      ? Number.isFinite(budgetValue) && budgetValue > 0 && budgetValue <= 100
+      : Number.isFinite(budgetValue) && budgetValue > 0;
+    if (!validBudget) {
+      notify(autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT'
+        ? '可用余额百分比必须大于0且不超过100%'
+        : '自动交易总预算必须大于0', { type: 'warning' });
       return;
     }
     const score = Number(noRiskMinScore);
     if (autoTradeRiskMode === 'NO_RISK' && (!Number.isInteger(score) || score < 60 || score > 100)) {
-      notify('放宽策略模式最低自动交易分数必须是60到100之间的整数', { type: 'warning' });
+      notify('Shadow 最低观察分数必须是60到100之间的整数', { type: 'warning' });
       return;
     }
     const minLeverage = Number(autoTradeMinLeverage);
@@ -119,12 +134,17 @@ export function SystemControlPage() {
     setSubmitting(true);
     try {
       setStatus((await quantApi.enableAutoTrade(
-        String(margin),
+        String(budgetValue),
         autoTradeRiskMode,
         autoTradeRiskMode === 'NO_RISK' ? String(score) : undefined,
         String(minLeverage),
+        autoTradeBudgetMode,
       )) as SystemStatus);
-      notify(`自动交易已开启：总预算 ${margin} USDT，模式 ${autoTradeRiskMode}${autoTradeRiskMode === 'NO_RISK' ? `，最低分 ${score}` : ''}，最低杠杆 ${minLeverage}x`, { type: 'warning' });
+      notify(autoTradeRiskMode === 'NO_RISK'
+        ? `Shadow 观察已开启：最低分 ${score}，不会创建或提交订单`
+        : autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT'
+          ? `自动交易已开启：使用可用余额 ${budgetValue}% 动态预算，严格风控`
+          : `自动交易已开启：总预算 ${budgetValue} USDT，严格风控`, { type: 'warning' });
     } catch (error) {
       notify(error instanceof Error ? error.message : '自动交易开启失败', { type: 'error' });
     } finally {
@@ -173,22 +193,28 @@ export function SystemControlPage() {
                   <Chip
                     size="small"
                     color={status.autoTradeEnabled ? 'warning' : 'default'}
-                    label={status.autoTradeEnabled ? '自动交易开启' : '自动交易关闭'}
+                    label={status.autoTradeEnabled
+                      ? status.autoTradeRiskMode === 'NO_RISK' ? 'Shadow 运行中' : '自动交易开启'
+                      : '自动交易关闭'}
                   />
                   <Chip
                     size="small"
-                    color={Number(status.autoTradeMarginUsdt ?? 0) > 0 ? 'info' : 'default'}
-                    label={`总预算 ${usdtAmount(status.autoTradeMarginUsdt)} USDT`}
+                    color={(status.autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT'
+                      ? Number(status.autoTradeMarginPct ?? 0)
+                      : Number(status.autoTradeMarginUsdt ?? 0)) > 0 ? 'info' : 'default'}
+                    label={status.autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT'
+                      ? `动态预算 ${status.autoTradeMarginPct ?? '--'}%`
+                      : `固定预算 ${usdtAmount(status.autoTradeMarginUsdt)} USDT`}
                   />
                   <Chip
                     size="small"
-                    color={status.autoTradeRiskMode === 'NO_RISK' ? 'error' : 'success'}
-                    label={status.autoTradeRiskMode === 'NO_RISK' ? '放宽策略门槛' : '严格风控'}
+                    color={status.autoTradeRiskMode === 'NO_RISK' ? 'info' : 'success'}
+                    label={status.autoTradeRiskMode === 'NO_RISK' ? 'Shadow 观察' : '严格风控'}
                   />
                   {status.autoTradeRiskMode === 'NO_RISK' ? (
                     <Chip
                       size="small"
-                      color="error"
+                      color="info"
                       variant="outlined"
                       label={`最低分 ${status.noRiskMinScore ?? noRiskMinScore}`}
                     />
@@ -210,17 +236,31 @@ export function SystemControlPage() {
                 </Button>
               </Stack>
               <Divider />
-              <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5} flexWrap="wrap" sx={{ width: 1, minWidth: 0 }}>
                 <TextField
                   size="small"
-                  label="自动交易总预算"
+                  label={autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT' ? '可用余额比例' : '自动交易总预算'}
                   value={autoTradeMarginUsdt}
                   onChange={(event) => setAutoTradeMarginUsdt(event.target.value.replace(/[^\d.]/g, ''))}
                   disabled={submitting || Boolean(status.autoTradeEnabled)}
-                  inputProps={{ inputMode: 'decimal', min: 0, step: '0.01' }}
+                  inputProps={{ inputMode: 'decimal', min: 0, max: autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT' ? 100 : undefined, step: '0.01' }}
                   sx={{ width: { xs: 1, sm: 220 } }}
-                  InputProps={{ endAdornment: <Typography variant="caption" color="text.secondary">USDT</Typography> }}
+                  InputProps={{ endAdornment: <Typography variant="caption" color="text.secondary">{autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT' ? '%' : 'USDT'}</Typography> }}
                 />
+                <ToggleButtonGroup
+                  size="small"
+                  exclusive
+                  value={autoTradeBudgetMode}
+                  disabled={submitting || Boolean(status.autoTradeEnabled)}
+                  onChange={(_, value: AutoTradeBudgetMode | null) => {
+                    if (value) {
+                      setAutoTradeBudgetMode(value);
+                    }
+                  }}
+                >
+                  <ToggleButton value="FIXED_USDT">固定金额</ToggleButton>
+                  <ToggleButton value="AVAILABLE_BALANCE_PERCENT">余额比例</ToggleButton>
+                </ToggleButtonGroup>
                 <ToggleButtonGroup
                   size="small"
                   exclusive
@@ -240,12 +280,12 @@ export function SystemControlPage() {
                   }}
                 >
                   <ToggleButton value="STRICT">严格风控</ToggleButton>
-                  <ToggleButton value="NO_RISK" color="error">放宽策略</ToggleButton>
+                  <ToggleButton value="NO_RISK" color="info">Shadow 观察</ToggleButton>
                 </ToggleButtonGroup>
                 {autoTradeRiskMode === 'NO_RISK' ? (
                   <TextField
                     size="small"
-                    label="放宽模式最低分"
+                    label="Shadow 最低分"
                     value={noRiskMinScore}
                     onChange={(event) => setNoRiskMinScore(event.target.value.replace(/[^\d]/g, '').slice(0, 3))}
                     disabled={submitting || Boolean(status.autoTradeEnabled)}
@@ -270,14 +310,16 @@ export function SystemControlPage() {
                   color="warning"
                   disabled={submitting || Boolean(status.emergencyStop) || Boolean(status.autoTradeEnabled)}
                   onClick={() => setAutoEnableOpen(true)}
+                  sx={{ whiteSpace: 'nowrap' }}
                 >
-                  开启自动交易
+                  {autoTradeRiskMode === 'NO_RISK' ? '开启 Shadow' : '开启自动交易'}
                 </Button>
                 <Button
                   startIcon={<PowerSettingsNewIcon />}
                   variant="outlined"
                   disabled={submitting || !status.autoTradeEnabled}
                   onClick={() => setAutoDisableOpen(true)}
+                  sx={{ whiteSpace: 'nowrap' }}
                 >
                   关闭自动交易
                 </Button>
@@ -305,8 +347,8 @@ export function SystemControlPage() {
         />
         <Confirm
           isOpen={autoEnableOpen}
-          title="开启自动交易"
-          content={`确认后，${autoTradeMarginUsdt || '--'} USDT 会作为自动交易总预算。当前模式为 ${autoTradeRiskMode === 'NO_RISK' ? `放宽策略门槛：${noRiskMinScore || '--'}分以上可放宽AUTO_TRADE_ALLOWED和部分策略等待，但仍保留OKX Key、余额、最小下单、重复开仓、重大恶性新闻和交易所错误等硬门槛` : '严格风控：保持当前AUTO_TRADE_ALLOWED门槛'}。最低杠杆为 ${autoTradeMinLeverage || '--'}x，AI计划低于该倍数时会提升到该倍数。`}
+          title={autoTradeRiskMode === 'NO_RISK' ? '开启 Shadow 观察' : '开启自动交易'}
+          content={`确认后，${autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT' ? `每轮使用最新可用余额的 ${autoTradeMarginUsdt || '--'}%` : `${autoTradeMarginUsdt || '--'} USDT`} 作为自动交易预算。当前模式为 ${autoTradeRiskMode === 'NO_RISK' ? `Shadow 观察：记录${noRiskMinScore || '--'}分以上候选的策略输出，不创建 PendingOrder，也不发送任何 OKX 写请求` : '严格风控：保持当前AUTO_TRADE_ALLOWED门槛'}。`}
           confirm="开启"
           cancel="返回"
           onConfirm={() => void enableAutoTrade()}

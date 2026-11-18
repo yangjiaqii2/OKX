@@ -96,4 +96,33 @@ class ContractRiskServiceTest {
         assertThat(result.maxLossAmount()).isEqualByComparingTo("25.00000000");
         assertThat(result.warningList()).anyMatch(item -> item.contains("volatility"));
     }
+
+    @Test
+    void exactlyFivePercentStopRemainsAllowedAndIsNotClassifiedAsAboveFive() {
+        RiskCheckResult result = new ContractRiskService().check(ContractRiskRequest.safeDefaults()
+                .withLeverage(1)
+                .withStopLossPrice(new BigDecimal("95")));
+
+        assertThat(result.passed()).isTrue();
+        assertThat(result.warningList()).noneMatch(item -> item.contains("wide stop distance"));
+    }
+
+    @Test
+    void rejectsWhenEstimatedStopLossExceedsSingleTradeLossBudget() {
+        ContractRiskService service = new ContractRiskService();
+        ContractRiskRequest defaults = ContractRiskRequest.safeDefaults();
+        ContractRiskRequest request = new ContractRiskRequest(
+                false, true, 1000, 5000,
+                new BigDecimal("10000"), new BigDecimal("3000"), BigDecimal.ONE,
+                1, 3, new BigDecimal("100"), new BigDecimal("95"), new BigDecimal("2"),
+                new BigDecimal("1.5"), defaults.fundingRate(), defaults.maxAbsFundingRate(),
+                defaults.volume24h(), defaults.minVolume24h(), RiskLevel.LOW, new BigDecimal("0.02"),
+                new BigDecimal("0.08"), 75, 58, new BigDecimal("0.01")
+        );
+
+        RiskCheckResult result = service.check(request);
+
+        assertThat(result.passed()).isFalse();
+        assertThat(result.rejectCode()).isEqualTo("MAX_LOSS_EXCEEDED");
+    }
 }

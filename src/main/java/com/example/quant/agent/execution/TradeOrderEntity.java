@@ -16,6 +16,9 @@ public class TradeOrderEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "user_name", nullable = false, length = 128)
+    private String userName = "local-admin";
+
     @Column(name = "trade_plan_id", length = 36)
     private String tradePlanId;
 
@@ -46,6 +49,18 @@ public class TradeOrderEntity {
     @Column(name = "price", precision = 30, scale = 12)
     private BigDecimal price;
 
+    @Column(name = "filled_size", precision = 30, scale = 12)
+    private BigDecimal filledSize;
+
+    @Column(name = "remaining_size", precision = 30, scale = 12)
+    private BigDecimal remainingSize;
+
+    @Column(name = "average_fill_price", precision = 30, scale = 12)
+    private BigDecimal averageFillPrice;
+
+    @Column(name = "okx_updated_at")
+    private Instant okxUpdatedAt;
+
     @Column(name = "reduce_only", nullable = false)
     private boolean reduceOnly;
 
@@ -54,6 +69,12 @@ public class TradeOrderEntity {
 
     @Column(name = "okx_ord_id", length = 128)
     private String okxOrdId;
+
+    @Column(name = "parent_algo_id", length = 128)
+    private String parentAlgoId;
+
+    @Column(name = "pnl_completeness", nullable = false, length = 16)
+    private String pnlCompleteness = "UNKNOWN";
 
     @Column(name = "okx_state", length = 64)
     private String okxState;
@@ -72,6 +93,14 @@ public class TradeOrderEntity {
 
     public Long getId() {
         return id;
+    }
+
+    public String getUserName() {
+        return userName;
+    }
+
+    public void setUserName(String userName) {
+        this.userName = userName;
     }
 
     public void setTradePlanId(String tradePlanId) {
@@ -154,6 +183,38 @@ public class TradeOrderEntity {
         return price;
     }
 
+    public BigDecimal getFilledSize() {
+        return filledSize;
+    }
+
+    public void setFilledSize(BigDecimal filledSize) {
+        this.filledSize = filledSize;
+    }
+
+    public BigDecimal getRemainingSize() {
+        return remainingSize;
+    }
+
+    public void setRemainingSize(BigDecimal remainingSize) {
+        this.remainingSize = remainingSize;
+    }
+
+    public BigDecimal getAverageFillPrice() {
+        return averageFillPrice;
+    }
+
+    public void setAverageFillPrice(BigDecimal averageFillPrice) {
+        this.averageFillPrice = averageFillPrice;
+    }
+
+    public Instant getOkxUpdatedAt() {
+        return okxUpdatedAt;
+    }
+
+    public void setOkxUpdatedAt(Instant okxUpdatedAt) {
+        this.okxUpdatedAt = okxUpdatedAt;
+    }
+
     public void setReduceOnly(boolean reduceOnly) {
         this.reduceOnly = reduceOnly;
     }
@@ -176,6 +237,22 @@ public class TradeOrderEntity {
 
     public String getOkxOrdId() {
         return okxOrdId;
+    }
+
+    public String getParentAlgoId() {
+        return parentAlgoId;
+    }
+
+    public void setParentAlgoId(String parentAlgoId) {
+        this.parentAlgoId = parentAlgoId;
+    }
+
+    public String getPnlCompleteness() {
+        return pnlCompleteness;
+    }
+
+    public void setPnlCompleteness(String pnlCompleteness) {
+        this.pnlCompleteness = pnlCompleteness;
     }
 
     public void setOkxState(String okxState) {

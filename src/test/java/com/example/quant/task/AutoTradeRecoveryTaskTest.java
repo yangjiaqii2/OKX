@@ -61,7 +61,7 @@ class AutoTradeRecoveryTaskTest {
                 new BigDecimal("1"),
                 new BigDecimal("50")
         );
-        PendingOrder order = pendingOrderService.createAutoPendingOrder(
+        PendingOrder order = AuthUserContext.callAs("userA", () -> pendingOrderService.createAutoPendingOrder(
                 MarketType.OKX_SWAP,
                 samplePlan(),
                 pendingOrderId,
@@ -69,7 +69,7 @@ class AutoTradeRecoveryTaskTest {
                 ownerReservation.reservationId(),
                 allocation,
                 "AUTOownerctx"
-        );
+        ));
         order.markUnknownSubmitStatus("OKX submit timeout");
         ContextCapturingOkxTradeAdapter okxTradeAdapter = new ContextCapturingOkxTradeAdapter();
         ContextCapturingLifecycle lifecycleService = new ContextCapturingLifecycle();
@@ -209,7 +209,7 @@ class AutoTradeRecoveryTaskTest {
     }
 
     @Test
-    void releasesUnknownSubmitBudgetOnlyWhenOkxConfirmsClientOrderIdMissing() {
+    void unresolvedSubmitNeverReleasesBudgetOrAllowsAutomaticRetry() {
         AgentProperties properties = new AgentProperties();
         properties.recovery().setUnknownSubmitStatusTimeoutSeconds(0);
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
@@ -242,13 +242,76 @@ class AutoTradeRecoveryTaskTest {
         );
         AutoTradeRecoveryTask.RecoveryResult result = task.runOnce();
 
-        assertThat(result.releasedReservations()).isEqualTo(1);
-        assertThat(order.status()).isEqualTo(OrderStatus.REJECTED);
+        assertThat(result.releasedReservations()).isZero();
+        assertThat(result.attentionRequired()).isEqualTo(1);
+        assertThat(order.status()).isEqualTo(OrderStatus.UNKNOWN_SUBMIT_STATUS);
         assertThat(order.rejectReason()).contains("OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT");
         assertThat(budgetService.reservation(reservation.reservationId()))
                 .get()
                 .extracting(BudgetReservation::status)
-                .isEqualTo(BudgetReservationStatus.RELEASED);
+                .isEqualTo(BudgetReservationStatus.RESERVED);
+    }
+
+    @Test
+    void restartWindowSubmittingStateIsReconciledByStableClientOrderId() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        BudgetAllocation allocation = budgetService.allocate(request());
+        UUID pendingOrderId = UUID.randomUUID();
+        BudgetReservation reservation = budgetService.reserveBudget(
+                samplePlan().id(), pendingOrderId, "BTC-USDT-SWAP",
+                allocation.finalOrderMarginUsdt(), new BigDecimal("50"));
+        PendingOrder order = pendingOrderService.createAutoPendingOrder(
+                MarketType.OKX_SWAP, samplePlan(), pendingOrderId,
+                allocation.finalOrderMarginUsdt(), reservation.reservationId(), allocation,
+                "AUTOrestartwindow");
+        order.transition(OrderStatus.BUDGET_RESERVED, OrderStatus.SUBMITTING);
+
+        AutoTradeRecoveryTask task = new AutoTradeRecoveryTask(
+                pendingOrderService,
+                budgetService,
+                properties,
+                new OkxTradeAdapter(new QueryExistingOrderGateway())
+        );
+
+        AutoTradeRecoveryTask.RecoveryResult result = task.runOnce();
+
+        assertThat(result.recoveredUnknownSubmits()).isEqualTo(1);
+        assertThat(order.status()).isEqualTo(OrderStatus.SUBMITTED);
+        assertThat(order.externalOrderId()).isEqualTo("recovered-ord-1");
+    }
+
+    @Test
+    void restartDuringConfirmingRollsBackToReservedBeforeAnyExchangeSubmit() {
+        AgentProperties properties = new AgentProperties();
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(properties);
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        BudgetAllocation allocation = budgetService.allocate(request());
+        UUID pendingOrderId = UUID.randomUUID();
+        BudgetReservation reservation = budgetService.reserveBudget(
+                samplePlan().id(), pendingOrderId, "BTC-USDT-SWAP",
+                allocation.finalOrderMarginUsdt(), new BigDecimal("50"));
+        PendingOrder order = pendingOrderService.createAutoPendingOrder(
+                MarketType.OKX_SWAP, samplePlan(), pendingOrderId,
+                allocation.finalOrderMarginUsdt(), reservation.reservationId(), allocation,
+                "AUTOconfirmrestart");
+        order.transition(OrderStatus.BUDGET_RESERVED, OrderStatus.CONFIRMING);
+
+        AutoTradeRecoveryTask task = new AutoTradeRecoveryTask(
+                pendingOrderService, budgetService, properties);
+
+        task.runOnce();
+
+        assertThat(order.status()).isEqualTo(OrderStatus.BUDGET_RESERVED);
+        assertThat(budgetService.reservation(reservation.reservationId()))
+                .get().extracting(BudgetReservation::status)
+                .isEqualTo(BudgetReservationStatus.RESERVED);
+
+        order.transition(OrderStatus.BUDGET_RESERVED, OrderStatus.CONFIRMING);
+        order.transition(OrderStatus.CONFIRMING, OrderStatus.CONFIRMED);
+        task.runOnce();
+        assertThat(order.status()).isEqualTo(OrderStatus.BUDGET_RESERVED);
     }
 
     @Test

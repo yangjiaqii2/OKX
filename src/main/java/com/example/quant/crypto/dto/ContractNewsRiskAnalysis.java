@@ -39,7 +39,7 @@ public record ContractNewsRiskAnalysis(
                 List.of("DATA_UNAVAILABLE"),
                 List.of(),
                 List.of(reason),
-                ContractNewsRiskDecision.allow(reason)
+                ContractNewsRiskDecision.waitOnly(reason)
         );
     }
 

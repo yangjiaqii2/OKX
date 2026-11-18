@@ -10,8 +10,18 @@ spring:
   flyway:
     enabled: true
 
+quant:
+  system:
+    fx-rate:
+      enabled: false
+  auth:
+    username: test-admin
+    password: test-admin-password
+  contract:
+    enabled: false
+
 trading:
-  okx-live-enabled: false
+  mode: DISABLED
   require-user-confirm: true
   emergency-stop: false
   order-expire-seconds: 120

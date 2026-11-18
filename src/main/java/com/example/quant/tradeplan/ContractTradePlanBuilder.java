@@ -7,6 +7,7 @@ import com.example.quant.agent.entry.SmartEntryModeDecision;
 import com.example.quant.agent.entry.SmartEntryModeResolver;
 import com.example.quant.agent.gate.ContractTradeGate;
 import com.example.quant.agent.plan.TradePlanRecordService;
+import com.example.quant.agent.selection.ContractSelectionDecision;
 import com.example.quant.ai.AiAnalysisService;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.OkxContractScanner;
@@ -25,6 +26,7 @@ import com.example.quant.risk.RiskService;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -37,9 +39,8 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class ContractTradePlanBuilder {
-    private static final BigDecimal FALLBACK_EQUITY = BigDecimal.valueOf(1_000);
-    private static final BigDecimal FALLBACK_MARGIN = BigDecimal.valueOf(20);
     private static final BigDecimal MIN_RISK_REWARD = BigDecimal.valueOf(1.5);
+    private static final String STRATEGY_VERSION = "contract-analysis-s1s2-v2";
 
     private final OkxContractScanner scanner;
     private final AiAnalysisService aiAnalysisService;
@@ -72,13 +73,31 @@ public class ContractTradePlanBuilder {
 
     public TradePlan buildPlan(String instId) {
         List<ContractCandidate> candidates = scanner.scan();
-        ContractCandidate candidate = candidates.stream()
-                .filter(item -> instId != null && item.instId().equals(instId))
+        return buildPlan(requireRequestedCandidate(instId, candidates));
+    }
+
+    /**
+     * 自动推荐入口：在未指定标的时选取当前扫描最高分候选。
+     * 指定标的请走 {@link #buildPlan(String)}，缺失时拒绝而不是静默换币。
+     */
+    public TradePlan buildTopCandidatePlan() {
+        List<ContractCandidate> candidates = scanner.scan();
+        ContractCandidate top = candidates.stream()
+                .max(Comparator.comparing(ContractCandidate::score))
+                .orElseThrow(() -> new IllegalStateException("OKX did not return contract candidates"));
+        return buildPlan(top);
+    }
+
+    static ContractCandidate requireRequestedCandidate(String instId, List<ContractCandidate> candidates) {
+        if (instId == null || instId.isBlank()) {
+            throw new IllegalArgumentException("requested_inst_id_required");
+        }
+        List<ContractCandidate> safe = candidates == null ? List.of() : candidates;
+        return safe.stream()
+                .filter(item -> instId.equals(item.instId()))
                 .findFirst()
-                .orElseGet(() -> candidates.stream()
-                        .max(Comparator.comparing(ContractCandidate::score))
-                        .orElseThrow(() -> new IllegalStateException("OKX did not return contract candidates")));
-        return buildPlan(candidate);
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "requested_inst_id_not_in_candidates:" + instId));
     }
 
     public TradePlan buildPlan(ContractCandidate candidate) {
@@ -89,32 +108,76 @@ public class ContractTradePlanBuilder {
         return buildPlan(candidate, true);
     }
 
+    public TradePlan buildSelectedPlan(ContractCandidate candidate, ContractSelectionDecision selection) {
+        if (selection == null || selection.source() != ContractSelectionDecision.DecisionSource.AI_PRIMARY
+                || !candidate.instId().equals(selection.selectedInstId())) {
+            throw new IllegalArgumentException("AI selection does not match candidate");
+        }
+        return buildPlan(candidate, false, selectedDraft(candidate, selection), true);
+    }
+
+    public TradePlan buildRuleFallbackPlan(ContractCandidate candidate) {
+        return buildPlan(candidate, false, rulePlan(candidate, "AI选币不可用，使用确定性规则保底"), false);
+    }
+
     private TradePlan buildPlan(ContractCandidate candidate, boolean noRiskMode) {
+        return buildPlan(candidate, noRiskMode, null, false);
+    }
+
+    private TradePlan buildPlan(ContractCandidate candidate, boolean noRiskMode, PlanDraft selectedDraft,
+                                boolean aiPrimary) {
         List<String> gateWarnings = ContractTradeGate.planDenyReasons(candidate, agentProperties);
-        if (!noRiskMode && watchOnlyCandidate(candidate)) {
+        if (noRiskMode) {
+            PlanDraft draft = noRiskPlanOrFallback(candidate);
+            TradePlan shadowPlan = shadowTradePlan(candidate, gateWarnings, draft);
+            tradePlanRecordService.record(shadowPlan, TradePlanStatus.CREATED, "SHADOW_ONLY",
+                    auditPayload(candidate, gateWarnings, draft));
+            return shadowPlan;
+        }
+        if (!noRiskMode && !aiPrimary && watchOnlyCandidate(candidate)) {
             TradePlan watchPlan = watchTradePlan(candidate, gateWarnings, "候选不满足自动交易计划条件，输出观察计划");
             tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED, String.join(",", gateWarnings),
                     auditPayload(candidate, gateWarnings, watchDraft(candidate)));
             return watchPlan;
         }
-        List<String> entryReasons;
-        if (noRiskMode) {
-            entryReasons = List.of("无风控模式：忽略AUTO_TRADE_ALLOWED和智能入场等待门控，直接生成可提交计划");
-        } else {
-            SmartEntryModeDecision entryDecision = new SmartEntryModeResolver(agentProperties).resolve(candidate);
-            if (entryDecision.mode() != SmartEntryMode.MARKET) {
-                TradePlan watchPlan = watchTradePlan(candidate, gateWarnings,
-                        "智能入场模式" + entryDecision.mode() + "：" + String.join("；", entryDecision.reasons()));
-                tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED, String.join(",", gateWarnings),
-                        auditPayload(candidate, gateWarnings, watchDraft(candidate)));
-                return watchPlan;
-            }
-            entryReasons = entryDecision.reasons();
+        SmartEntryModeDecision entryDecision = aiPrimary
+                ? new SmartEntryModeDecision(SmartEntryMode.MARKET, true, List.of("AI主选后由规则重建价格与风险参数"))
+                : new SmartEntryModeResolver(agentProperties).resolve(candidate);
+        if (!aiPrimary && entryDecision.mode() != SmartEntryMode.MARKET) {
+            TradePlan watchPlan = watchTradePlan(candidate, gateWarnings,
+                    "智能入场模式" + entryDecision.mode() + "：" + String.join("；", entryDecision.reasons()));
+            tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED, String.join(",", gateWarnings),
+                    auditPayload(candidate, gateWarnings, watchDraft(candidate)));
+            return watchPlan;
         }
-        PlanDraft draft = noRiskMode ? noRiskPlanOrFallback(candidate) : aiPlanOrFallback(candidate);
+        List<String> entryReasons = entryDecision.reasons();
+        PlanDraft draft = selectedDraft == null ? aiPlanOrFallback(candidate) : selectedDraft;
+        if (draft.action() == TradePlanType.WATCH) {
+            TradePlan watchPlan = watchTradePlan(candidate, gateWarnings,
+                    draft.riskList().stream().findFirst().orElse("AI或确定性规则将候选降级为观察"), draft);
+            tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED, String.join(",", gateWarnings),
+                    auditPayload(candidate, gateWarnings, draft));
+            return watchPlan;
+        }
         BigDecimal stopDistanceRate = draft.entryPrice().subtract(draft.stopLossPrice()).abs()
                 .divide(draft.entryPrice(), 8, RoundingMode.HALF_UP);
+        List<String> finalHardDenyReasons = finalJavaHardDenyReasons(candidate, draft, stopDistanceRate,
+                agentProperties);
+        if (!finalHardDenyReasons.isEmpty()) {
+            TradePlan watchPlan = watchTradePlan(candidate, gateWarnings,
+                    "FINAL_JAVA_HARD_GUARD: " + String.join(",", finalHardDenyReasons), draft);
+            tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED,
+                    String.join(",", finalHardDenyReasons), auditPayload(candidate, gateWarnings, draft));
+            return watchPlan;
+        }
         AccountSummary account = safeAccount();
+        if (!verifiedAccount(account)) {
+            TradePlan watchPlan = watchTradePlan(candidate, gateWarnings,
+                    "OKX账户权益或可用余额不可用，禁止生成可执行计划：" + account.message());
+            tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED, "ACCOUNT_UNAVAILABLE",
+                    auditPayload(candidate, gateWarnings, draft));
+            return watchPlan;
+        }
         LeverageDecisionResult leverageDecision = leverageDecisionService.decide(new LeverageDecisionRequest(
                 candidate.instId(),
                 candidate.factorScore().trendScore(),
@@ -129,9 +192,17 @@ public class ContractTradePlanBuilder {
         ));
         int leverage = analyzedLeverage(candidate, draft.suggestedLeverage(), leverageDecision);
         PositionSizingResult sizing = sizing(candidate, draft, account, leverage, leverageDecision.riskLevel());
+        if (!sizing.accepted()) {
+            TradePlan watchPlan = watchTradePlan(candidate, gateWarnings,
+                    "仓位计算失败关闭：" + sizing.rejectReason());
+            tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED, sizing.rejectReason(),
+                    auditPayload(candidate, gateWarnings, draft));
+            return watchPlan;
+        }
         List<String> reasons = Stream.concat(
-                        mergedPlanReasons(draft, candidate, leverageDecision, sizing).stream(),
-                        entryReasons.stream())
+                        Stream.concat(mergedPlanReasons(draft, candidate, leverageDecision, sizing).stream(),
+                                entryReasons.stream()),
+                        Stream.of("finalPlanTimestamp=" + Instant.now()))
                 .distinct()
                 .toList();
         List<String> risks = mergedPlanRisks(draft, candidate, leverageDecision, sizing, account, gateWarnings);
@@ -165,83 +236,72 @@ public class ContractTradePlanBuilder {
                 Instant.now().plusSeconds(300)
         );
 
-        RiskCheckResult risk = riskService.check(riskRequestFor(tradePlan, account, leverageDecision.riskLevel()));
-        String softDenyReason = null;
+        RiskCheckResult risk = riskService.check(riskRequestFor(
+                tradePlan, account, leverageDecision.riskLevel(), candidate.createdAt(), aiPrimary));
         if (!risk.passed()) {
-            softDenyReason = risk.rejectCode() + ": " + risk.rejectReason();
-            tradePlan = withExtraRisk(tradePlan, "规则风控提示：" + softDenyReason + "；已按高可用模式继续生成小额计划");
+            String denyReason = risk.rejectCode() + ": " + risk.rejectReason();
+            TradePlan watchPlan = watchTradePlan(candidate, gateWarnings, "规则风控失败关闭：" + denyReason);
+            tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED, denyReason,
+                    auditPayload(candidate, gateWarnings, draft));
+            return watchPlan;
         }
-        tradePlanRecordService.record(tradePlan, TradePlanStatus.CREATED, softDenyReason, auditPayload(candidate, gateWarnings, draft));
+        tradePlanRecordService.record(tradePlan, TradePlanStatus.CREATED, null, auditPayload(candidate, gateWarnings, draft));
         return tradePlan;
     }
 
     private PlanDraft aiPlanOrFallback(ContractCandidate candidate) {
-        try {
-            JsonNode plan = aiAnalysisService.completeJson(systemPrompt(), userPrompt(candidate));
-            PlanDraft draft = aiPlan(candidate, plan);
-            if (draft != null) {
-                return draft;
-            }
-            return rulePlan(candidate, "AI建议WAIT，按高可用规则计划兜底");
-        } catch (RuntimeException ex) {
-            return rulePlan(candidate, "AI计划不可用，按高可用规则计划兜底：" + compact(ex.getMessage()));
-        }
+        return aiReviewOrFallback(candidate, false);
     }
 
     private PlanDraft noRiskPlanOrFallback(ContractCandidate candidate) {
-        try {
-            JsonNode plan = aiAnalysisService.completeJson(systemPrompt(), userPrompt(candidate));
-            PlanDraft draft = aiPlan(candidate, plan);
-            if (draft != null && draft.action() != TradePlanType.WATCH) {
-                return draft;
-            }
-            return rulePlan(candidate, "无风控模式AI建议WAIT，已按本地规则直接生成计划", true);
-        } catch (RuntimeException ex) {
-            return rulePlan(candidate, "无风控模式AI计划不可用，按本地规则直接生成计划：" + compact(ex.getMessage()), true);
-        }
+        return aiReviewOrFallback(candidate, true);
     }
 
-    private PlanDraft aiPlan(ContractCandidate candidate, JsonNode plan) {
-        if (plan == null || !plan.isObject()) {
-            throw new IllegalStateException("AI计划不是JSON对象");
+    private PlanDraft aiReviewOrFallback(ContractCandidate candidate, boolean ignoreWatchOnly) {
+        PlanDraft deterministic = rulePlan(candidate,
+                ignoreWatchOnly ? "观察模式使用确定性本地计划" : "确定性本地计划", ignoreWatchOnly);
+        if (deterministic.action() == TradePlanType.WATCH) {
+            return deterministic;
         }
-        TradePlanType action = action(plan.path("action").asText(""));
-        if (action == null) {
-            return null;
+        try {
+            JsonNode plan = aiAnalysisService.completeJson(systemPrompt(), userPrompt(candidate));
+            if (plan == null || !plan.isObject()) {
+                throw new IllegalStateException("AI复核不是JSON对象");
+            }
+            TradePlanType reviewAction = action(plan.path("action").asText(""));
+            if (reviewAction == TradePlanType.WATCH) {
+                return watchDraft(candidate);
+            }
+            List<String> reasons = Stream.concat(
+                            deterministic.reasonList().stream(),
+                            stringList(plan.path("reasonList"), "AI未补充分析理由").stream())
+                    .distinct()
+                    .toList();
+            List<String> risks = new ArrayList<>(deterministic.riskList());
+            risks.addAll(stringList(plan.path("riskList"), "AI未补充额外风险"));
+            if (reviewAction != null && reviewAction != deterministic.action()) {
+                risks.add("AI方向与确定性策略不一致，已忽略AI方向");
+            }
+            return new PlanDraft(
+                    deterministic.action(), deterministic.orderType(), deterministic.direction(),
+                    deterministic.confidence(), deterministic.entryPrice(), deterministic.stopLossPrice(),
+                    deterministic.takeProfitPrice(), deterministic.riskRewardRatio(),
+                    deterministic.suggestedLeverage(), reasons, risks.stream().distinct().toList(),
+                    deterministic.invalidCondition(), "DETERMINISTIC_AI_REVIEW"
+            );
+        } catch (RuntimeException ex) {
+            List<String> risks = Stream.concat(deterministic.riskList().stream(),
+                            Stream.of("AI复核不可用，未改变确定性交易参数：" + compact(ex.getMessage())))
+                    .distinct()
+                    .toList();
+            return new PlanDraft(
+                    deterministic.action(), deterministic.orderType(), deterministic.direction(),
+                    deterministic.confidence(), deterministic.entryPrice(), deterministic.stopLossPrice(),
+                    deterministic.takeProfitPrice(), deterministic.riskRewardRatio(),
+                    deterministic.suggestedLeverage(), deterministic.reasonList(), risks,
+                    deterministic.invalidCondition(), "DETERMINISTIC_AI_UNAVAILABLE"
+            );
         }
-        if (action == TradePlanType.WATCH) {
-            return watchDraft(candidate);
-        }
-        DirectionBias direction = action == TradePlanType.OPEN_SHORT ? DirectionBias.BEARISH : DirectionBias.BULLISH;
-        BigDecimal entry = positiveDecimal(plan, "entryPrice", positive(candidate.entryPrice(), candidate.lastPrice()));
-        BigDecimal stopLoss = positiveDecimal(plan, "stopLossPrice", fallbackStop(entry, direction));
-        BigDecimal takeProfit = positiveDecimal(plan, "takeProfitPrice", fallbackTakeProfit(entry, stopLoss, direction));
-        BigDecimal riskReward = safeRiskReward(action, entry, stopLoss, takeProfit);
-        if (riskReward.compareTo(MIN_RISK_REWARD) < 0) {
-            throw new IllegalStateException("AI计划盈亏比不足：" + riskReward);
-        }
-        String orderType = plan.path("orderType").asText("LIMIT");
-        if (!List.of("LIMIT", "MARKET").contains(orderType)) {
-            orderType = "LIMIT";
-        }
-        orderType = entryOrderType(candidate, orderType);
-        BigDecimal confidence = decimal(plan, "confidence", BigDecimal.valueOf(0.65)).max(BigDecimal.ZERO).min(BigDecimal.ONE);
-        int leverage = Math.max(1, plan.path("leverage").asInt(candidate.suggestedLeverage()));
-        return new PlanDraft(
-                action,
-                orderType,
-                direction,
-                confidence,
-                entry,
-                stopLoss.max(BigDecimal.ZERO),
-                takeProfit.max(BigDecimal.ZERO),
-                riskReward,
-                leverage,
-                stringList(plan.path("reasonList"), "AI生成单合约交易计划"),
-                stringList(plan.path("riskList"), "AI计划仍需执行风控和OKX委托校验"),
-                "AI计划；下一轮扫描若评分、方向或风控变化则失效",
-                "AI"
-        );
     }
 
     private PlanDraft rulePlan(ContractCandidate candidate, String fallbackReason) {
@@ -259,6 +319,9 @@ public class ContractTradePlanBuilder {
         BigDecimal entry = positive(candidate.entryPrice(), candidate.lastPrice());
         BigDecimal stopLoss = positive(candidate.stopLossPrice(), fallbackStop(entry, direction));
         BigDecimal takeProfit = positive(candidate.takeProfitPrice(), fallbackTakeProfit(entry, stopLoss, direction));
+        if (!validGeometry(action, entry, stopLoss, takeProfit)) {
+            return watchDraft(candidate);
+        }
         BigDecimal riskReward = safeRiskReward(action, entry, stopLoss, takeProfit);
         if (riskReward.compareTo(MIN_RISK_REWARD) < 0) {
             BigDecimal riskDistance = entry.subtract(stopLoss).abs();
@@ -266,6 +329,9 @@ public class ContractTradePlanBuilder {
                     ? entry.subtract(riskDistance.multiply(MIN_RISK_REWARD))
                     : entry.add(riskDistance.multiply(MIN_RISK_REWARD));
             riskReward = safeRiskReward(action, entry, stopLoss, takeProfit);
+        }
+        if (riskReward.compareTo(MIN_RISK_REWARD) < 0) {
+            return watchDraft(candidate);
         }
         BigDecimal confidence = BigDecimal.valueOf(Math.max(35, Math.min(90, candidate.score())))
                 .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
@@ -275,6 +341,113 @@ public class ContractTradePlanBuilder {
                 List.of(fallbackReason),
                 "AI计划不可用时的高可用兜底计划；下一轮扫描若评分、方向或风控变化则失效",
                 "LOCAL_FALLBACK");
+    }
+
+    private PlanDraft selectedDraft(ContractCandidate candidate, ContractSelectionDecision selection) {
+        if (selection.entryMode().startsWith("WAIT")) {
+            return watchDraft(candidate);
+        }
+        DirectionBias direction = selection.direction();
+        if (!directionMatchesAnalysis(candidate, direction)) {
+            return directionMismatchDraft(candidate, direction);
+        }
+        TradePlanType action = direction == DirectionBias.BEARISH ? TradePlanType.OPEN_SHORT : TradePlanType.OPEN_LONG;
+        BigDecimal entry = positive(candidate.entryPrice(), candidate.lastPrice());
+        BigDecimal candidateDistance = entry.subtract(positive(candidate.stopLossPrice(), entry)).abs();
+        BigDecimal minimumDistance = entry.multiply(new BigDecimal("0.006"));
+        BigDecimal riskDistance = candidateDistance.max(minimumDistance);
+        BigDecimal stopLoss = direction == DirectionBias.BEARISH
+                ? entry.add(riskDistance) : entry.subtract(riskDistance);
+        BigDecimal requestedRiskReward = candidate.riskRewardRatio() == null
+                ? MIN_RISK_REWARD : candidate.riskRewardRatio().max(MIN_RISK_REWARD);
+        BigDecimal takeProfit = direction == DirectionBias.BEARISH
+                ? entry.subtract(riskDistance.multiply(requestedRiskReward))
+                : entry.add(riskDistance.multiply(requestedRiskReward));
+        if (!validGeometry(action, entry, stopLoss, takeProfit)) {
+            return watchDraft(candidate);
+        }
+        List<String> provenance = List.of(
+                "candidateOriginalSide=" + candidate.trendDirection(),
+                "jevSelectedSide=" + direction,
+                "finalPlanSide=" + direction,
+                "directionReanalysisPerformed=false",
+                "stopDistanceSource=JAVA_CANDIDATE_DIRECTION_MATCH",
+                "riskRewardSource=JAVA_CANDIDATE_DIRECTION_MATCH",
+                "leverageSource=JAVA_CANDIDATE_CAPPED_BY_JAVA"
+        );
+        return new PlanDraft(
+                action,
+                "MARKET".equals(selection.entryMode()) ? "MARKET" : "LIMIT",
+                direction,
+                selection.confidence(),
+                entry,
+                stopLoss,
+                takeProfit,
+                safeRiskReward(action, entry, stopLoss, takeProfit),
+                candidate.suggestedLeverage(),
+                Stream.concat(Stream.concat(Stream.of("AI主选合约与方向，规则重建入场、止损、止盈、杠杆和仓位"),
+                                        provenance.stream()),
+                                selection.reasonList().stream())
+                        .distinct().toList(),
+                selection.riskList(),
+                "AI选择失效或任一硬风控不再满足时停止执行",
+                "AI_PRIMARY_RULE_PRICING"
+        );
+    }
+
+    private static List<String> finalJavaHardDenyReasons(ContractCandidate candidate, PlanDraft draft,
+                                                          BigDecimal stopDistanceRate,
+                                                          AgentProperties agentProperties) {
+        List<String> reasons = candidate == null
+                ? new ArrayList<>(List.of("candidate_invalid"))
+                : new ArrayList<>(ContractTradeGate.planDenyReasons(candidate, agentProperties));
+        if (candidate == null || candidate.instId() == null || !candidate.instId().endsWith("-USDT-SWAP")) {
+            reasons.add("candidate_invalid");
+        }
+        if (draft.entryPrice() == null || draft.entryPrice().signum() <= 0
+                || !validGeometry(draft.action(), draft.entryPrice(), draft.stopLossPrice(), draft.takeProfitPrice())) {
+            reasons.add("entry_or_side_geometry_invalid");
+        }
+        if (stopDistanceRate.compareTo(BigDecimal.valueOf(0.05)) > 0) {
+            reasons.add("final_stop_loss_pct_above_5");
+        }
+        if (draft.riskRewardRatio() == null || draft.riskRewardRatio().compareTo(MIN_RISK_REWARD) < 0) {
+            reasons.add("final_risk_reward_below_" + MIN_RISK_REWARD);
+        }
+        return reasons.stream().distinct().toList();
+    }
+
+    private static boolean directionMatchesAnalysis(ContractCandidate candidate, DirectionBias selectedDirection) {
+        return candidate != null && selectedDirection != null
+                && ((selectedDirection == DirectionBias.BULLISH && candidate.trendDirection() == DirectionBias.BULLISH)
+                || (selectedDirection == DirectionBias.BEARISH && candidate.trendDirection() == DirectionBias.BEARISH));
+    }
+
+    private static PlanDraft directionMismatchDraft(ContractCandidate candidate, DirectionBias selectedDirection) {
+        BigDecimal entry = positive(candidate.entryPrice(), candidate.lastPrice());
+        return new PlanDraft(
+                TradePlanType.WATCH,
+                "NO_ENTRY",
+                DirectionBias.NEUTRAL,
+                BigDecimal.ZERO,
+                entry,
+                positive(candidate.stopLossPrice(), entry),
+                positive(candidate.takeProfitPrice(), entry),
+                BigDecimal.ZERO,
+                0,
+                List.of(
+                        "candidateOriginalSide=" + candidate.trendDirection(),
+                        "jevSelectedSide=" + selectedDirection,
+                        "finalPlanSide=NONE",
+                        "directionReanalysisPerformed=false",
+                        "stopDistanceSource=REJECTED_DIRECTION_MISMATCH",
+                        "riskRewardSource=REJECTED_DIRECTION_MISMATCH",
+                        "leverageSource=REJECTED_DIRECTION_MISMATCH"
+                ),
+                List.of("REJECT_SELECTED_SETUP_DIRECTION_MISMATCH"),
+                "Jev方向与Java原始分析方向不一致，未重新分析，禁止镜像旧止损/止盈/杠杆",
+                "AI_PRIMARY_DIRECTION_MISMATCH_REJECTED"
+        );
     }
 
     private PositionSizingResult sizing(ContractCandidate candidate, PlanDraft draft, AccountSummary account,
@@ -288,7 +461,7 @@ public class ContractTradePlanBuilder {
                     draft.takeProfitPrice(),
                     leverage,
                     percentRate(agentProperties.risk().singleTradeRiskPercent()),
-                    percentRate(agentProperties.risk().maxSingleLossPercent()),
+                    percentRate(agentProperties.risk().maxSingleMarginPercent()),
                     MIN_RISK_REWARD,
                     candidate.volatility(),
                     riskLevel
@@ -296,60 +469,39 @@ public class ContractTradePlanBuilder {
             if (result.accepted()) {
                 return result;
             }
-            return fallbackSizing(draft, leverage, "仓位计算未通过：" + result.rejectReason());
+            return result;
         } catch (RuntimeException ex) {
-            return fallbackSizing(draft, leverage, "仓位计算异常：" + ex.getMessage());
+            return new PositionSizingResult(false, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(),
+                    "仓位计算异常：" + compact(ex.getMessage()), BigDecimal.ZERO);
         }
-    }
-
-    private static PositionSizingResult fallbackSizing(PlanDraft draft, int leverage, String reason) {
-        BigDecimal margin = FALLBACK_MARGIN;
-        BigDecimal positionValue = margin.multiply(BigDecimal.valueOf(Math.max(1, leverage)));
-        BigDecimal size = positionValue.divide(draft.entryPrice(), 8, RoundingMode.DOWN);
-        BigDecimal maxLoss = draft.entryPrice().subtract(draft.stopLossPrice()).abs()
-                .multiply(size)
-                .setScale(4, RoundingMode.HALF_UP);
-        return new PositionSizingResult(true, size, margin, maxLoss, BigDecimal.ZERO, positionValue,
-                draft.riskRewardRatio(), List.of("账户或风控数据不可用时使用固定小额兜底仓位"),
-                List.of(reason), null);
     }
 
     private AccountSummary safeAccount() {
         try {
-            AccountSummary account = accountSnapshotService.summary();
-            if (account.equity().signum() > 0 && account.availableBalance().signum() > 0) {
-                return account;
-            }
-            if (account.availableBalance().signum() > 0) {
-                return new AccountSummary(
-                        account.availableBalance(),
-                        account.availableBalance(),
-                        account.mode(),
-                        "OKX账户总览为0，已使用可用余额作为自动交易资金基准：" + account.message()
-                );
-            }
-            return new AccountSummary(
-                    account.equity().signum() > 0 ? account.equity() : FALLBACK_EQUITY,
-                    account.availableBalance().signum() > 0 ? account.availableBalance() : FALLBACK_MARGIN,
-                    "FALLBACK",
-                    "OKX账户权益/余额不可用，使用固定小额兜底：" + account.message()
-            );
+            return accountSnapshotService.summary();
         } catch (RuntimeException ex) {
-            return new AccountSummary(FALLBACK_EQUITY, FALLBACK_MARGIN, "FALLBACK",
-                    "OKX账户读取异常，使用固定小额兜底：" + ex.getMessage());
+            return new AccountSummary(BigDecimal.ZERO, BigDecimal.ZERO, "OKX_ERROR",
+                    "OKX账户读取异常：" + compact(ex.getMessage()));
         }
     }
 
-    private ContractRiskRequest riskRequestFor(TradePlan plan, AccountSummary account, RiskLevel riskLevel) {
+    private ContractRiskRequest riskRequestFor(TradePlan plan, AccountSummary account, RiskLevel riskLevel,
+                                               Instant marketDataAt, boolean deferMarketFreshnessToSubmit) {
         ContractRiskRequest defaults = ContractRiskRequest.safeDefaults();
+        long marketDelayMs = deferMarketFreshnessToSubmit
+                ? 0
+                : marketDataAt == null
+                ? Long.MAX_VALUE
+                : Math.max(0, Duration.between(marketDataAt, Instant.now()).toMillis());
         return new ContractRiskRequest(
                 defaults.emergencyStop(),
-                defaults.websocketConnected(),
-                defaults.marketDelayMs(),
+                marketDataAt != null,
+                marketDelayMs,
                 defaults.maxMarketDelayMs(),
                 usableEquity(account),
                 plan.suggestedMargin(),
-                percentRate(agentProperties.risk().maxSingleLossPercent()).max(new BigDecimal("0.20")),
+                percentRate(agentProperties.risk().maxSingleMarginPercent()),
                 plan.suggestedLeverage(),
                 agentProperties.risk().maxLeverage(),
                 plan.entryPrice(),
@@ -357,28 +509,23 @@ public class ContractTradePlanBuilder {
                 plan.riskRewardRatio(),
                 MIN_RISK_REWARD,
                 plan.fundingRate(),
-                agentProperties.market().maxFundingAbs().multiply(BigDecimal.valueOf(3)),
+                agentProperties.market().maxFundingAbs(),
                 plan.volume24h(),
-                BigDecimal.ZERO,
+                agentProperties.market().minVolume24hUsdt(),
                 safeRiskLevel(riskLevel),
                 plan.volatility(),
                 defaults.maxStopLossDistanceRate(),
                 plan.signalScore(),
-                Math.min(agentProperties.score().minTotalScore(), 55),
+                agentProperties.score().minTotalScore(),
                 percentRate(agentProperties.risk().singleTradeRiskPercent())
         );
     }
 
-    private static TradePlan withExtraRisk(TradePlan plan, String risk) {
-        List<String> risks = Stream.concat(plan.riskList().stream(), Stream.of(risk))
-                .distinct()
-                .toList();
-        return new TradePlan(plan.id(), plan.instId(), plan.action(), plan.orderType(), plan.directionBias(),
-                plan.confidence(), plan.entryPrice(), plan.stopLossPrice(), plan.takeProfitPrice(),
-                plan.suggestedLeverage(), plan.suggestedSize(), plan.suggestedMargin(), plan.maxLossAmount(),
-                plan.riskRewardRatio(), plan.signalScore(), plan.fundingRate(), plan.volatility(), plan.volume24h(),
-                plan.tdMode(), plan.reasonList(), risks, plan.invalidCondition(), plan.needUserConfirm(),
-                plan.expireTime());
+    private static boolean verifiedAccount(AccountSummary account) {
+        return account != null
+                && ("OKX_REAL".equals(account.mode()) || "OKX_DEMO".equals(account.mode()))
+                && account.equity() != null && account.equity().signum() > 0
+                && account.availableBalance() != null && account.availableBalance().signum() > 0;
     }
 
     private static String entryOrderType(ContractCandidate candidate, String requestedOrderType) {
@@ -393,11 +540,11 @@ public class ContractTradePlanBuilder {
                 || !List.of(
                 com.example.quant.crypto.dto.ContractSignalType.STRONG_LONG,
                 com.example.quant.crypto.dto.ContractSignalType.PULLBACK_LONG,
-                com.example.quant.crypto.dto.ContractSignalType.TREND_SHORT,
-                com.example.quant.crypto.dto.ContractSignalType.REVERSAL_SHORT
-        ).contains(candidate.signalType())
-                || "HIGH".equals(candidate.newsAnalysis().newsRiskLevel())
-                || "CRITICAL".equals(candidate.newsAnalysis().newsRiskLevel());
+                com.example.quant.crypto.dto.ContractSignalType.TREND_SHORT
+                ).contains(candidate.signalType())
+                || candidate.newsAnalysis() == null
+                || candidate.newsAnalysis().decision() == null
+                || !candidate.newsAnalysis().decision().allowTrade();
     }
 
     private static PlanDraft watchDraft(ContractCandidate candidate) {
@@ -421,7 +568,11 @@ public class ContractTradePlanBuilder {
     }
 
     private TradePlan watchTradePlan(ContractCandidate candidate, List<String> gateWarnings, String reason) {
-        PlanDraft draft = watchDraft(candidate);
+        return watchTradePlan(candidate, gateWarnings, reason, watchDraft(candidate));
+    }
+
+    private TradePlan watchTradePlan(ContractCandidate candidate, List<String> gateWarnings, String reason,
+                                     PlanDraft draft) {
         List<String> reasons = Stream.concat(draft.reasonList().stream(), candidate.candidateReasonList().stream())
                 .distinct()
                 .toList();
@@ -455,6 +606,26 @@ public class ContractTradePlanBuilder {
                 draft.invalidCondition(),
                 false,
                 Instant.now().plusSeconds(300)
+        );
+    }
+
+    private TradePlan shadowTradePlan(ContractCandidate candidate, List<String> gateWarnings, PlanDraft draft) {
+        List<String> reasons = Stream.concat(
+                        Stream.of("Shadow 观察：仅记录确定性策略输出，不创建订单"),
+                        draft.reasonList().stream())
+                .distinct()
+                .toList();
+        List<String> risks = Stream.concat(
+                        draft.riskList().stream(),
+                        gateWarnings.stream().map(item -> "交易门控提示：" + item))
+                .distinct()
+                .toList();
+        return new TradePlan(
+                UUID.randomUUID(), candidate.instId(), TradePlanType.WATCH, "NO_ENTRY", draft.direction(),
+                draft.confidence(), draft.entryPrice(), draft.stopLossPrice(), draft.takeProfitPrice(), 0,
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, draft.riskRewardRatio(), candidate.score(),
+                candidate.fundingRate(), candidate.volatility(), candidate.volume24h(), "cross", reasons, risks,
+                draft.invalidCondition(), false, Instant.now().plusSeconds(300)
         );
     }
 
@@ -501,6 +672,11 @@ public class ContractTradePlanBuilder {
 
     private static Map<String, Object> auditPayload(ContractCandidate candidate, List<String> gateWarnings, PlanDraft draft) {
         Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("strategyVersion", STRATEGY_VERSION);
+        payload.put("signalPool", candidate.signalType() == null ? "UNKNOWN" : candidate.signalType().name());
+        payload.put("autoTradeEligible", !watchOnlyCandidate(candidate));
+        payload.put("dataTimestamp", candidate.createdAt());
+        payload.put("analysisSource", draft.source());
         payload.put("source", draft.source());
         payload.put("instId", candidate.instId());
         payload.put("score", candidate.score());
@@ -516,23 +692,16 @@ public class ContractTradePlanBuilder {
 
     private static String systemPrompt() {
         return """
-                你是OKX USDT永续合约自动交易计划分析器。
+                你是OKX USDT永续合约确定性交易计划的只读复核器。
                 只分析输入的这一个合约，不要推荐其他合约。
                 必须输出严格JSON，不要Markdown，不要解释。
-                若方向和价格结构可交易，输出OPEN_LONG或OPEN_SHORT；只有明显不可交易才输出WAIT。
+                系统已经确定方向、入场、止损、止盈、杠杆和仓位；你不能修改这些字段。
+                若发现风险或证据不足，输出WAIT；否则原样确认系统方向。
                 禁止为WAIT_OVERHEATED、WAIT_OVERSOLD、NEUTRAL、NO_TRADE、新闻HIGH/CRITICAL候选输出开仓。
-                杠杆leverage必须结合波动率、资金费率、止损距离和清算风险，不得超过系统建议杠杆上限。
                 输出字段：
                 action: OPEN_LONG | OPEN_SHORT | WAIT
-                orderType: LIMIT | MARKET
-                entryPrice: number
-                stopLossPrice: number
-                takeProfitPrice: number
-                leverage: number
-                confidence: 0到1
                 reasonList: string[]
                 riskList: string[]
-                invalidCondition: string
                 """;
     }
 
@@ -620,26 +789,6 @@ public class ContractTradePlanBuilder {
         };
     }
 
-    private static BigDecimal decimal(JsonNode node, String field, BigDecimal fallback) {
-        String value = node.path(field).asText("");
-        if (value == null || value.isBlank()) {
-            return fallback;
-        }
-        try {
-            return new BigDecimal(value);
-        } catch (NumberFormatException ex) {
-            return fallback;
-        }
-    }
-
-    private static BigDecimal positiveDecimal(JsonNode node, String field, BigDecimal fallback) {
-        BigDecimal value = decimal(node, field, fallback);
-        if (value == null || value.signum() <= 0) {
-            throw new IllegalStateException("AI计划字段无效：" + field);
-        }
-        return value;
-    }
-
     private static List<String> stringList(JsonNode node, String fallback) {
         List<String> result = new ArrayList<>();
         if (node.isArray()) {
@@ -668,9 +817,20 @@ public class ContractTradePlanBuilder {
         BigDecimal risk = action == TradePlanType.OPEN_SHORT ? stopLoss.subtract(entry) : entry.subtract(stopLoss);
         BigDecimal reward = action == TradePlanType.OPEN_SHORT ? entry.subtract(takeProfit) : takeProfit.subtract(entry);
         if (risk.signum() <= 0 || reward.signum() <= 0) {
-            return MIN_RISK_REWARD;
+            return BigDecimal.ZERO;
         }
         return reward.divide(risk, 2, RoundingMode.HALF_UP);
+    }
+
+    private static boolean validGeometry(TradePlanType action, BigDecimal entry, BigDecimal stopLoss,
+                                         BigDecimal takeProfit) {
+        if (action == TradePlanType.OPEN_LONG) {
+            return stopLoss.compareTo(entry) < 0 && takeProfit.compareTo(entry) > 0;
+        }
+        if (action == TradePlanType.OPEN_SHORT) {
+            return stopLoss.compareTo(entry) > 0 && takeProfit.compareTo(entry) < 0;
+        }
+        return false;
     }
 
     private static BigDecimal positive(BigDecimal value, BigDecimal fallback) {
@@ -689,17 +849,11 @@ public class ContractTradePlanBuilder {
     }
 
     private static BigDecimal usableEquity(AccountSummary account) {
-        if (account.equity().signum() > 0) {
-            return account.equity();
-        }
-        if (account.availableBalance().signum() > 0) {
-            return account.availableBalance();
-        }
-        return FALLBACK_EQUITY;
+        return account.equity();
     }
 
     private static BigDecimal usableBalance(AccountSummary account) {
-        return account.availableBalance().signum() > 0 ? account.availableBalance() : FALLBACK_MARGIN;
+        return account.availableBalance();
     }
 
     private static RiskLevel safeRiskLevel(RiskLevel riskLevel) {

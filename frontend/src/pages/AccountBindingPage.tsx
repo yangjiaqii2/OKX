@@ -26,7 +26,7 @@ import { StatusChip } from '../components/StatusChip';
 type BindingStatus = {
   bound?: boolean;
   maskedApiKey?: string;
-  liveTradingEnabled?: boolean;
+  tradingMode?: 'DISABLED' | 'DEMO' | 'LIVE';
 };
 
 type VerificationResult = {
@@ -141,8 +141,8 @@ export function AccountBindingPage() {
           <MetricCard label="API Key" value={status.maskedApiKey || '-'} helper="Secret和Passphrase不会回显" />
           <MetricCard
             label="交易模式"
-            value={status.liveTradingEnabled ? '实盘' : '未开启'}
-            helper="确认订单会调用OKX实盘接口，不再生成本地成交记录"
+            value={status.tradingMode === 'LIVE' ? 'LIVE · 真实资金' : status.tradingMode === 'DEMO' ? 'DEMO · 模拟交易' : 'DISABLED · 已关闭'}
+            helper="交易请求严格按后端单一 TradingMode 执行"
           />
         </Box>
 
@@ -227,7 +227,7 @@ export function AccountBindingPage() {
         <Confirm
           isOpen={unbindOpen}
           title="解绑 OKX 账号"
-          content="解绑后前端不会再显示当前 OKX API 绑定状态，实盘相关接口需要重新绑定后才能验证。"
+          content="解绑后前端不会再显示当前 OKX API 绑定状态，私有交易接口需要重新绑定后才能验证。"
           confirm="解绑"
           cancel="返回"
           onConfirm={() => void unbind()}

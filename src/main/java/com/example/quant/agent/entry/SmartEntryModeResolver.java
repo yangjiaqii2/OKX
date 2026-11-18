@@ -39,7 +39,7 @@ public class SmartEntryModeResolver {
             return new SmartEntryModeDecision(SmartEntryMode.NO_ENTRY, false, reasons);
         }
         String newsRiskLevel = candidate.newsAnalysis().newsRiskLevel();
-        if ("HIGH".equals(newsRiskLevel) || "CRITICAL".equals(newsRiskLevel)) {
+        if (candidate.newsAnalysis().decision() == null || !candidate.newsAnalysis().decision().allowTrade()) {
             reasons.add("新闻风险不允许市价入场：" + newsRiskLevel);
             return new SmartEntryModeDecision(SmartEntryMode.NO_ENTRY, false, reasons);
         }

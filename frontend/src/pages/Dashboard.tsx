@@ -99,9 +99,9 @@ export function Dashboard() {
 
   if (loading) {
     return (
-      <PageShell title="量化实盘控制台">
+      <PageShell title="量化交易终端">
         <Stack spacing={2}>
-          <PageHeader title="量化实盘控制台" subtitle="正在同步 OKX 账户、风险状态、候选合约和待确认订单。" />
+          <PageHeader title="量化交易终端" subtitle="正在同步 OKX 账户、风险状态、候选合约和待确认订单。" />
           <Box sx={{ ...glassCard, py: 8, display: 'grid', placeItems: 'center', borderRadius: 1 }}>
             <CircularProgress size={28} />
           </Box>
@@ -118,10 +118,10 @@ export function Dashboard() {
   const profitQuality = profitQualityLabel(String(state.profit?.dataQuality ?? 'ESTIMATED_UNREALIZED_ONLY'));
   
   return (
-    <PageShell title="量化实盘控制台">
+    <PageShell title="量化交易终端">
       <Stack spacing={3}>
         <PageHeader
-          title="量化实盘控制台"
+          title="量化交易终端"
           subtitle="OKX合约信号进入待确认流程后执行，账户与风控状态优先。"
           status={<StatusChip value={accountMode} />}
           onRefresh={() => void load()}
@@ -166,43 +166,44 @@ export function Dashboard() {
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(6, minmax(0, 1fr))' },
-            gap: 2,
+            gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(6, minmax(0, 1fr))' },
+            gap: 1.5,
           }}
         >
           <TradeMetricCard
-            label="自动交易总收益"
-            value={formatAsset(state.profit?.totalNetPnlUsdt)}
+            label="账户总权益"
+            value={formatAsset(state.account?.equity)}
+            helper={formatStatus(accountMode)}
+            accent={accountMode === 'OKX_REAL' ? 'success' : 'warning'}
+          />
+          <TradeMetricCard
+            label="可用余额"
+            value={formatAsset(state.account?.availableBalance)}
+            helper="OKX账户数据源"
+          />
+          <TradeMetricCard
+            label="今日已实现 PnL"
+            value={formatAsset(state.profit?.todayRealizedPnlUsdt)}
             helper={profitQuality}
-            accent={Number(state.profit?.totalNetPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
+            accent={state.profit?.todayRealizedPnlUsdt == null ? 'warning' : Number(state.profit.todayRealizedPnlUsdt) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
-            label="今日已用预算"
-            value={formatAsset(state.profit?.todaySubmittedMarginUsdt)}
-            helper={`今日已实现 ${formatAsset(state.profit?.todayRealizedPnlUsdt)}`}
-            accent="info"
-          />
-          <TradeMetricCard
-            label="已实现净收益"
-            value={formatAsset(state.profit?.realizedPnlUsdt)}
-            helper={profitQuality.includes('真实') ? '真实净收益' : '估算收益'}
-            accent={Number(state.profit?.realizedPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
-          />
-          <TradeMetricCard
-            label="当前浮动盈亏"
+            label="未实现 PnL"
             value={formatAsset(state.profit?.unrealizedPnlUsdt)}
-            helper={`${Number(state.profit?.openPositionCount ?? 0)} 个自动交易持仓`}
+            helper={profitQuality}
             accent={Number(state.profit?.unrealizedPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
-            label="预算收益率"
-            value={formatPercent(state.profit?.budgetRoiPct)}
-            helper={`总预算 ${formatAsset(state.profit?.totalBudgetUsdt)}`}
+            label="累计已实现 PnL"
+            value={formatAsset(state.profit?.realizedPnlUsdt)}
+            helper={profitQuality.includes('真实') ? 'OKX成交净收益' : '估算口径'}
+            accent={state.profit?.realizedPnlUsdt == null ? 'warning' : Number(state.profit.realizedPnlUsdt) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
-            label="自动交易已提交"
-            value={formatAsset(state.profit?.submittedMarginUsdt)}
-            helper={`记录 ${formatNumber(state.profit?.executedOrderCount, 0)} 笔`}
+            label="当前持仓"
+            value={state.positions.length}
+            helper="OKX仓位快照"
+            accent={state.positions.length > 0 ? 'warning' : 'info'}
           />
         </Box>
 
@@ -211,6 +212,12 @@ export function Dashboard() {
             {String(state.profit.message)}
           </Alert>
         ) : null}
+
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' }, gap: 1.5 }}>
+          <TradeMetricCard label="已实现毛收益" value={formatAsset(state.profit?.grossRealizedPnlUsdt)} helper={profitQuality} />
+          <TradeMetricCard label="交易手续费" value={formatAsset(state.profit?.tradingFeesUsdt)} helper="来自可追溯 OKX fills" />
+          <TradeMetricCard label="资金费" value={formatAsset(state.profit?.fundingUsdt)} helper="来自已管理合约的 OKX bills" />
+        </Box>
 
         <Box
           sx={{
@@ -234,12 +241,16 @@ export function Dashboard() {
               }}
             >
               <TradeMetricCard
-                label="账户总览"
-                value={formatAsset(state.account?.equity)}
-                helper={formatStatus(accountMode)}
-                accent={accountMode === 'OKX_REAL' ? 'success' : 'warning'}
+                label="自动交易净 PnL"
+                value={formatAsset(state.profit?.totalNetPnlUsdt)}
+                helper={profitQuality}
+                accent={state.profit?.totalNetPnlUsdt == null ? 'warning' : Number(state.profit.totalNetPnlUsdt) >= 0 ? 'success' : 'error'}
               />
-              <TradeMetricCard label="可用余额" value={formatAsset(state.account?.availableBalance)} helper="自动交易实际使用" />
+              <TradeMetricCard
+                label="预算收益率"
+                value={formatPercent(state.profit?.budgetRoiPct)}
+                helper={`已提交 ${formatAsset(state.profit?.submittedMarginUsdt)}`}
+              />
               <TradeMetricCard
                 label="合约机会"
                 value={state.contracts.length}
@@ -249,7 +260,7 @@ export function Dashboard() {
               <TradeMetricCard
                 label="待确认订单"
                 value={pendingCount}
-                helper="确认后提交OKX实盘"
+                helper="确认后按当前交易模式提交OKX"
                 accent={pendingCount > 0 ? 'warning' : 'success'}
               />
             </Box>
@@ -260,7 +271,7 @@ export function Dashboard() {
                   <Stack spacing={1.5}>
                     <Stack direction="row" justifyContent="space-between" alignItems="center">
                       <Typography variant="h6">持仓与PnL</Typography>
-                      <StatusChip value={state.positions.length > 0 ? 'OKX_REAL' : accountMode} />
+                      <StatusChip value={accountMode} />
                     </Stack>
                     {state.positionsError ? (
                       <Alert severity="error">持仓接口调用失败：{state.positionsError}</Alert>
@@ -355,6 +366,9 @@ export function Dashboard() {
 }
 
 function formatAssetMoney(value: unknown, currency: 'USD' | 'RMB', fxRate?: Record<string, unknown>) {
+  if (value == null || value === '') {
+    return '-';
+  }
   const number = Number(value);
   if (!Number.isFinite(number)) {
     return '-';
@@ -372,8 +386,16 @@ function profitQualityLabel(value: string) {
   switch (value) {
     case 'OKX_FILLS_NET_PNL':
       return '真实净收益';
+    case 'EXCHANGE_RECENT_LEDGER':
+      return 'OKX近期账本：可追溯订单';
     case 'CLOSE_RECORD_ESTIMATED':
       return '估算：平仓记录口径';
+    case 'PARTIAL_CLOSE_RECORD_ESTIMATED':
+      return '估算：部分平仓已对账';
+    case 'REALIZED_PNL_UNAVAILABLE':
+      return '不可用：未接入成交账单';
+    case 'POSITION_SNAPSHOT_UNAVAILABLE':
+      return '不可用：持仓快照失败';
     case 'ESTIMATED_UNREALIZED_ONLY':
       return '估算：仅当前浮盈';
     default:

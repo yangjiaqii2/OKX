@@ -47,11 +47,8 @@ public record OkxInstrumentRules(
         if (rawContracts.signum() <= 0) {
             return BigDecimal.ZERO;
         }
-        BigDecimal normalized = nearestToLot(rawContracts);
-        if (normalized.signum() <= 0 || normalized.compareTo(minSize) < 0) {
-            return ceilToLot(minSize);
-        }
-        return normalized;
+        BigDecimal normalized = floorToLot(rawContracts);
+        return normalized.compareTo(minSize) < 0 ? BigDecimal.ZERO : normalized;
     }
 
     public BigDecimal floorToLot(BigDecimal value) {
@@ -69,25 +66,12 @@ public record OkxInstrumentRules(
         return rounded.stripTrailingZeros();
     }
 
-    private BigDecimal ceilToLot(BigDecimal value) {
-        return ceilToStep(value, lotSize);
-    }
-
-    private BigDecimal nearestToLot(BigDecimal value) {
-        BigDecimal floor = floorToStep(value, lotSize);
-        BigDecimal ceiling = ceilToStep(value, lotSize);
-        if (floor.signum() <= 0) {
-            return ceiling;
-        }
-        BigDecimal floorDistance = value.subtract(floor).abs();
-        BigDecimal ceilingDistance = ceiling.subtract(value).abs();
-        return ceilingDistance.compareTo(floorDistance) <= 0 ? ceiling : floor;
-    }
-
     private boolean contractValueInQuoteCurrency() {
         String normalized = contractValueCurrency == null ? "" : contractValueCurrency.toUpperCase(Locale.ROOT);
         return "USDT".equals(normalized) || "USD".equals(normalized) || "USDC".equals(normalized);
     }
+
+    public boolean contractValueInQuoteCurrencyForAudit() { return contractValueInQuoteCurrency(); }
 
     private static BigDecimal floorToStep(BigDecimal value, BigDecimal step) {
         if (value == null || value.signum() <= 0) {
@@ -97,16 +81,6 @@ public record OkxInstrumentRules(
             return value.stripTrailingZeros();
         }
         return value.divide(step, 0, RoundingMode.DOWN).multiply(step).stripTrailingZeros();
-    }
-
-    private static BigDecimal ceilToStep(BigDecimal value, BigDecimal step) {
-        if (value == null || value.signum() <= 0) {
-            return BigDecimal.ZERO;
-        }
-        if (step == null || step.signum() <= 0) {
-            return value.stripTrailingZeros();
-        }
-        return value.divide(step, 0, RoundingMode.CEILING).multiply(step).stripTrailingZeros();
     }
 
     private static BigDecimal positiveOrDefault(BigDecimal value, BigDecimal fallback) {

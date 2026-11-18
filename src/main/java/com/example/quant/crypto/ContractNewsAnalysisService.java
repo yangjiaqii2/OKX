@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class ContractNewsAnalysisService {
+    private static final int NO_MATCH_SAFETY_SCORE = 70;
     private final NewsSearchService newsSearchService;
     private final AgentProperties agentProperties;
 
@@ -37,8 +38,14 @@ public class ContractNewsAnalysisService {
                     24
             );
             if (items == null || items.isEmpty()) {
-                return ContractNewsRiskAnalysis.unknown("新闻数据源无返回，新闻风险按低分处理",
-                        agentProperties.newsRisk().missingDataScore());
+                return new ContractNewsRiskAnalysis(
+                        NO_MATCH_SAFETY_SCORE,
+                        "LOW",
+                        List.of("NO_MATCH_IN_COVERAGE"),
+                        List.of(),
+                        List.of("OKX下架公告源请求成功；24小时、单页覆盖范围内未发现该币匹配公告"),
+                        ContractNewsRiskDecision.allow("已查询覆盖范围内无匹配下架公告")
+                );
             }
             return classify(items);
         } catch (RuntimeException ex) {

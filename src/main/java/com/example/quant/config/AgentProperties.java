@@ -14,6 +14,7 @@ public class AgentProperties {
     private int scanIntervalSeconds = 300;
     private int riskBlockScanIntervalSeconds = 1800;
     private int topCandidateLimit = 10;
+    private AiSelection aiSelection = new AiSelection();
     private AutoTrade autoTrade = new AutoTrade();
     private Score score = new Score();
     private Market market = new Market();
@@ -36,6 +37,8 @@ public class AgentProperties {
     private Risk risk = new Risk();
     private Monitor monitor = new Monitor();
     private Lifecycle lifecycle = new Lifecycle();
+    private ProfitProtection profitProtection = new ProfitProtection();
+    private Selection selection = new Selection();
 
     public boolean enabled() {
         return enabled;
@@ -75,6 +78,23 @@ public class AgentProperties {
 
     public void setTopCandidateLimit(int topCandidateLimit) {
         this.topCandidateLimit = topCandidateLimit;
+    }
+
+    /** 深度分析上限；未配置时默认 {@code topCandidateLimit * 3}。 */
+    public int deepAnalysisLimit() {
+        Integer configured = selection().deepAnalysisLimit();
+        if (configured != null && configured > 0) {
+            return configured;
+        }
+        return Math.max(1, topCandidateLimit * 3);
+    }
+
+    public AiSelection aiSelection() {
+        return aiSelection;
+    }
+
+    public void setAiSelection(AiSelection aiSelection) {
+        this.aiSelection = aiSelection == null ? new AiSelection() : aiSelection;
     }
 
     public AutoTrade autoTrade() {
@@ -253,9 +273,25 @@ public class AgentProperties {
         this.lifecycle = lifecycle == null ? new Lifecycle() : lifecycle;
     }
 
+    public ProfitProtection profitProtection() {
+        return profitProtection;
+    }
+
+    public void setProfitProtection(ProfitProtection profitProtection) {
+        this.profitProtection = profitProtection == null ? new ProfitProtection() : profitProtection;
+    }
+
+    public Selection selection() {
+        return selection;
+    }
+
+    public void setSelection(Selection selection) {
+        this.selection = selection == null ? new Selection() : selection;
+    }
+
     public static class AutoTrade {
         private boolean enabled = true;
-        private int minScore = 80;
+        private int minScore = 65;
         private BigDecimal minRiskReward = BigDecimal.valueOf(2);
         private boolean requireBacktestPass = false;
         private int noRiskMinScore = 70;
@@ -329,11 +365,13 @@ public class AgentProperties {
     }
 
     public static class Score {
-        private int minTotalScore = 75;
-        private int minTrendScore = 18;
-        private int minVolumeScore = 17;
+        private int minTotalScore = 65;
+        private int minTrendScore = 15;
+        private int minVolumeScore = 15;
         private int minLiquidityScore = 10;
-        private int minNewsRiskScore = 0;
+        /** @deprecated weighted 0-5 scale; configure minNewsRiskRawScore instead. */
+        private Integer minNewsRiskScore;
+        private int minNewsRiskRawScore = 70;
 
         public int minTotalScore() {
             return minTotalScore;
@@ -368,18 +406,34 @@ public class AgentProperties {
         }
 
         public int minNewsRiskScore() {
-            return minNewsRiskScore;
+            return minNewsRiskScore == null ? 0 : minNewsRiskScore;
         }
 
         public void setMinNewsRiskScore(int minNewsRiskScore) {
             this.minNewsRiskScore = minNewsRiskScore;
         }
+
+        public int minNewsRiskRawScore() {
+            if (minNewsRiskScore != null) {
+                throw new IllegalStateException(
+                        "quant.agent.score.min-news-risk-score uses the deprecated weighted 0-5 scale; "
+                                + "migrate to min-news-risk-raw-score on the 0-100 scale");
+            }
+            return minNewsRiskRawScore;
+        }
+
+        public void setMinNewsRiskRawScore(int minNewsRiskRawScore) {
+            if (minNewsRiskRawScore < 0 || minNewsRiskRawScore > 100) {
+                throw new IllegalArgumentException("minNewsRiskRawScore must be between 0 and 100");
+            }
+            this.minNewsRiskRawScore = minNewsRiskRawScore;
+        }
     }
 
     public static class Market {
-        private BigDecimal minVolume24hUsdt = BigDecimal.valueOf(50_000_000);
+        private BigDecimal minVolume24hUsdt = BigDecimal.valueOf(2_000_000);
         private BigDecimal maxSpreadBps = BigDecimal.valueOf(8);
-        private BigDecimal minDepthUsdt = BigDecimal.valueOf(100_000);
+        private BigDecimal minDepthUsdt = BigDecimal.valueOf(20_000);
         private BigDecimal maxDepthUsageRate = new BigDecimal("0.20");
         private BigDecimal maxFundingAbs = new BigDecimal("0.0015");
         private BigDecimal maxWickRatio = new BigDecimal("0.55");
@@ -640,7 +694,7 @@ public class AgentProperties {
     public static class Ranking {
         private int maxAutoTradeFallbackRank = 5;
         private BigDecimal minRiskReward = BigDecimal.valueOf(1.5);
-        private int minFinalRankScore = 70;
+        private int minFinalRankScore = 65;
 
         public int maxAutoTradeFallbackRank() {
             return maxAutoTradeFallbackRank;
@@ -670,15 +724,17 @@ public class AgentProperties {
     public static class Budget {
         private boolean enabled = true;
         private boolean inputMarginMeansTotalBudget = true;
-        private String allocationMode = "TARGET_UTILIZATION";
-        private BigDecimal targetUtilizationPct = BigDecimal.valueOf(90);
-        private BigDecimal minTargetUtilizationPct = BigDecimal.valueOf(80);
+        private String allocationMode = "EQUAL_SPLIT";
+        private BigDecimal targetUtilizationPct = BigDecimal.valueOf(100);
+        private BigDecimal minTargetUtilizationPct = BigDecimal.valueOf(100);
         private BigDecimal maxUtilizationPct = BigDecimal.valueOf(100);
         private BigDecimal minOrderMarginUsdt = BigDecimal.valueOf(5);
         private BigDecimal preferredMinOrderMarginUsdt = BigDecimal.valueOf(10);
-        private BigDecimal maxSinglePositionBudgetPct = BigDecimal.valueOf(50);
+        private BigDecimal maxSinglePositionBudgetPct = new BigDecimal("33.333334");
         private Map<Integer, BigDecimal> slotWeights = new LinkedHashMap<>(
-                Map.of(1, new BigDecimal("0.45"), 2, new BigDecimal("0.30"), 3, new BigDecimal("0.25"))
+                Map.of(1, new BigDecimal("0.33333334"),
+                        2, new BigDecimal("0.33333333"),
+                        3, new BigDecimal("0.33333333"))
         );
         private Map<String, BigDecimal> scoreMarginFactor = new LinkedHashMap<>(
                 Map.of("score-90-plus", new BigDecimal("1.00"),
@@ -912,13 +968,13 @@ public class AgentProperties {
     public static class PositionQuality {
         private boolean enabled = true;
         private Map<Integer, Integer> minScoreByOpenPositions = new LinkedHashMap<>(
-                Map.of(0, 80, 1, 84, 2, 88)
+                Map.of(0, 65, 1, 65, 2, 65)
         );
         private Map<Integer, Integer> minFinalRankScoreByOpenPositions = new LinkedHashMap<>(
-                Map.of(0, 80, 1, 84, 2, 88)
+                Map.of(0, 65, 1, 65, 2, 65)
         );
         private Map<String, Integer> maxPositionsByMarketRegime = new LinkedHashMap<>(
-                Map.of("BULLISH", 3, "BEARISH", 3, "CHOPPY", 1, "HIGH_VOLATILITY", 1, "RISK_OFF", 0)
+                Map.of("BULLISH", 3, "BEARISH", 3, "CHOPPY", 2, "HIGH_VOLATILITY", 1, "RISK_OFF", 0)
         );
 
         public boolean enabled() {
@@ -955,12 +1011,12 @@ public class AgentProperties {
 
         public int minScoreForOpenPositions(int openPositions) {
             return minScoreByOpenPositions.getOrDefault(openPositions,
-                    minScoreByOpenPositions.getOrDefault(2, 88));
+                    minScoreByOpenPositions.getOrDefault(2, 65));
         }
 
         public int minFinalRankScoreForOpenPositions(int openPositions) {
             return minFinalRankScoreByOpenPositions.getOrDefault(openPositions,
-                    minFinalRankScoreByOpenPositions.getOrDefault(2, 88));
+                    minFinalRankScoreByOpenPositions.getOrDefault(2, 65));
         }
 
         public int maxPositionsForRegime(String regime) {
@@ -1074,7 +1130,7 @@ public class AgentProperties {
     }
 
     public static class NewsRisk {
-        private int missingDataScore = 20;
+        private int missingDataScore = 70;
 
         public int missingDataScore() {
             return missingDataScore;
@@ -1368,7 +1424,11 @@ public class AgentProperties {
         private BigDecimal tp1Ratio = new BigDecimal("0.30");
         private BigDecimal tp2Ratio = new BigDecimal("0.40");
         private BigDecimal tp3Ratio = new BigDecimal("0.30");
+        /** @deprecated canonical-plan-v1 rejects unexpressible ladders; no merge is performed. */
+        @Deprecated(forRemoval = false)
         private boolean mergeSmallTpOrders = true;
+        /** @deprecated canonical-plan-v1 always uses explicit allocation/remainder rules. */
+        @Deprecated(forRemoval = false)
         private boolean finalTpUseRemainingSize = true;
 
         public BigDecimal tp1Ratio() {
@@ -1395,31 +1455,65 @@ public class AgentProperties {
             this.tp3Ratio = tp3Ratio;
         }
 
+        @Deprecated(forRemoval = false)
         public boolean mergeSmallTpOrders() {
             return mergeSmallTpOrders;
         }
 
+        @Deprecated(forRemoval = false)
         public void setMergeSmallTpOrders(boolean mergeSmallTpOrders) {
             this.mergeSmallTpOrders = mergeSmallTpOrders;
         }
 
+        @Deprecated(forRemoval = false)
         public boolean finalTpUseRemainingSize() {
             return finalTpUseRemainingSize;
         }
 
+        @Deprecated(forRemoval = false)
         public void setFinalTpUseRemainingSize(boolean finalTpUseRemainingSize) {
             this.finalTpUseRemainingSize = finalTpUseRemainingSize;
         }
     }
 
+    public static class AiSelection {
+        private boolean enabled = true;
+        private int candidateLimit = 12;
+        private String policy = "RULE_FIRST_AI_RANK";
+
+        public boolean enabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int candidateLimit() {
+            return Math.max(1, Math.min(12, candidateLimit));
+        }
+
+        public void setCandidateLimit(int candidateLimit) {
+            this.candidateLimit = candidateLimit;
+        }
+
+        public String policy() {
+            return policy == null || policy.isBlank() ? "RULE_FIRST_AI_RANK" : policy.trim().toUpperCase();
+        }
+
+        public void setPolicy(String policy) {
+            this.policy = policy;
+        }
+    }
+
     public static class Risk {
         private BigDecimal singleTradeRiskPercent = BigDecimal.ONE;
-        private BigDecimal maxSingleLossPercent = BigDecimal.valueOf(5);
+        private BigDecimal maxSingleMarginPercent = new BigDecimal("33.333334");
         private BigDecimal maxDailyLossPercent = BigDecimal.valueOf(30);
         private int maxDailyTrades = 5;
         private int maxConsecutiveLosses = 3;
         private int cooldownMinutesAfterLoss = 30;
-        private int maxLeverage = 5;
+        private int maxLeverage = 10;
 
         public BigDecimal singleTradeRiskPercent() {
             return singleTradeRiskPercent;
@@ -1429,12 +1523,27 @@ public class AgentProperties {
             this.singleTradeRiskPercent = singleTradeRiskPercent;
         }
 
-        public BigDecimal maxSingleLossPercent() {
-            return maxSingleLossPercent;
+        public BigDecimal maxSingleMarginPercent() {
+            return maxSingleMarginPercent;
         }
 
+        public void setMaxSingleMarginPercent(BigDecimal maxSingleMarginPercent) {
+            this.maxSingleMarginPercent = maxSingleMarginPercent;
+        }
+
+        /**
+         * Backward-compatible binding for deployments that still use the old,
+         * misleading property name. The value has always represented a margin
+         * cap, not the stop-loss budget.
+         */
+        @Deprecated
+        public BigDecimal maxSingleLossPercent() {
+            return maxSingleMarginPercent;
+        }
+
+        @Deprecated
         public void setMaxSingleLossPercent(BigDecimal maxSingleLossPercent) {
-            this.maxSingleLossPercent = maxSingleLossPercent;
+            this.maxSingleMarginPercent = maxSingleLossPercent;
         }
 
         public BigDecimal maxDailyLossPercent() {
@@ -1504,9 +1613,9 @@ public class AgentProperties {
         private int sidewaysPositionHours = 3;
         private BigDecimal sidewaysPnlRangePct = BigDecimal.ONE;
         private BigDecimal sidewaysExitProfitPct = new BigDecimal("0.3");
-        private int lossCloseMinutes = 30;
-        private int maxHoldMinutes = 60;
-        private int maxHoldHours = 1;
+        private int lossCloseMinutes = 60;
+        private int maxHoldMinutes = 180;
+        private int maxHoldHours = 3;
         private String maxHoldAction = "CLOSE_POSITION";
         private String sidewaysAction = "TIGHTEN_TAKE_PROFIT";
         private boolean moveStopToBreakeven = false;
@@ -1590,6 +1699,509 @@ public class AgentProperties {
 
         public void setMoveStopToBreakeven(boolean moveStopToBreakeven) {
             this.moveStopToBreakeven = moveStopToBreakeven;
+        }
+    }
+
+    /**
+     * Dynamic profit protection. All defaults are BASELINE values chosen to stay
+     * semantically aligned with the offline policies already evaluated by
+     * {@code CounterfactualExitService}; they are not optimised.
+     */
+    public static class ProfitProtection {
+        private boolean enabled = true;
+        private BigDecimal breakEvenActivationR = new BigDecimal("0.75");
+        private BigDecimal profitLockActivationR = new BigDecimal("1.5");
+        private BigDecimal trailingActivationR = new BigDecimal("3.0");
+        private BigDecimal givebackRatioPct = new BigDecimal("35");
+        private BigDecimal maxGivebackR = new BigDecimal("3.0");
+        private BigDecimal roundTripFeePct = new BigDecimal("0.12");
+        private BigDecimal estimatedSlippagePct = new BigDecimal("0.05");
+        private BigDecimal stopBufferFromMarkPct = new BigDecimal("0.10");
+        private int minStopImprovementBps = 5;
+        private long minStopAmendIntervalSeconds = 60L;
+        private int maxStopAmendsPerHour = 20;
+        /** Reserved capability; the cancellation path is deliberately not implemented yet. */
+        private boolean trailingCancelRemainingTp = false;
+
+        public boolean enabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public BigDecimal breakEvenActivationR() {
+            return breakEvenActivationR;
+        }
+
+        public void setBreakEvenActivationR(BigDecimal breakEvenActivationR) {
+            this.breakEvenActivationR = breakEvenActivationR;
+        }
+
+        public BigDecimal profitLockActivationR() {
+            return profitLockActivationR;
+        }
+
+        public void setProfitLockActivationR(BigDecimal profitLockActivationR) {
+            this.profitLockActivationR = profitLockActivationR;
+        }
+
+        public BigDecimal trailingActivationR() {
+            return trailingActivationR;
+        }
+
+        public void setTrailingActivationR(BigDecimal trailingActivationR) {
+            this.trailingActivationR = trailingActivationR;
+        }
+
+        public BigDecimal givebackRatioPct() {
+            return givebackRatioPct;
+        }
+
+        public void setGivebackRatioPct(BigDecimal givebackRatioPct) {
+            this.givebackRatioPct = givebackRatioPct;
+        }
+
+        public BigDecimal maxGivebackR() {
+            return maxGivebackR;
+        }
+
+        public void setMaxGivebackR(BigDecimal maxGivebackR) {
+            this.maxGivebackR = maxGivebackR;
+        }
+
+        public BigDecimal roundTripFeePct() {
+            return roundTripFeePct;
+        }
+
+        public void setRoundTripFeePct(BigDecimal roundTripFeePct) {
+            this.roundTripFeePct = roundTripFeePct;
+        }
+
+        public BigDecimal estimatedSlippagePct() {
+            return estimatedSlippagePct;
+        }
+
+        public void setEstimatedSlippagePct(BigDecimal estimatedSlippagePct) {
+            this.estimatedSlippagePct = estimatedSlippagePct;
+        }
+
+        public BigDecimal stopBufferFromMarkPct() {
+            return stopBufferFromMarkPct;
+        }
+
+        public void setStopBufferFromMarkPct(BigDecimal stopBufferFromMarkPct) {
+            this.stopBufferFromMarkPct = stopBufferFromMarkPct;
+        }
+
+        public int minStopImprovementBps() {
+            return minStopImprovementBps;
+        }
+
+        public void setMinStopImprovementBps(int minStopImprovementBps) {
+            this.minStopImprovementBps = minStopImprovementBps;
+        }
+
+        public long minStopAmendIntervalSeconds() {
+            return minStopAmendIntervalSeconds;
+        }
+
+        public void setMinStopAmendIntervalSeconds(long minStopAmendIntervalSeconds) {
+            this.minStopAmendIntervalSeconds = minStopAmendIntervalSeconds;
+        }
+
+        public int maxStopAmendsPerHour() {
+            return maxStopAmendsPerHour;
+        }
+
+        public void setMaxStopAmendsPerHour(int maxStopAmendsPerHour) {
+            this.maxStopAmendsPerHour = maxStopAmendsPerHour;
+        }
+
+        public boolean trailingCancelRemainingTp() {
+            return trailingCancelRemainingTp;
+        }
+
+        public void setTrailingCancelRemainingTp(boolean trailingCancelRemainingTp) {
+            this.trailingCancelRemainingTp = trailingCancelRemainingTp;
+        }
+
+        public com.example.quant.agent.exit.ProfitProtectionConfig toConfig() {
+            return new com.example.quant.agent.exit.ProfitProtectionConfig(
+                    enabled, breakEvenActivationR, profitLockActivationR, trailingActivationR,
+                    givebackRatioPct, maxGivebackR, roundTripFeePct, estimatedSlippagePct,
+                    stopBufferFromMarkPct, minStopImprovementBps, minStopAmendIntervalSeconds,
+                    maxStopAmendsPerHour, trailingCancelRemainingTp);
+        }
+    }
+
+    /**
+     * V2 Selection 配置：Universe 硬资格阈值、Provider TTL 等。
+     */
+    public static class Selection {
+        private Universe universe = new Universe();
+        private Providers providers = new Providers();
+        private Breakout breakout = new Breakout();
+        /** 深度分析合约数量上限；null 表示 {@code topCandidateLimit * 3}。 */
+        private Integer deepAnalysisLimit;
+        /** 外部 Provider 并发上限（预留；深度分析默认串行）。 */
+        private int deepAnalysisConcurrency = 4;
+        /**
+         * {@code deepAnalysisLimit} 中预留给轮换覆盖的名额。
+         *
+         * <p>这些名额<b>不是新增</b>的分析量，而是从成交额头部划出来的，
+         * 因此外部请求预算、并发和 deadline 完全不变。
+         *
+         * <p>默认 6 = 默认 {@code deepAnalysisLimit}（30）的 20%。选这个起始值的依据只有两条，
+         * 都是确定性的、可验证的，<b>不代表它是最优值</b>：<ul>
+         *   <li>成交额头部仍保留 24 个名额，覆盖绝大多数高流动性标的；</li>
+         *   <li>剩余合格候选的完整覆盖延迟 = {@code ceil((passed - 24) / 6)} 轮。
+         *       例如 60 个合格候选 → 6 轮；120 个 → 16 轮。</li>
+         * </ul>
+         * 设为 0 可完整复现改造前的纯成交额截断行为。
+         */
+        private int deepAnalysisRotationQuota = 6;
+
+        public Integer deepAnalysisLimit() {
+            return deepAnalysisLimit;
+        }
+
+        public void setDeepAnalysisLimit(Integer deepAnalysisLimit) {
+            this.deepAnalysisLimit = deepAnalysisLimit;
+        }
+
+        public int deepAnalysisRotationQuota() {
+            return deepAnalysisRotationQuota;
+        }
+
+        public void setDeepAnalysisRotationQuota(int deepAnalysisRotationQuota) {
+            this.deepAnalysisRotationQuota = Math.max(0, deepAnalysisRotationQuota);
+        }
+
+        public int deepAnalysisConcurrency() {
+            return deepAnalysisConcurrency;
+        }
+
+        public void setDeepAnalysisConcurrency(int deepAnalysisConcurrency) {
+            this.deepAnalysisConcurrency = Math.max(1, deepAnalysisConcurrency);
+        }
+
+        public Universe universe() {
+            return universe;
+        }
+
+        public void setUniverse(Universe universe) {
+            this.universe = universe == null ? new Universe() : universe;
+        }
+
+        public Providers providers() {
+            return providers;
+        }
+
+        public void setProviders(Providers providers) {
+            this.providers = providers == null ? new Providers() : providers;
+        }
+
+        public Breakout breakout() { return breakout; }
+        public void setBreakout(Breakout breakout) { this.breakout = breakout == null ? new Breakout() : breakout; }
+    }
+
+    public static class Breakout {
+        private BigDecimal atAthPct = new BigDecimal("-2");
+        private BigDecimal nearAthPct = new BigDecimal("-10");
+        private BigDecimal midRangePct = new BigDecimal("-40");
+
+        public BigDecimal atAthPct() { return atAthPct; }
+        public void setAtAthPct(BigDecimal value) { this.atAthPct = value; }
+        public BigDecimal nearAthPct() { return nearAthPct; }
+        public void setNearAthPct(BigDecimal value) { this.nearAthPct = value; }
+        public BigDecimal midRangePct() { return midRangePct; }
+        public void setMidRangePct(BigDecimal value) { this.midRangePct = value; }
+    }
+
+    public static class Universe {
+        /** 最小市值（USD）。默认 20M。 */
+        private BigDecimal minMarketCapUsd = BigDecimal.valueOf(20_000_000L);
+        /** 最小流通率（0..1）。默认 0.50。 */
+        private BigDecimal minCirculationRatio = new BigDecimal("0.50");
+        /** 最小 Volume/MarketCap（0..N）。默认 0.20。 */
+        private BigDecimal minVolumeMcapRatio = new BigDecimal("0.20");
+        /** 是否启用 Volume/MCap 硬资格。默认 true。 */
+        private boolean volumeMcapEnabled = true;
+        /** 是否启用 Circulation 硬资格。默认 true。 */
+        private boolean circulationEnabled = true;
+        /** 是否启用 MarketCap 硬资格。默认 true（生产无 Provider 时也会硬拒所有候选）。 */
+        private boolean marketCapEnabled = true;
+
+        public BigDecimal minMarketCapUsd() {
+            return minMarketCapUsd;
+        }
+
+        public void setMinMarketCapUsd(BigDecimal minMarketCapUsd) {
+            this.minMarketCapUsd = minMarketCapUsd;
+        }
+
+        public BigDecimal minCirculationRatio() {
+            return minCirculationRatio;
+        }
+
+        public void setMinCirculationRatio(BigDecimal minCirculationRatio) {
+            this.minCirculationRatio = minCirculationRatio;
+        }
+
+        public BigDecimal minVolumeMcapRatio() {
+            return minVolumeMcapRatio;
+        }
+
+        public void setMinVolumeMcapRatio(BigDecimal minVolumeMcapRatio) {
+            this.minVolumeMcapRatio = minVolumeMcapRatio;
+        }
+
+        public boolean volumeMcapEnabled() {
+            return volumeMcapEnabled;
+        }
+
+        public void setVolumeMcapEnabled(boolean volumeMcapEnabled) {
+            this.volumeMcapEnabled = volumeMcapEnabled;
+        }
+
+        public boolean circulationEnabled() {
+            return circulationEnabled;
+        }
+
+        public void setCirculationEnabled(boolean circulationEnabled) {
+            this.circulationEnabled = circulationEnabled;
+        }
+
+        public boolean marketCapEnabled() {
+            return marketCapEnabled;
+        }
+
+        public void setMarketCapEnabled(boolean marketCapEnabled) {
+            this.marketCapEnabled = marketCapEnabled;
+        }
+
+    }
+
+    public static class Providers {
+        /** MarketCap Provider fresh TTL（秒）。默认 600。 */
+        private int marketCapFreshTtlSeconds = 600;
+        /** MarketCap Provider stale TTL（秒）。默认 600。超过 stale 视为无效。 */
+        private int marketCapStaleTtlSeconds = 600;
+        /** 是否启用 MarketCap Provider。默认 true（即使 null provider 也会硬拒所有候选）。 */
+        private boolean marketCapEnabled = true;
+        private boolean relativeStrengthEnabled = true;
+        private int relativeStrengthFreshTtlSeconds = 60;
+        private int relativeStrengthStaleTtlSeconds = 600;
+        private boolean athBreakoutEnabled = true;
+        private int athBreakoutFreshTtlSeconds = 600;
+        private int athBreakoutStaleTtlSeconds = 3600;
+        private int athBreakoutMaxPages = 50;
+        /** Phase C/D：CoinGecko 市值数据源。 */
+        private CoinGecko coingecko = new CoinGecko();
+        /**
+         * Wave 2 — Derivatives（OI History + Funding History）Provider 配置。
+         * 默认实现：{@code OkxOpenInterestHistoryProvider} /
+         * {@code OkxFundingHistoryProvider}（在 {@code OkxContractScanner} V2 路径注入）。
+         */
+        private Derivatives derivatives = new Derivatives();
+
+        public int marketCapFreshTtlSeconds() {
+            return marketCapFreshTtlSeconds;
+        }
+
+        public void setMarketCapFreshTtlSeconds(int marketCapFreshTtlSeconds) {
+            this.marketCapFreshTtlSeconds = marketCapFreshTtlSeconds;
+        }
+
+        public int marketCapStaleTtlSeconds() {
+            return marketCapStaleTtlSeconds;
+        }
+
+        public void setMarketCapStaleTtlSeconds(int marketCapStaleTtlSeconds) {
+            this.marketCapStaleTtlSeconds = marketCapStaleTtlSeconds;
+        }
+
+        public boolean marketCapEnabled() {
+            return marketCapEnabled;
+        }
+
+        public void setMarketCapEnabled(boolean marketCapEnabled) {
+            this.marketCapEnabled = marketCapEnabled;
+        }
+
+        public boolean relativeStrengthEnabled() {
+            return relativeStrengthEnabled;
+        }
+
+        public void setRelativeStrengthEnabled(boolean enabled) {
+            this.relativeStrengthEnabled = enabled;
+        }
+
+        public int relativeStrengthFreshTtlSeconds() {
+            return relativeStrengthFreshTtlSeconds;
+        }
+
+        public void setRelativeStrengthFreshTtlSeconds(int seconds) {
+            this.relativeStrengthFreshTtlSeconds = seconds;
+        }
+
+        public int relativeStrengthStaleTtlSeconds() {
+            return relativeStrengthStaleTtlSeconds;
+        }
+
+        public void setRelativeStrengthStaleTtlSeconds(int seconds) {
+            this.relativeStrengthStaleTtlSeconds = seconds;
+        }
+
+        public boolean athBreakoutEnabled() { return athBreakoutEnabled; }
+        public void setAthBreakoutEnabled(boolean enabled) { this.athBreakoutEnabled = enabled; }
+        public int athBreakoutFreshTtlSeconds() { return athBreakoutFreshTtlSeconds; }
+        public void setAthBreakoutFreshTtlSeconds(int seconds) { this.athBreakoutFreshTtlSeconds = seconds; }
+        public int athBreakoutStaleTtlSeconds() { return athBreakoutStaleTtlSeconds; }
+        public void setAthBreakoutStaleTtlSeconds(int seconds) { this.athBreakoutStaleTtlSeconds = seconds; }
+        public int athBreakoutMaxPages() { return athBreakoutMaxPages; }
+        public void setAthBreakoutMaxPages(int pages) { this.athBreakoutMaxPages = pages; }
+
+        public CoinGecko getCoingecko() {
+            return coingecko == null ? new CoinGecko() : coingecko;
+        }
+
+        public void setCoingecko(CoinGecko coingecko) {
+            this.coingecko = coingecko == null ? new CoinGecko() : coingecko;
+        }
+
+        public Derivatives derivatives() {
+            return derivatives == null ? new Derivatives() : derivatives;
+        }
+
+        public void setDerivatives(Derivatives derivatives) {
+            this.derivatives = derivatives == null ? new Derivatives() : derivatives;
+        }
+
+        /**
+         * Wave 2 — Derivatives Provider TTL 与极端资金费率阈值。
+         * <ul>
+         *   <li>OI History TTL 短（60s/600s），与 MarketCap 同档位</li>
+         *   <li>Funding History TTL 长（300s/3600s），funding 8h 一次刷新，无需高频拉取</li>
+         *   <li>{@code extremeFundingRate} = 0.0030（绝对值）：{@code |rate24h| >= 该阈值} 视为极端</li>
+         * </ul>
+         */
+        public static class Derivatives {
+            /** OI History Provider fresh TTL（秒）。默认 60。 */
+            private int openInterestFreshTtlSeconds = 60;
+            /** OI History Provider stale TTL（秒）。默认 600。 */
+            private int openInterestStaleTtlSeconds = 600;
+            /** Funding History Provider fresh TTL（秒）。默认 300。 */
+            private int fundingFreshTtlSeconds = 300;
+            /** Funding History Provider stale TTL（秒）。默认 3600。 */
+            private int fundingStaleTtlSeconds = 3600;
+            /** 极端资金费率阈值（绝对值）。{@code |rate24h| >= 该值} 视为 EXTREME。默认 0.0030。 */
+            private java.math.BigDecimal extremeFundingRate = new java.math.BigDecimal("0.0030");
+            /** 是否启用 OI History Provider。默认 true。 */
+            private boolean openInterestEnabled = true;
+            /** 是否启用 Funding History Provider。默认 true。 */
+            private boolean fundingEnabled = true;
+
+            public int openInterestFreshTtlSeconds() {
+                return openInterestFreshTtlSeconds;
+            }
+
+            public void setOpenInterestFreshTtlSeconds(int v) {
+                this.openInterestFreshTtlSeconds = v;
+            }
+
+            public int openInterestStaleTtlSeconds() {
+                return openInterestStaleTtlSeconds;
+            }
+
+            public void setOpenInterestStaleTtlSeconds(int v) {
+                this.openInterestStaleTtlSeconds = v;
+            }
+
+            public int fundingFreshTtlSeconds() {
+                return fundingFreshTtlSeconds;
+            }
+
+            public void setFundingFreshTtlSeconds(int v) {
+                this.fundingFreshTtlSeconds = v;
+            }
+
+            public int fundingStaleTtlSeconds() {
+                return fundingStaleTtlSeconds;
+            }
+
+            public void setFundingStaleTtlSeconds(int v) {
+                this.fundingStaleTtlSeconds = v;
+            }
+
+            public java.math.BigDecimal extremeFundingRate() {
+                return extremeFundingRate == null ? new java.math.BigDecimal("0.0030") : extremeFundingRate;
+            }
+
+            public void setExtremeFundingRate(java.math.BigDecimal v) {
+                this.extremeFundingRate = v;
+            }
+
+            public boolean openInterestEnabled() {
+                return openInterestEnabled;
+            }
+
+            public void setOpenInterestEnabled(boolean v) {
+                this.openInterestEnabled = v;
+            }
+
+            public boolean fundingEnabled() {
+                return fundingEnabled;
+            }
+
+            public void setFundingEnabled(boolean v) {
+                this.fundingEnabled = v;
+            }
+        }
+
+        /**
+         * Phase C/D — CoinGecko 配置。
+         * 环境变量 {@code COINGECKO_API_KEY} 会覆盖 yaml 的 apiKey；用于 Pro tier。
+         */
+        public static class CoinGecko {
+            private boolean enabled = true;
+            private String apiKey = "";
+            private String apiMode = "DEMO";
+            private int rateLimitPerMinute = 20;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public String getApiKey() {
+                return apiKey == null ? "" : apiKey;
+            }
+
+            public void setApiKey(String apiKey) {
+                this.apiKey = apiKey == null ? "" : apiKey;
+            }
+
+            public String getApiMode() {
+                return apiMode == null || apiMode.isBlank() ? "DEMO" : apiMode.trim().toUpperCase();
+            }
+
+            public void setApiMode(String apiMode) {
+                this.apiMode = apiMode == null ? "DEMO" : apiMode;
+            }
+
+            public int getRateLimitPerMinute() {
+                return rateLimitPerMinute <= 0 ? 20 : rateLimitPerMinute;
+            }
+
+            public void setRateLimitPerMinute(int rateLimitPerMinute) {
+                this.rateLimitPerMinute = rateLimitPerMinute;
+            }
         }
     }
 }

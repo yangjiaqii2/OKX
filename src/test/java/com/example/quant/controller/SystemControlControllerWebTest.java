@@ -6,10 +6,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.example.quant.account.AccountSnapshotService;
+import com.example.quant.account.dto.AccountSummary;
 import com.example.quant.auth.AuthSessionService;
 import com.example.quant.config.SystemFxRateProperties;
 import com.example.quant.config.TradingProperties;
 import com.example.quant.config.WebConfig;
+import com.example.quant.crypto.OkxWebSocketService;
 import com.example.quant.system.FxRateService;
 import com.example.quant.system.SystemControlService;
 import java.math.BigDecimal;
@@ -52,11 +54,36 @@ class SystemControlControllerWebTest {
                 .andExpect(jsonPath("$.source").value("TEST_CONFIG"));
     }
 
+    @Test
+    void exposesHonestRuntimeConnectionStatus() throws Exception {
+        when(authSessionService.currentUsername(TOKEN)).thenReturn(Optional.of("admin"));
+        when(accountSnapshotService.summary()).thenReturn(
+                new AccountSummary(BigDecimal.TEN, BigDecimal.TEN, "OKX_REAL", "ok"));
+
+        mockMvc.perform(get("/api/quant/system/runtime-status")
+                        .header("Authorization", "Bearer " + TOKEN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tradingMode").value("LIVE"))
+                .andExpect(jsonPath("$.okxRest").value("CONNECTED"))
+                .andExpect(jsonPath("$.publicWebSocket").value("NOT_IMPLEMENTED"))
+                .andExpect(jsonPath("$.privateWebSocket").value("DISCONNECTED"));
+    }
+
     @TestConfiguration
     static class TestBeans {
         @Bean
         SystemControlService systemControlService() {
-            return new SystemControlService(new TradingProperties("SEMI_AUTO", true, true, 120, false));
+            return new SystemControlService(tradingProperties());
+        }
+
+        @Bean
+        TradingProperties tradingProperties() {
+            return new TradingProperties("SEMI_AUTO", true, true, 120, false);
+        }
+
+        @Bean
+        OkxWebSocketService okxWebSocketService() {
+            return new OkxWebSocketService();
         }
 
         @Bean

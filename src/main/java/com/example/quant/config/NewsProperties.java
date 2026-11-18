@@ -8,6 +8,7 @@ public record NewsProperties(
         int maxResultsPerSymbol,
         int lookbackHoursStock,
         int lookbackHoursCrypto,
-        boolean useMockWhenNoProvider
+        boolean useMockWhenNoProvider,
+        String provider
 ) {
 }

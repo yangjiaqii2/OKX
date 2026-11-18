@@ -3,6 +3,7 @@ package com.example.quant.agent.execution;
 import com.example.quant.account.AccountSnapshotService;
 import com.example.quant.account.dto.AccountSummary;
 import com.example.quant.account.PositionSnapshotService;
+import com.example.quant.account.PositionSideMatcher;
 import com.example.quant.account.dto.PositionSummary;
 import com.example.quant.agent.budget.AutoTradeBudgetService;
 import com.example.quant.agent.budget.BudgetAllocation;
@@ -11,12 +12,19 @@ import com.example.quant.agent.budget.BudgetReservation;
 import com.example.quant.agent.event.TradeEventPayload;
 import com.example.quant.agent.event.TradeEventService;
 import com.example.quant.agent.event.TradeEventType;
+import com.example.quant.agent.entry.WaitingEntryIntentService;
+import com.example.quant.agent.entry.WaitingEntryIntentStatus;
 import com.example.quant.agent.gate.ContractTradeGate;
+import com.example.quant.agent.selection.AiContractSelectionService;
+import com.example.quant.agent.selection.ContractSelectionDecision;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.dto.ContractCandidate;
+import com.example.quant.crypto.selection.V2SelectionScoreCalculator;
+import com.example.quant.crypto.selection.V2SelectionScoreResult;
 import com.example.quant.market.MarketType;
 import com.example.quant.order.OrderExecutionResult;
+import com.example.quant.order.OrderStatus;
 import com.example.quant.order.OrderSubmitStatusUnknownException;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
@@ -31,6 +39,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -59,6 +68,9 @@ public class AutoTradeService {
     private final AutoTradeBudgetService budgetService;
     private final OkxCurrentOrderSyncService currentOrderSyncService;
     private final TradeEventService tradeEventService;
+    private AiContractSelectionService aiContractSelectionService;
+    private WaitingEntryIntentService waitingEntryIntentService;
+    private LiveMarketRefreshService liveMarketRefreshService;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Map<String, Instant> inFlightUntilByInstId = new ConcurrentHashMap<>();
 
@@ -142,16 +154,49 @@ public class AutoTradeService {
         this.tradeEventService = tradeEventService;
     }
 
-    public AutoTradeResult evaluateAndExecute(List<ContractCandidate> candidates) {
-        String ownerUsername = systemControlService.autoTradeOwnerUsername();
-        if (ownerUsername != null && !ownerUsername.isBlank()) {
-            return AuthUserContext.callAs(ownerUsername, () -> evaluateAndExecuteInternal(candidates));
-        }
-        return evaluateAndExecuteInternal(candidates);
+    @Autowired(required = false)
+    public void configureAiContractSelection(AiContractSelectionService aiContractSelectionService) {
+        this.aiContractSelectionService = aiContractSelectionService;
     }
 
-    private AutoTradeResult evaluateAndExecuteInternal(List<ContractCandidate> candidates) {
+    @Autowired
+    public void configureLiveMarketRefresh(LiveMarketRefreshService liveMarketRefreshService) {
+        this.liveMarketRefreshService = liveMarketRefreshService;
+    }
+
+    @Autowired(required = false)
+    public void configureWaitingEntryIntent(WaitingEntryIntentService waitingEntryIntentService) {
+        this.waitingEntryIntentService = waitingEntryIntentService;
+    }
+
+    public AutoTradeResult evaluateAndExecute(List<ContractCandidate> candidates) {
+        return evaluateAndExecute(candidates, Map.of(), Map.of());
+    }
+
+    public AutoTradeResult evaluateAndExecute(List<ContractCandidate> candidates,
+                                              Map<String, String> decisionClientOrderIds) {
+        return evaluateAndExecute(candidates, decisionClientOrderIds, Map.of());
+    }
+
+    public AutoTradeResult evaluateAndExecute(List<ContractCandidate> candidates,
+                                              Map<String, String> decisionClientOrderIds,
+                                              Map<String, V2SelectionScoreResult> v2ScoreSnapshot) {
+        String ownerUsername = systemControlService.autoTradeOwnerUsername();
+        if (ownerUsername != null && !ownerUsername.isBlank()) {
+            return AuthUserContext.callAs(ownerUsername,
+                    () -> evaluateAndExecuteInternal(candidates, decisionClientOrderIds, v2ScoreSnapshot));
+        }
+        return evaluateAndExecuteInternal(candidates, decisionClientOrderIds, v2ScoreSnapshot);
+    }
+
+    private AutoTradeResult evaluateAndExecuteInternal(List<ContractCandidate> candidates,
+                                                       Map<String, String> decisionClientOrderIds,
+                                                       Map<String, V2SelectionScoreResult> v2ScoreSnapshot) {
         List<ContractCandidate> safeCandidates = candidates == null ? List.of() : candidates;
+        Map<String, V2SelectionScoreResult> safeV2Scores = v2ScoreSnapshot == null
+                ? Map.of() : Map.copyOf(v2ScoreSnapshot);
+        Map<String, String> stableDecisionIds = decisionClientOrderIds == null
+                ? new LinkedHashMap<>() : new LinkedHashMap<>(decisionClientOrderIds);
         int candidateCount = safeCandidates.size();
         if (!agentProperties.autoTrade().enabled()) {
             return recordAndReturn(AutoTradeResult.skipped("auto_trade_disabled_by_config"), candidateCount, null);
@@ -174,6 +219,9 @@ public class AutoTradeService {
             AutoTradeRiskMode riskMode = systemControlService.autoTradeRiskMode();
             boolean noRiskMode = riskMode != null && riskMode.noRisk();
             int noRiskMinScore = noRiskMinScore();
+            if (noRiskMode) {
+                return evaluateShadow(safeCandidates, candidateCount, scanId, noRiskMinScore);
+            }
             pruneInFlightOrders();
             OkxCurrentOrderSyncService.SyncResult currentOrderSyncResult = syncCurrentOrders();
             if (currentOrderSyncResult.failed()) {
@@ -183,16 +231,35 @@ public class AutoTradeService {
                 return recordAndReturn(AutoTradeResult.skipped("okx_current_orders_unavailable: "
                         + currentOrderSyncResult.errorMessage()), candidateCount, top);
             }
-            if (tradeOrderRecordService.hasActiveEntryOrder()) {
-                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
-                log.warn("AutoTrade round stopped scanId={} stage=LOCAL_ENTRY_DEDUPE reason=local_active_entry_order fallback=false",
-                        scanId);
-                return recordAndReturn(AutoTradeResult.skipped("local_active_entry_order"), candidateCount, top);
+            Optional<PendingOrder> unresolvedSubmit = pendingOrderService.allOrders().stream()
+                    .filter(order -> order.status() == OrderStatus.SUBMITTING
+                            || order.status() == OrderStatus.UNKNOWN_SUBMIT_STATUS)
+                    .findFirst();
+            if (unresolvedSubmit.isPresent()) {
+                PendingOrder unresolved = unresolvedSubmit.get();
+                log.warn("AutoTrade round stopped scanId={} stage=LOCAL_SUBMIT_RECONCILIATION pendingOrderId={} symbol={} status={} clOrdId={}",
+                        scanId, unresolved.id(), unresolved.instId(), unresolved.status(), unresolved.clientOrderId());
+                return recordAndReturn(AutoTradeResult.skipped("unresolved_local_submit: pendingOrderId="
+                        + unresolved.id() + ", status=" + unresolved.status()), candidateCount,
+                        topCandidate(safeCandidates).orElse(null));
             }
-            List<PositionSummary> positions = activePositions();
+            Set<String> localActiveEntryInstIds = tradeOrderRecordService.activeEntryInstIds();
+            List<PositionSummary> positions;
+            try {
+                positions = new ArrayList<>(activePositions());
+            } catch (RuntimeException ex) {
+                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
+                log.warn("AutoTrade round stopped scanId={} stage=POSITION_SNAPSHOT reason={} fallback=false",
+                        scanId, ex.getMessage());
+                return recordAndReturn(AutoTradeResult.skipped("position_snapshot_unavailable: " + ex.getMessage()),
+                        candidateCount, top);
+            }
             Set<String> heldInstIds = positions.stream()
                     .map(PositionSummary::instId)
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            Set<String> exposureInstIds = new LinkedHashSet<>(heldInstIds);
+            mergePendingExposures(positions, exposureInstIds, tradeOrderRecordService.activeEntryExposures());
+            mergePendingExposures(positions, exposureInstIds, currentOrderSyncResult.activeEntryExposures());
             Set<String> okxCurrentOrderInstIds = currentOrderSyncResult.activeInstIds().stream()
                     .filter(instId -> instId != null && !instId.isBlank())
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
@@ -201,20 +268,23 @@ public class AutoTradeService {
             FailureReasonClassifier failureReasonClassifier = new FailureReasonClassifier(agentProperties);
             PreConfirmRefreshService preConfirmRefreshService = new PreConfirmRefreshService(agentProperties);
             ContractCandidate topForPolicy = topCandidate(safeCandidates).orElse(null);
-            int dynamicMaxPositions = noRiskMode || topForPolicy == null
+            String marketRegime = positionQualityPolicy.marketRegimeFor(topForPolicy);
+            int dynamicMaxPositions = topForPolicy == null
                     ? maxOpenPositions()
                     : positionQualityPolicy.allowedMaxPositionsFor(topForPolicy);
-            int openOrPendingCount = heldInstIds.size();
+            Set<String> openOrPendingInstIds = new LinkedHashSet<>(heldInstIds);
+            openOrPendingInstIds.addAll(okxCurrentOrderInstIds);
+            openOrPendingInstIds.addAll(localActiveEntryInstIds);
+            int openOrPendingCount = openOrPendingInstIds.size();
             int initialOpenOrPendingCount = openOrPendingCount;
-            int initialInFlightCount = 0;
+            int initialInFlightCount = Math.max(0, openOrPendingCount - heldInstIds.size());
             int capacity = dynamicMaxPositions - openOrPendingCount;
-            log.warn("AutoTrade round start scanId={} held={} okxCurrentOrders={} inFlight={} candidateCount={} marketRegime={} dynamicMaxPositions={} minScore={} minFinalRankScore={} riskMode={}",
-                    scanId, heldInstIds.size(), okxCurrentOrderInstIds.size(), symbolLockCount(), candidateCount,
-                    positionQualityPolicy.marketRegimeFor(topForPolicy), dynamicMaxPositions,
-                    noRiskMode ? noRiskMinScore
-                            : positionQualityPolicy.minScoreFor(openOrPendingCount, topForPolicy),
-                    noRiskMode ? noRiskMinScore
-                            : positionQualityPolicy.minFinalRankScoreFor(openOrPendingCount, topForPolicy),
+            log.warn("AutoTrade round start scanId={} held={} okxCurrentOrders={} localActiveEntries={} inFlight={} candidateCount={} marketRegime={} dynamicMaxPositions={} minScore={} minFinalRankScore={} riskMode={}",
+                    scanId, heldInstIds.size(), okxCurrentOrderInstIds.size(), localActiveEntryInstIds.size(),
+                    symbolLockCount(), candidateCount,
+                    marketRegime, dynamicMaxPositions,
+                    positionQualityPolicy.minScoreFor(openOrPendingCount, topForPolicy),
+                    positionQualityPolicy.minFinalRankScoreFor(openOrPendingCount, topForPolicy),
                     riskMode);
             if (capacity <= 0) {
                 ContractCandidate top = topCandidate(safeCandidates).orElse(null);
@@ -222,7 +292,9 @@ public class AutoTradeService {
                 return recordAndReturn(AutoTradeResult.skipped("position_capacity_full: held="
                                 + heldInstIds.size() + ", okxCurrentOrders=" + okxCurrentOrderInstIds.size()
                                 + ", inFlight=" + symbolLockCount()
-                                + ", dynamicMax=" + dynamicMaxPositions),
+                                + ", dynamicMax=" + dynamicMaxPositions
+                                + ", configuredMax=" + maxOpenPositions()
+                                + ", marketRegime=" + marketRegime),
                         candidateCount, top);
             }
             int refillNeeded = Math.min(targetOpenPositions(), dynamicMaxPositions) - openOrPendingCount;
@@ -236,20 +308,98 @@ public class AutoTradeService {
                         candidateCount, top);
             }
             int targetExecutions = Math.min(capacity, refillNeeded);
-            BigDecimal totalBudgetUsdt = autoTradeTotalBudgetUsdt();
+            Optional<AccountSummary> accountAtRoundStart = accountFunds();
+            Optional<BigDecimal> accountAvailableAtRoundStart = accountAtRoundStart
+                    .map(AccountSummary::availableBalance).map(value -> value.max(BigDecimal.ZERO));
+            if (accountAvailableAtRoundStart.isEmpty() || accountAvailableAtRoundStart.orElseThrow().signum() <= 0) {
+                AccountSummary account = accountAtRoundStart.orElse(null);
+                log.warn("AutoTrade account gate blocked scanId={} reason=account_available_balance_unavailable mode={} equity={} availableBalance={} message={}",
+                        scanId,
+                        account == null ? "NONE" : account.mode(),
+                        account == null ? null : account.equity(),
+                        account == null ? null : account.availableBalance(),
+                        account == null ? "ACCOUNT_SNAPSHOT_EMPTY" : account.message());
+                return recordAndReturn(AutoTradeResult.skipped("account_available_balance_unavailable"),
+                        candidateCount, topCandidate(safeCandidates).orElse(null));
+            }
+            BigDecimal totalBudgetUsdt = autoTradeTotalBudgetUsdt(accountAvailableAtRoundStart.orElseThrow());
             if (totalBudgetUsdt == null || totalBudgetUsdt.signum() <= 0) {
                 return recordAndReturn(AutoTradeResult.skipped("auto_trade_total_budget_not_configured"), candidateCount, null);
             }
-            Optional<BigDecimal> accountAvailableAtRoundStart = accountAvailableMarginUsdt();
+            BigDecimal accountSingleMarginCap = effectiveEquity(accountAtRoundStart.orElseThrow())
+                    .multiply(percentRate(agentProperties.risk().maxSingleMarginPercent()));
+            // 规则回退路径的尝试名单。分数职责：
+            //   - 上游 Scanner 同一扫描的 V2 score snapshot 负责入围及组内机会排序；
+            //   - readiness 只划分当前可尝试资格，组内仍沿用 V2 顺序；V1 仅在兼容调用缺少 V2 snapshot 时兜底；
+            //   - 所有硬门控（news / 仓位质量 / 敞口 / autoGate / refresh / 最终风险检查）在逐个候选上原位生效。
+            // 排在最前的是"当前自动交易门控已经通过"的候选：尝试名额有限
+            // （maxAutoTradeFallbackRank），不能让已知不可交易的高分候选把它耗光。
             List<ContractCandidate> orderedCandidates = safeCandidates.stream()
-                    .sorted(Comparator.comparing(ContractCandidate::finalRankScore, Comparator.nullsLast(Comparator.reverseOrder()))
-                            .thenComparing(ContractCandidate::score, Comparator.reverseOrder())
-                            .thenComparing(ContractCandidate::volume24h, Comparator.nullsLast(Comparator.reverseOrder())))
+                    .sorted(Comparator.comparing((ContractCandidate candidate) -> autoTradeReady(candidate) ? 1 : 0)
+                            .reversed()
+                            .thenComparing((left, right) -> V2SelectionScoreCalculator.compareForRanking(
+                                    left, right, safeV2Scores)))
                     .limit(Math.max(1, agentProperties.ranking().maxAutoTradeFallbackRank()))
                     .toList();
+            String owner = currentOwner();
+            Optional<WaitingEntryIntentService.TriggeredIntent> triggeredIntent = waitingEntryIntentService == null
+                    ? Optional.empty()
+                    : waitingEntryIntentService.evaluate(owner, safeCandidates, Instant.now());
+            ContractSelectionDecision selection;
+            if (triggeredIntent.isPresent()) {
+                WaitingEntryIntentService.TriggeredIntent triggered = triggeredIntent.orElseThrow();
+                if ("RULE_FIRST_AI_RANK".equals(agentProperties.aiSelection().policy())) {
+                    List<String> denyReasons = ContractTradeGate.planDenyReasons(triggered.candidate(), agentProperties);
+                    if (!denyReasons.isEmpty()) {
+                        AutoTradeResult denied = new AutoTradeResult(
+                                "SKIPPED", triggered.instId(), null, null, null, null,
+                                triggered.direction() == com.example.quant.market.DirectionBias.BEARISH
+                                        ? "short" : "long",
+                                null, BigDecimal.ZERO, triggered.candidate().entryPrice(),
+                                "WAITING_ENTRY_RULE_INELIGIBLE:" + String.join(",", denyReasons), Instant.now());
+                        completeTriggeredIntent(triggeredIntent, WaitingEntryIntentStatus.FAILED_SAFE, denied);
+                        return recordAndReturn(denied, candidateCount, triggered.candidate(), executableSelection(triggered));
+                    }
+                }
+                stableDecisionIds.put(triggered.instId(), triggered.clientOrderId());
+                selection = executableSelection(triggered);
+                orderedCandidates = List.of(triggered.candidate());
+            } else {
+                List<ContractCandidate> aiPool = aiEligibleCandidates(safeCandidates, safeV2Scores);
+                selection = aiContractSelectionService == null
+                        ? null
+                        : safeV2Scores.isEmpty()
+                        ? aiContractSelectionService.select(aiPool)
+                        : aiContractSelectionService.select(aiPool, safeV2Scores);
+            }
+            if (selection != null && selection.source() == ContractSelectionDecision.DecisionSource.AI_WAIT) {
+                ContractCandidate selected = safeCandidates.stream()
+                        .filter(candidate -> selection.selectedInstId() != null
+                                && selection.selectedInstId().equals(candidate.instId()))
+                        .findFirst().orElse(null);
+                String clientOrderId = selected == null ? null : stableDecisionIds.get(selected.instId());
+                if (waitingEntryIntentService == null || selected == null || clientOrderId == null) {
+                    return recordAndReturn(AutoTradeResult.skipped("ai_primary_wait"), candidateCount,
+                            selected == null ? topCandidate(safeCandidates).orElse(null) : selected, selection);
+                }
+                WaitingEntryIntentService.Intent intent = waitingEntryIntentService.createOrGet(
+                        owner, "AUTO_CONTRACT_V1", selected, selection, clientOrderId, Instant.now());
+                AutoTradeResult waiting = new AutoTradeResult(
+                        "WAITING_ENTRY", selected.instId(), null, null, null, null,
+                        selection.direction() == null ? null
+                                : selection.direction() == com.example.quant.market.DirectionBias.BEARISH ? "short" : "long",
+                        null, BigDecimal.ZERO, selected.entryPrice(), "AI_WAITING_ENTRY", Instant.now());
+                log.warn("AutoTrade waiting intent persisted scanId={} intentId={} symbol={} mode={} created={}",
+                        scanId, intent.intentId(), selected.instId(), selection.entryMode(), intent.created());
+                return recordAndReturn(waiting, candidateCount, selected, selection);
+            }
+            if (selection != null && selection.source() == ContractSelectionDecision.DecisionSource.AI_PRIMARY) {
+                orderedCandidates = aiOrderedCandidates(safeCandidates, selection);
+            }
             List<AutoTradeResult> executedResults = new ArrayList<>();
             Set<String> attemptedSymbols = new LinkedHashSet<>();
             String lastAttemptSkipReason = null;
+            String firstConfirmRejectionReason = null;
             for (ContractCandidate candidate : orderedCandidates) {
                 if (executedResults.size() >= targetExecutions) {
                     break;
@@ -262,9 +412,12 @@ public class AutoTradeService {
                 }
                 if (heldInstIds.contains(candidate.instId())
                         || okxCurrentOrderInstIds.contains(candidate.instId())
+                        || localActiveEntryInstIds.contains(candidate.instId())
                         || (agentProperties.concurrency().symbolLockEnabled()
                         && inFlightUntilByInstId.containsKey(candidate.instId()))) {
-                    lastAttemptSkipReason = okxCurrentOrderInstIds.contains(candidate.instId())
+                    lastAttemptSkipReason = localActiveEntryInstIds.contains(candidate.instId())
+                            ? "local_active_entry_order:" + candidate.instId()
+                            : okxCurrentOrderInstIds.contains(candidate.instId())
                             ? "okx_current_active_order"
                             : "SYMBOL_ALREADY_IN_FLIGHT";
                     recordCandidateSkipped(candidate, lastAttemptSkipReason);
@@ -273,6 +426,9 @@ public class AutoTradeService {
                             FailureClassification.NEXT_CANDIDATE_ALLOWED);
                     continue;
                 }
+                boolean aiPrimaryCandidate = selection != null
+                        && selection.source() == ContractSelectionDecision.DecisionSource.AI_PRIMARY
+                        && selection.rankedCandidates().stream().anyMatch(item -> item.instId().equals(candidate.instId()));
                 String hardNewsBlockReason = hardNewsBlockReason(candidate);
                 if (hardNewsBlockReason != null) {
                     lastAttemptSkipReason = hardNewsBlockReason;
@@ -281,44 +437,32 @@ public class AutoTradeService {
                             scanId, candidate.instId(), hardNewsBlockReason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
                     continue;
                 }
-                if (noRiskMode) {
-                    BigDecimal score = displayedScore(candidate);
-                    BigDecimal minScore = BigDecimal.valueOf(noRiskMinScore);
-                    if (score.compareTo(minScore) < 0) {
-                        lastAttemptSkipReason = "no_risk_score_below_" + noRiskMinScore;
-                        recordCandidateSkipped(candidate, lastAttemptSkipReason);
-                        log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=NO_RISK_MIN_SCORE reason={} score={} finalRankScore={} classification={} fallback=true",
-                                scanId, candidate.instId(), lastAttemptSkipReason, candidate.score(), candidate.finalRankScore(),
-                                FailureClassification.NEXT_CANDIDATE_ALLOWED);
-                        continue;
-                    }
-                } else {
-                    PositionQualityPolicy.PositionQualityDecision qualityDecision = positionQualityPolicy.evaluate(
-                            positions,
-                            initialInFlightCount,
-                            candidate
-                    );
-                    if (!qualityDecision.allowed()) {
-                        lastAttemptSkipReason = qualityDecision.reason();
-                        recordCandidateSkipped(candidate, qualityDecision.reason());
-                        log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=POSITION_QUALITY reason={} classification={} fallback=true",
-                                scanId, candidate.instId(), qualityDecision.reason(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
-                        continue;
-                    }
-                    CorrelationExposureGuard.ExposureDecision exposureDecision = exposureGuard.evaluate(positions, candidate);
-                    if (!exposureDecision.allowed()) {
-                        lastAttemptSkipReason = exposureDecision.reason();
-                        recordCandidateSkipped(candidate, exposureDecision.reason());
-                        log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=EXPOSURE reason={} classification={} fallback=true",
-                                scanId, candidate.instId(), exposureDecision.reason(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
-                        continue;
-                    }
-                    List<String> autoGateReasons = autoGate(candidate);
-                    if (!autoGateReasons.isEmpty()) {
-                        lastAttemptSkipReason = String.join(",", autoGateReasons);
-                        recordCandidateSkipped(candidate, lastAttemptSkipReason);
-                        continue;
-                    }
+                PositionQualityPolicy.PositionQualityDecision qualityDecision = positionQualityPolicy.evaluate(
+                        positions,
+                        Math.max(0, openOrPendingInstIds.size() - positions.size()),
+                        candidate
+                );
+                if (!qualityDecision.allowed() && !aiPrimaryCandidate) {
+                    lastAttemptSkipReason = qualityDecision.reason();
+                    recordCandidateSkipped(candidate, qualityDecision.reason());
+                    log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=POSITION_QUALITY reason={} classification={} fallback=true",
+                            scanId, candidate.instId(), qualityDecision.reason(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
+                    continue;
+                }
+                CorrelationExposureGuard.ExposureDecision exposureDecision = exposureGuard.evaluate(
+                        positions, candidate, aiPrimaryCandidate ? selectionFor(candidate, selection).direction() : candidate.trendDirection());
+                if (!exposureDecision.allowed()) {
+                    lastAttemptSkipReason = exposureDecision.reason();
+                    recordCandidateSkipped(candidate, exposureDecision.reason());
+                    log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=EXPOSURE reason={} classification={} fallback=true",
+                            scanId, candidate.instId(), exposureDecision.reason(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
+                    continue;
+                }
+                List<String> autoGateReasons = aiPrimaryCandidate ? aiHardGate(candidate) : autoGate(candidate);
+                if (!autoGateReasons.isEmpty()) {
+                    lastAttemptSkipReason = String.join(",", autoGateReasons);
+                    recordCandidateSkipped(candidate, lastAttemptSkipReason);
+                    continue;
                 }
                 markInFlight(candidate.instId());
                 TradePlan plan = null;
@@ -327,9 +471,28 @@ public class AutoTradeService {
                 BudgetReservation reservation = null;
                 BigDecimal orderMarginUsdt = BigDecimal.ZERO;
                 try {
-                    plan = noRiskMode
-                            ? tradePlanService.createNoRiskContractPlan(candidate)
-                            : tradePlanService.createContractPlan(candidate);
+                    ContractCandidate planningCandidate = candidate;
+                    if (liveMarketRefreshService != null) {
+                        Instant jevDecisionTimestamp = Instant.now();
+                        LiveMarketRefreshResult liveRefresh = liveMarketRefreshService.refresh(candidate,
+                                jevDecisionTimestamp);
+                        if (!liveRefresh.passed()) {
+                            String reason = String.join(",", liveRefresh.reasons());
+                            lastAttemptSkipReason = reason;
+                            recordCandidateSkipped(candidate, reason);
+                            inFlightUntilByInstId.remove(candidate.instId());
+                            log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=LIVE_MARKET_REFRESH reason={} classification={} fallback=true",
+                                    scanId, candidate.instId(), reason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
+                            continue;
+                        }
+                        planningCandidate = liveRefresh.candidate();
+                    }
+                    plan = aiPrimaryCandidate
+                            ? tradePlanService.createSelectedContractPlan(planningCandidate, selectionFor(candidate, selection))
+                            : selection != null
+                                    && selection.source() == ContractSelectionDecision.DecisionSource.RULE_FALLBACK
+                                    ? tradePlanService.createRuleFallbackPlan(planningCandidate)
+                                    : tradePlanService.createContractPlan(planningCandidate);
                     recordEvent(candidate, null, plan, TradeEventType.PLAN_CREATED, null, null,
                             "PLAN_CREATED", "自动交易计划已生成", null);
                     if (plan.action() == com.example.quant.tradeplan.TradePlanType.WATCH
@@ -342,30 +505,31 @@ public class AutoTradeService {
                                 scanId, candidate.instId(), reason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
                         continue;
                     }
-                    if (noRiskMode) {
-                        log.warn("AutoTrade no-risk mode bypassed pre-confirm analysis refresh scanId={} symbol={} score={} minScore={}",
-                                scanId, candidate.instId(), candidate.score(), noRiskMinScore);
-                    } else {
-                        PreConfirmRefreshResult refreshResult = preConfirmRefreshService.check(candidate, plan);
-                        if (!refreshResult.passed()) {
-                            String reason = String.join(",", refreshResult.reasons());
-                            lastAttemptSkipReason = reason;
-                            recordCandidateSkipped(candidate, reason);
-                            inFlightUntilByInstId.remove(candidate.instId());
-                            log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=PRE_CONFIRM_REFRESH reason={} classification={} fallback=true",
-                                    scanId, candidate.instId(), reason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
-                            continue;
-                        }
+                    PreConfirmRefreshResult refreshResult = preConfirmRefreshService.check(planningCandidate, plan);
+                    if (!refreshResult.passed()) {
+                        String reason = String.join(",", refreshResult.reasons());
+                        lastAttemptSkipReason = reason;
+                        recordCandidateSkipped(candidate, reason);
+                        inFlightUntilByInstId.remove(candidate.instId());
+                        log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=PRE_CONFIRM_REFRESH reason={} classification={} fallback=true",
+                                scanId, candidate.instId(), reason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
+                        continue;
                     }
                     int slotIndex = initialOpenOrPendingCount + executedResults.size() + 1;
-                    BigDecimal allocationScore = scoreForBudget(candidate, noRiskMode);
-                    BigDecimal maxMarginForCandidate = totalBudgetUsdt;
-                    if (accountAvailableAtRoundStart.isPresent()) {
-                        BigDecimal availableForThisRound = accountAvailableAtRoundStart.get()
-                                .subtract(executedMarginAmount(executedResults))
-                                .max(BigDecimal.ZERO);
-                        maxMarginForCandidate = min(maxMarginForCandidate, availableForThisRound);
+                    BigDecimal allocationScore = scoreForBudget(candidate);
+                    BigDecimal maxMarginForCandidate = plan.suggestedMargin();
+                    if (maxMarginForCandidate == null || maxMarginForCandidate.signum() <= 0) {
+                        String reason = "PLAN_RISK_MARGIN_UNAVAILABLE";
+                        lastAttemptSkipReason = reason;
+                        recordCandidateSkipped(candidate, reason);
+                        inFlightUntilByInstId.remove(candidate.instId());
+                        continue;
                     }
+                    BigDecimal availableForThisRound = accountAvailableAtRoundStart.orElseThrow()
+                            .subtract(executedMarginAmount(executedResults))
+                            .max(BigDecimal.ZERO);
+                    maxMarginForCandidate = min(min(maxMarginForCandidate, availableForThisRound),
+                            accountSingleMarginCap);
                     BudgetAllocation allocation = budgetService.allocate(new BudgetAllocationRequest(
                             totalBudgetUsdt,
                             budgetService.usedBudget(),
@@ -420,7 +584,8 @@ public class AutoTradeService {
                             allocation.budgetUtilizationAfter(), candidate.instId(), plan.id(), pendingOrderId);
                     order = pendingOrderService.createAutoPendingOrder(MarketType.OKX_SWAP, plan, pendingOrderId,
                             orderMarginUsdt, reservation.reservationId(), allocation,
-                            clientOrderId(agentProperties.idempotency().clientOrderIdPrefix(), plan.id(), pendingOrderId));
+                            stableDecisionIds.getOrDefault(candidate.instId(),
+                                    clientOrderId(agentProperties.idempotency().clientOrderIdPrefix(), plan.id(), pendingOrderId)));
                     recordEvent(candidate, order, plan, TradeEventType.BUDGET_RESERVED, null,
                             "BUDGET_RESERVED", "BUDGET_RESERVED", "自动交易预算已预留", null);
                     result = orderConfirmService.confirmAuto(order.id(), orderMarginUsdt);
@@ -444,7 +609,8 @@ public class AutoTradeService {
                             ex.getMessage(),
                             Instant.now()
                     );
-                    recordExecution(unknown, candidateCount, candidate);
+                    completeTriggeredIntent(triggeredIntent, WaitingEntryIntentStatus.RECONCILING, unknown);
+                    recordExecution(unknown, candidateCount, candidate, selection);
                     return unknown;
                 } catch (RuntimeException ex) {
                     inFlightUntilByInstId.remove(candidate.instId());
@@ -461,7 +627,7 @@ public class AutoTradeService {
                         lastAttemptSkipReason = ex.getMessage();
                         continue;
                     }
-                    return recordAndReturn(AutoTradeResult.failed(ex.getMessage()), candidateCount, candidate);
+                    return recordAndReturn(AutoTradeResult.failed(ex.getMessage()), candidateCount, candidate, selection);
                 }
                 if (result.submitted()) {
                     if (reservation != null && result.filled()) {
@@ -476,13 +642,24 @@ public class AutoTradeService {
                     AutoTradeResult executed = new AutoTradeResult(submittedStatus, plan.instId(), plan.id().toString(),
                             order.id().toString(), result.externalOrderId(), plan.action().name(), order.posSide(),
                             order.leverage(), orderMarginUsdt, plan.entryPrice(), result.message(), Instant.now());
-                    recordExecution(executed, candidateCount, candidate);
+                    completeTriggeredIntent(triggeredIntent, WaitingEntryIntentStatus.SUBMITTED, executed);
+                    recordExecution(executed, candidateCount, candidate, selection);
                     executedResults.add(executed);
                     heldInstIds.add(candidate.instId());
+                    openOrPendingInstIds.add(candidate.instId());
+                    positions.add(committedExposurePosition(candidate, plan, order));
                     continue;
                 }
                 log.warn("Auto trade rejected after plan scanId={} instId={} tradePlanId={} reason={}",
                         scanId, plan.instId(), plan.id(), result.message());
+                if (firstConfirmRejectionReason == null) {
+                    firstConfirmRejectionReason = result.message();
+                }
+                AutoTradeResult rejectedIntentResult = new AutoTradeResult(
+                        "REJECTED", plan.instId(), plan.id().toString(), order.id().toString(), null,
+                        plan.action().name(), order.posSide(), order.leverage(), orderMarginUsdt,
+                        plan.entryPrice(), result.message(), Instant.now());
+                completeTriggeredIntent(triggeredIntent, WaitingEntryIntentStatus.FAILED_SAFE, rejectedIntentResult);
                 inFlightUntilByInstId.remove(candidate.instId());
                 if (reservation != null) {
                     budgetService.release(reservation.reservationId(), "CONFIRM_REJECTED");
@@ -501,24 +678,33 @@ public class AutoTradeService {
                         order.id().toString(), null, plan.action().name(), order.posSide(), order.leverage(),
                         orderMarginUsdt, plan.entryPrice(), result.message(), Instant.now());
                 if (executedResults.isEmpty()) {
-                    return recordAndReturn(rejected, candidateCount, candidate);
+                    return recordAndReturn(rejected, candidateCount, candidate, selection);
                 }
                 return aggregateExecutedResults(executedResults,
                         "auto_refill_submitted=" + executedResults.size() + ", stopped_by_rejection=" + result.message());
             }
             if (executedResults.isEmpty()) {
                 ContractCandidate top = topCandidate(safeCandidates).orElse(null);
-                String message = "no_candidate_passed_auto_gate";
-                if (lastAttemptSkipReason != null && !lastAttemptSkipReason.isBlank()) {
-                    message = message + ": " + lastAttemptSkipReason;
+                boolean aiPrimary = selection != null
+                        && selection.source() == ContractSelectionDecision.DecisionSource.AI_PRIMARY;
+                ContractCandidate recordedCandidate = aiPrimary
+                        ? safeCandidates.stream()
+                                .filter(candidate -> selection.selectedInstId().equals(candidate.instId()))
+                                .findFirst().orElse(top)
+                        : top;
+                String message = aiPrimary ? "no_order_submitted" : "no_candidate_passed_auto_gate";
+                String displayedReason = firstConfirmRejectionReason == null
+                        ? lastAttemptSkipReason : firstConfirmRejectionReason;
+                if (displayedReason != null && !displayedReason.isBlank()) {
+                    message = message + ": " + displayedReason;
                 }
-                if (top != null) {
-                    List<String> reasons = noRiskMode ? List.of() : autoGate(top);
+                if (!aiPrimary && top != null) {
+                    List<String> reasons = autoGate(top);
                     if (!reasons.isEmpty()) {
                         message = message + ": " + String.join(",", reasons);
                     }
                 }
-                return recordAndReturn(AutoTradeResult.skipped(message), candidateCount, top);
+                return recordAndReturn(AutoTradeResult.skipped(message), candidateCount, recordedCandidate, selection);
             }
             if (executedResults.size() == 1) {
                 return executedResults.get(0);
@@ -539,8 +725,53 @@ public class AutoTradeService {
         return result;
     }
 
+    private AutoTradeResult recordAndReturn(AutoTradeResult result, int candidateCount, ContractCandidate candidate,
+                                            ContractSelectionDecision selection) {
+        recordExecution(result, candidateCount, candidate, selection);
+        return result;
+    }
+
+    private AutoTradeResult evaluateShadow(List<ContractCandidate> candidates, int candidateCount,
+                                           String scanId, int minScore) {
+        int recorded = 0;
+        ContractCandidate lastRecorded = null;
+        String lastSkipReason = null;
+        for (ContractCandidate candidate : candidates.stream()
+                .sorted(Comparator.comparing(AutoTradeService::displayedScore).reversed())
+                .limit(Math.max(1, agentProperties.ranking().maxAutoTradeFallbackRank()))
+                .toList()) {
+            String newsBlock = hardNewsBlockReason(candidate);
+            if (newsBlock != null || displayedScore(candidate).compareTo(BigDecimal.valueOf(minScore)) < 0) {
+                lastSkipReason = newsBlock == null ? "shadow_score_below_" + minScore : newsBlock;
+                recordCandidateSkipped(candidate, lastSkipReason);
+                continue;
+            }
+            TradePlan plan = tradePlanService.createNoRiskContractPlan(candidate);
+            recordEvent(candidate, null, plan, TradeEventType.PLAN_CREATED, null, "SHADOW_RECORDED",
+                    "SHADOW_RECORDED", "Shadow 观察已持久化；未创建订单", null);
+            recorded++;
+            lastRecorded = candidate;
+        }
+        String message = recorded == 0
+                ? "shadow_no_candidate_qualified" + (lastSkipReason == null ? "" : ": " + lastSkipReason)
+                : "shadow_observation_recorded=" + recorded;
+        log.info("AutoTrade Shadow round completed scanId={} candidateCount={} recorded={} minScore={}",
+                scanId, candidateCount, recorded, minScore);
+        return recordAndReturn(AutoTradeResult.skipped(message), candidateCount,
+                lastRecorded == null ? topCandidate(candidates).orElse(null) : lastRecorded);
+    }
+
     private void recordExecution(AutoTradeResult result, int candidateCount, ContractCandidate candidate) {
         autoTradeRecordService.record(result, candidateCount, candidate);
+    }
+
+    private void recordExecution(AutoTradeResult result, int candidateCount, ContractCandidate candidate,
+                                 ContractSelectionDecision selection) {
+        if (selection == null) {
+            autoTradeRecordService.record(result, candidateCount, candidate);
+            return;
+        }
+        autoTradeRecordService.record(result, candidateCount, candidate, selection);
     }
 
     private void recordCandidateSkipped(ContractCandidate candidate, String reason) {
@@ -590,36 +821,38 @@ public class AutoTradeService {
                 last.entryPrice(), message, Instant.now());
     }
 
-    private BigDecimal autoTradeTotalBudgetUsdt() {
-        BigDecimal configured = systemControlService.autoTradeMarginUsdt();
-        if (configured == null || configured.signum() <= 0) {
-            return BigDecimal.ZERO;
-        }
-        return configured;
+    private BigDecimal autoTradeTotalBudgetUsdt(BigDecimal availableBalance) {
+        return systemControlService.resolveAutoTradeTotalBudget(availableBalance);
     }
 
-    private Optional<BigDecimal> accountAvailableMarginUsdt() {
+    private Optional<AccountSummary> accountFunds() {
         try {
             AccountSummary account = accountSnapshotService.summary();
-            if (account.availableBalance() == null) {
+            if (account == null || account.availableBalance() == null) {
+                log.warn("AutoTrade account snapshot unavailable reason=NULL_AVAILABLE_BALANCE accountPresent={} mode={} equity={} availableBalance={} message={}",
+                        account != null,
+                        account == null ? "NONE" : account.mode(),
+                        account == null ? null : account.equity(),
+                        account == null ? null : account.availableBalance(),
+                        account == null ? "ACCOUNT_SNAPSHOT_EMPTY" : account.message());
                 return Optional.empty();
             }
-            return Optional.of(account.availableBalance().max(BigDecimal.ZERO));
+            return Optional.of(account);
         } catch (RuntimeException ex) {
-            log.warn("Auto trade cannot read account available balance, continuing with configured budget only: {}", ex.getMessage());
+            log.warn("AutoTrade account snapshot unavailable reason=READ_EXCEPTION errorType={} message={}",
+                    ex.getClass().getSimpleName(), ex.getMessage());
             return Optional.empty();
         }
     }
 
-    private BigDecimal riskBasedMaxMarginUsdt(BigDecimal totalBudgetUsdt, TradePlan plan) {
-        BigDecimal riskPct = agentProperties.risk().singleTradeRiskPercent().max(BigDecimal.valueOf(8));
-        BigDecimal maxLoss = totalBudgetUsdt.multiply(riskPct).divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
-        BigDecimal stopLossRate = stopLossPct(plan).divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
-        if (stopLossRate.signum() <= 0 || plan.suggestedLeverage() <= 0) {
-            return totalBudgetUsdt;
-        }
-        BigDecimal notional = maxLoss.divide(stopLossRate, 8, RoundingMode.DOWN);
-        return notional.divide(BigDecimal.valueOf(plan.suggestedLeverage()), 8, RoundingMode.DOWN);
+    private static BigDecimal effectiveEquity(AccountSummary account) {
+        return account.equity() != null && account.equity().signum() > 0
+                ? account.equity() : account.availableBalance().max(BigDecimal.ZERO);
+    }
+
+    private static BigDecimal percentRate(BigDecimal percent) {
+        return percent == null ? BigDecimal.ZERO
+                : percent.divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
     }
 
     private static BigDecimal stopLossPct(TradePlan plan) {
@@ -637,25 +870,12 @@ public class AutoTradeService {
                 : candidate.finalRankScore();
     }
 
-    private static BigDecimal scoreForBudget(ContractCandidate candidate, boolean noRiskMode) {
-        return noRiskMode ? displayedScore(candidate) : scoreForBudget(candidate);
-    }
-
     private static BigDecimal displayedScore(ContractCandidate candidate) {
         return BigDecimal.valueOf(candidate.score());
     }
 
-    private static String hardNewsBlockReason(ContractCandidate candidate) {
-        if (candidate.newsAnalysis() == null) {
-            return null;
-        }
-        if ("CRITICAL".equals(candidate.newsAnalysis().newsRiskLevel())) {
-            return "news_risk_critical";
-        }
-        if ("HIGH".equals(candidate.newsAnalysis().newsRiskLevel())) {
-            return "news_risk_high";
-        }
-        return null;
+    private String hardNewsBlockReason(ContractCandidate candidate) {
+        return ContractTradeGate.newsDenyReasons(candidate, agentProperties).stream().findFirst().orElse(null);
     }
 
     private int noRiskMinScore() {
@@ -680,6 +900,99 @@ public class AutoTradeService {
         return ContractTradeGate.autoDenyReasons(candidate, agentProperties);
     }
 
+    /**
+     * 仅用于回退尝试顺序的优先级判断，不用于放行：真正的门控仍然在循环内逐个候选执行。
+     *
+     * <p>判据只包含<b>规则回退循环确实会 {@code continue} 掉、且仅凭候选本身就能判定</b>的门控：
+     * 新闻硬风险（{@code hardNewsBlockReason}）和动作门控（{@code autoGate}）。
+     * 原先只看 {@code autoGate}，新闻已判定必拒的候选照样占用尝试名额。
+     *
+     * <p>这里<b>刻意不含</b> {@code planDenyReasons}：该路径下它由
+     * {@code ContractTradePlanBuilder} 当作 gateWarnings 处理，并不必然阻断下单，
+     * 把它算作"已知必拒"会误伤真正可成交的候选。仓位质量与敞口门控依赖账户状态，
+     * 仍留在循环内逐个候选判断。
+     *
+     * <p>任何字段缺失导致的异常一律按"未就绪"处理（fail-closed）。
+     */
+    private boolean autoTradeReady(ContractCandidate candidate) {
+        try {
+            return hardNewsBlockReason(candidate) == null && autoGate(candidate).isEmpty();
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    private List<ContractCandidate> aiEligibleCandidates(
+            List<ContractCandidate> candidates,
+            Map<String, V2SelectionScoreResult> v2ScoreSnapshot
+    ) {
+        return candidates.stream()
+                .filter(candidate -> aiHardGate(candidate).isEmpty())
+                .filter(candidate -> !"RULE_FIRST_AI_RANK".equals(agentProperties.aiSelection().policy())
+                        || ContractTradeGate.planDenyReasons(candidate, agentProperties).isEmpty())
+                .sorted((left, right) -> V2SelectionScoreCalculator.compareForRanking(
+                        left, right, v2ScoreSnapshot))
+                .toList();
+    }
+
+    private List<String> aiHardGate(ContractCandidate candidate) {
+        return ContractTradeGate.aiHardDenyReasons(candidate, agentProperties);
+    }
+
+    private static List<ContractCandidate> aiOrderedCandidates(
+            List<ContractCandidate> candidates,
+            ContractSelectionDecision selection
+    ) {
+        return selection.rankedCandidates().stream()
+                .map(ranked -> candidates.stream()
+                        .filter(candidate -> ranked.instId().equals(candidate.instId()))
+                        .findFirst()
+                        .orElse(null))
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    }
+
+    private static ContractSelectionDecision selectionFor(
+            ContractCandidate candidate,
+            ContractSelectionDecision selection
+    ) {
+        ContractSelectionDecision.RankedCandidate ranked = selection.rankedCandidates().stream()
+                .filter(item -> item.instId().equals(candidate.instId()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("candidate missing from AI ranking: " + candidate.instId()));
+        return new ContractSelectionDecision(
+                selection.source(), selection.decision(), candidate.instId(), ranked.direction(), ranked.entryMode(),
+                ranked.confidence(), List.of(ranked), ranked.reasonList(), ranked.riskList(), selection.fallbackReason());
+    }
+
+    private static ContractSelectionDecision executableSelection(
+            WaitingEntryIntentService.TriggeredIntent triggered) {
+        BigDecimal confidence = new BigDecimal("0.75");
+        ContractSelectionDecision.RankedCandidate ranked = new ContractSelectionDecision.RankedCandidate(
+                triggered.instId(), 1, triggered.direction(), "MARKET", confidence);
+        return new ContractSelectionDecision(
+                ContractSelectionDecision.DecisionSource.AI_PRIMARY,
+                ContractSelectionDecision.SelectionAction.TRADE,
+                triggered.instId(), triggered.direction(), "MARKET", confidence,
+                List.of(ranked), List.of("等待入场条件已由新收盘K线触发"), List.of(), "");
+    }
+
+    private void completeTriggeredIntent(Optional<WaitingEntryIntentService.TriggeredIntent> triggeredIntent,
+                                         WaitingEntryIntentStatus status, AutoTradeResult result) {
+        if (waitingEntryIntentService == null || triggeredIntent == null || triggeredIntent.isEmpty()
+                || result == null || !triggeredIntent.orElseThrow().instId().equals(result.instId())) {
+            return;
+        }
+        WaitingEntryIntentService.TriggeredIntent triggered = triggeredIntent.orElseThrow();
+        waitingEntryIntentService.complete(triggered.intentId(), status, result.pendingOrderId(), result.okxOrderId(),
+                result.message(), result.createdAt());
+    }
+
+    private String currentOwner() {
+        String owner = systemControlService.autoTradeOwnerUsername();
+        return owner == null || owner.isBlank() ? "local-admin" : owner;
+    }
+
     private OkxCurrentOrderSyncService.SyncResult syncCurrentOrders() {
         if (currentOrderSyncService == null) {
             return new OkxCurrentOrderSyncService.SyncResult(0, 0, 0, false, null, List.of());
@@ -690,18 +1003,40 @@ public class AutoTradeService {
                 : result;
     }
 
+    private static void mergePendingExposures(List<PositionSummary> positions,
+                                              Set<String> knownInstIds,
+                                              List<PositionSummary> pendingExposures) {
+        if (pendingExposures == null || pendingExposures.isEmpty()) {
+            return;
+        }
+        for (PositionSummary exposure : pendingExposures) {
+            if (exposure == null || exposure.instId() == null || exposure.instId().isBlank()) {
+                continue;
+            }
+            if (!knownInstIds.add(exposure.instId())) {
+                continue;
+            }
+            positions.add(exposure);
+        }
+    }
+
     private List<PositionSummary> activePositions() {
         if (positionSnapshotService == null) {
-            return List.of();
+            throw new IllegalStateException("position_snapshot_service_unavailable");
         }
-        try {
-            return positionSnapshotService.positions().stream()
-                    .filter(position -> decimal(position.size()).signum() > 0)
-                    .toList();
-        } catch (RuntimeException ex) {
-            log.warn("Auto trade position snapshot unavailable, continue with in-flight dedupe only: {}", ex.getMessage());
-            return List.of();
-        }
+        return positionSnapshotService.positions().stream()
+                .filter(position -> PositionSideMatcher.matches(position.instId(), null, null, position))
+                .toList();
+    }
+
+    private static PositionSummary committedExposurePosition(ContractCandidate candidate, TradePlan plan,
+                                                             PendingOrder order) {
+        String posSide = order != null && order.posSide() != null && !order.posSide().isBlank()
+                ? order.posSide()
+                : (plan != null && plan.directionBias() == com.example.quant.market.DirectionBias.BEARISH
+                        ? "short" : "long");
+        BigDecimal avgPrice = plan != null && plan.entryPrice() != null ? plan.entryPrice() : candidate.lastPrice();
+        return new PositionSummary(candidate.instId(), posSide, "1", avgPrice, BigDecimal.ZERO, "AUTO_TRADE_COMMITTED");
     }
 
     private void pruneInFlightOrders() {

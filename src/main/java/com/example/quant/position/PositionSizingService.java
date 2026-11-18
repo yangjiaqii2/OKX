@@ -16,6 +16,13 @@ public class PositionSizingService {
         if (request.riskLevel() == RiskLevel.BLOCKED || request.suggestedLeverage() <= 0) {
             return rejected("风险等级不允许生成订单", warnings);
         }
+        boolean longGeometry = request.stopLossPrice().compareTo(request.entryPrice()) < 0
+                && request.takeProfitPrice().compareTo(request.entryPrice()) > 0;
+        boolean shortGeometry = request.stopLossPrice().compareTo(request.entryPrice()) > 0
+                && request.takeProfitPrice().compareTo(request.entryPrice()) < 0;
+        if (!longGeometry && !shortGeometry) {
+            return rejected("入场、止损和止盈价格方向无效", warnings);
+        }
         BigDecimal stopDistance = request.entryPrice().subtract(request.stopLossPrice()).abs()
                 .divide(request.entryPrice(), 8, RoundingMode.HALF_UP);
         if (stopDistance.compareTo(BigDecimal.ZERO) <= 0) {
@@ -48,11 +55,13 @@ public class PositionSizingService {
         reasons.add("按账户总览或可用余额最大亏损倒推仓位");
         reasons.add("保证金优先受可用余额约束");
         BigDecimal lossRate = maxLoss.divide(request.accountEquity(), 8, RoundingMode.HALF_UP);
-        return new PositionSizingResult(true, size, margin, maxLoss, lossRate, positionValue, riskReward, reasons, warnings, null);
+        BigDecimal estimatedStopLoss = positionValue.multiply(stopDistance).setScale(8, RoundingMode.HALF_UP);
+        return new PositionSizingResult(true, size, margin, maxLoss, lossRate, positionValue, riskReward, reasons, warnings, null,
+                estimatedStopLoss);
     }
 
     private static PositionSizingResult rejected(String reason, List<String> warnings) {
         return new PositionSizingResult(false, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
-                BigDecimal.ZERO, BigDecimal.ZERO, List.of(), warnings, reason);
+                BigDecimal.ZERO, BigDecimal.ZERO, List.of(), warnings, reason, BigDecimal.ZERO);
     }
 }

@@ -752,17 +752,19 @@ quant:
       min-trend-score: 18
       min-volume-score: 14
       min-liquidity-score: 7
-      min-news-risk-score: 7
+      # 新闻原始安全分（0-100），新闻在总分中的权重仍为 5%
+      min-news-risk-raw-score: 70
     market:
       min-volume-24h-usdt: 50000000
       max-spread-bps: 8
-      min-depth-usdt: 100000
+      min-depth-usdt: 20000
       max-funding-abs: 0.0015
       max-wick-ratio: 0.55
       stale-data-seconds: 20
     risk:
       single-trade-risk-percent: 1
-      max-single-loss-percent: 5
+      # 三个目标仓位等分总预算；实际金额仍受单笔止损风险倒推限制
+      max-single-margin-percent: 33.333334
       max-daily-loss-percent: 30
       max-daily-trades: 5
       max-consecutive-losses: 3
@@ -1107,7 +1109,7 @@ quant:
 
 - 变更摘要：登录页移除默认管理员账号/密码提示和用户名预填；账号安全页创建用户表单改为更宽输入区，并支持初始密码显示/隐藏。
 - 影响文件：`frontend/src/pages/LoginPage.tsx`、`frontend/src/pages/SecurityPage.tsx`。
-- 影响：登录页不再暴露 `admin / admin123`；管理员创建新用户时用户名和密码输入框更宽，长账号或长密码可正常查看。
+- 影响：登录页不再暴露 默认管理员登录凭据；管理员创建新用户时用户名和密码输入框更宽，长账号或长密码可正常查看。
 - 验证：`npm --prefix frontend run build` 通过，仍有 Vite chunk size 警告。
 
 ### 2026-06-18 - 自动交易真实闭环第一阶段

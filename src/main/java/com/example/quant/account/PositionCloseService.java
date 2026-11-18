@@ -8,6 +8,8 @@ import com.example.quant.agent.execution.AutoTradeRecordRepository;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.common.PageResult;
 import com.example.quant.okxtrade.OkxTradeAdapter;
+import com.example.quant.okxtrade.TradingOperationContext;
+import com.example.quant.okxtrade.TradingOperationType;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.OrderExecutionResult;
 import com.example.quant.order.PendingOrder;
@@ -23,6 +25,8 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class PositionCloseService {
+    private static final int SAFETY_CLOSE_MAX_ATTEMPTS = 3;
+    private static final long SAFETY_CLOSE_RETRY_BACKOFF_SECONDS = 5;
     private static final List<OrderStatus> AUTO_CLOSE_BINDING_STATUSES = List.of(
             OrderStatus.SUBMITTED,
             OrderStatus.UNKNOWN_SUBMIT_STATUS,
@@ -33,6 +37,8 @@ public class PositionCloseService {
             OrderStatus.SIDEWAYS_TIMEOUT,
             OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED,
             OrderStatus.MAX_HOLD_TIMEOUT,
+            OrderStatus.PROTECTION_REPLAN_REQUIRED,
+            OrderStatus.PROTECTION_RULES_STALE,
             OrderStatus.CLOSE_SUBMITTED
     );
 
@@ -79,9 +85,7 @@ public class PositionCloseService {
             throw new IllegalArgumentException("平仓合约不能为空");
         }
         PositionSummary position = positionSnapshotService.positions().stream()
-                .filter(item -> instId.equalsIgnoreCase(item.instId()))
-                .filter(item -> !hasText(posSide) || posSide.equalsIgnoreCase(item.posSide()))
-                .filter(item -> decimal(item.size()).signum() > 0)
+                .filter(item -> PositionSideMatcher.matches(instId, posSide, null, item))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("当前没有可平仓持仓：" + instId));
         String closePosSide = hasText(posSide) ? posSide : position.posSide();
@@ -89,10 +93,149 @@ public class PositionCloseService {
         if (!hasText(closeMarginMode)) {
             closeMarginMode = "cross";
         }
+        rejectDuplicateUnresolvedClose(position);
         String closeClOrdId = closeClientOrderId();
-        OrderExecutionResult result = okxTradeAdapter.closePosition(position.instId(), closePosSide, closeMarginMode, closeClOrdId);
-        recordCloseSubmitted(position, closePosSide, closeMarginMode, result, closeClOrdId);
-        return result;
+        ClosePositionRecordEntity record = createCloseIntent(position, closePosSide, closeMarginMode, closeClOrdId);
+        Optional<PendingOrder> boundOrder = bindAutoTradeReference(record, position);
+        boundOrder.map(PendingOrder::tradePlanId).map(UUID::toString).ifPresent(record::setTradePlanId);
+        save(record);
+        try {
+            OrderExecutionResult result = okxTradeAdapter.closePosition(
+                    position.instId(), position.posSide(), closeMarginMode, closeClOrdId,
+                    TradingOperationContext.of(TradingOperationType.CLOSE_POSITION,
+                            record.getUserName(), record.getPendingOrderId(),
+                            boundOrder.map(PendingOrder::tradePlanId).map(UUID::toString).orElse(null)));
+            record.setCloseOrderId(result.externalOrderId());
+            record.setStatus("CLOSE_SUBMITTED");
+            record.setRequestSent(true);
+            record.setErrorClass(null);
+            record.setRecoveryResult("ACK_SUBMITTED");
+            record.setUpdatedAt(Instant.now());
+            boundOrder.ifPresent(order -> order.markCloseSubmitted(
+                    result.externalOrderId(), "MANUAL_CLOSE_SUBMITTED"));
+            save(record);
+            recordManualCloseSubmitted(record);
+            return result;
+        } catch (RuntimeException ex) {
+            boolean beforeSend = beforeSendFailure(ex);
+            boolean rejected = exchangeRejected(ex);
+            record.setStatus(beforeSend ? "CLOSE_FAILED_BEFORE_SEND" : rejected ? "CLOSE_REJECTED" : "CLOSE_SUBMIT_UNKNOWN");
+            record.setRequestSent(!beforeSend);
+            record.setErrorClass(beforeSend ? "LOCAL_VALIDATION" : rejected ? "EXCHANGE_REJECTED" : "UNKNOWN_AFTER_SEND");
+            record.setRecoveryResult(beforeSend ? "NOT_SENT" : rejected ? "TERMINAL_REJECTED" : "QUERY_REQUIRED");
+            record.setErrorMessage(compact(ex.getMessage()));
+            record.setUpdatedAt(Instant.now());
+            boundOrder.ifPresent(order -> order.markCloseSubmitted(null,
+                    beforeSend ? "MANUAL_CLOSE_FAILED_BEFORE_SEND" : "MANUAL_CLOSE_SUBMIT_UNKNOWN"));
+            save(record);
+            throw ex;
+        }
+    }
+
+    /**
+     * Terminal risk-reduction contract used when an already-filled position
+     * cannot be protected by its approved canonical stop. The client id is
+     * deterministic so an UNKNOWN response is recovered by the existing close
+     * reconciliation flow instead of submitting a second close order.
+     */
+    public OrderExecutionResult closePositionForSafety(PendingOrder order, PositionSummary position, String reason) {
+        if (order == null || position == null || decimal(position.size()).signum() <= 0) {
+            throw new IllegalArgumentException("安全减仓要求已有正向持仓");
+        }
+        String username = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
+        String safetyReason = hasText(reason) ? reason : "CANONICAL_SL_UNEXPRESSIBLE_AFTER_ENTRY";
+        String closeClOrdId = safetyCloseClientOrderId(order, safetyReason);
+        Instant attemptAt = Instant.now();
+        ClosePositionRecordEntity existing = closePositionRecordRepository == null ? null
+                : closePositionRecordRepository.findByUserNameAndCloseClOrdId(username, closeClOrdId).orElse(null);
+        if (existing != null) {
+            if (List.of("CLOSE_SUBMITTING", "CLOSE_SUBMIT_UNKNOWN", "CLOSE_SUBMITTED", "CLOSED")
+                    .contains(existing.getStatus())) {
+                return OrderExecutionResult.submitted(existing.getCloseOrderId(),
+                        "SAFETY_CLOSE_ALREADY_RECORDED: " + safetyReason);
+            }
+            if ("CLOSE_REJECTED".equals(existing.getStatus())) {
+                throw new IllegalStateException("SAFETY_CLOSE_REJECTED: " + compact(existing.getErrorMessage()));
+            }
+            if ("EMERGENCY_ATTENTION_REQUIRED".equals(existing.getStatus())
+                    || existing.getRetryCount() >= SAFETY_CLOSE_MAX_ATTEMPTS) {
+                existing.setStatus("EMERGENCY_ATTENTION_REQUIRED");
+                existing.setNextAttemptAt(null);
+                existing.setUpdatedAt(attemptAt);
+                save(existing);
+                throw new IllegalStateException("SAFETY_CLOSE_RETRY_EXHAUSTED: " + safetyReason);
+            }
+            existing.setStatus("CLOSE_SUBMITTING");
+            existing.setRequestSent(false);
+            existing.setErrorMessage(safetyReason);
+            existing.setRecoveryResult("SAFETY_RETRY_CLAIMED");
+            existing.setRetryCount(existing.getRetryCount() + 1);
+            existing.setLastAttemptAt(attemptAt);
+            existing.setNextAttemptAt(null);
+            existing.setUpdatedAt(attemptAt);
+        }
+        ClosePositionRecordEntity record = existing == null
+                ? createSafetyCloseIntent(order, position, username, closeClOrdId, safetyReason)
+                : existing;
+        if (existing == null) {
+            record.setRetryCount(1);
+            record.setLastAttemptAt(attemptAt);
+        }
+        save(record);
+        try {
+            OrderExecutionResult result = okxTradeAdapter.closePosition(
+                    position.instId(), position.posSide(),
+                    hasText(position.marginMode()) ? position.marginMode() : order.tdMode(),
+                    closeClOrdId,
+                    TradingOperationContext.of(TradingOperationType.CLOSE_POSITION,
+                            username, order.id().toString(),
+                            order.tradePlanId() == null ? null : order.tradePlanId().toString()));
+            record.setCloseOrderId(result.externalOrderId());
+            record.setStatus("CLOSE_SUBMITTED");
+            record.setRequestSent(true);
+            record.setErrorClass(null);
+            record.setRecoveryResult("SAFETY_CLOSE_ACK_SUBMITTED");
+            record.setErrorMessage(safetyReason);
+            record.setNextAttemptAt(null);
+            record.setUpdatedAt(attemptAt);
+            order.markCloseSubmitted(result.externalOrderId(), safetyReason);
+            save(record);
+            return result;
+        } catch (RuntimeException ex) {
+            boolean beforeSend = beforeSendFailure(ex);
+            boolean rejected = exchangeRejected(ex);
+            boolean retryable = beforeSend && retryableSafetyFailure(ex);
+            boolean exhausted = record.getRetryCount() >= SAFETY_CLOSE_MAX_ATTEMPTS;
+            record.setStatus(retryable && !exhausted ? "CLOSE_FAILED_BEFORE_SEND"
+                    : beforeSend || rejected ? "EMERGENCY_ATTENTION_REQUIRED" : "CLOSE_SUBMIT_UNKNOWN");
+            record.setRequestSent(!beforeSend);
+            record.setErrorClass(beforeSend ? "LOCAL_VALIDATION"
+                    : rejected ? "EXCHANGE_REJECTED" : "UNKNOWN_AFTER_SEND");
+            record.setRecoveryResult(retryable && !exhausted ? "SAFETY_RETRY_SCHEDULED"
+                    : beforeSend ? "SAFETY_TERMINAL_ATTENTION"
+                    : rejected ? "SAFETY_TERMINAL_REJECTED" : "SAFETY_QUERY_REQUIRED");
+            record.setErrorMessage(safetyReason + ": " + compact(ex.getMessage()));
+            record.setLastAttemptAt(attemptAt);
+            record.setNextAttemptAt(retryable && !exhausted
+                    ? attemptAt.plusSeconds(SAFETY_CLOSE_RETRY_BACKOFF_SECONDS) : null);
+            record.setUpdatedAt(attemptAt);
+            if (beforeSend) {
+                order.markEmergencyAttentionRequired((retryable && !exhausted
+                        ? "SAFETY_CLOSE_RETRYABLE_NOT_SENT: " : "SAFETY_CLOSE_NOT_SENT: ") + safetyReason);
+            } else {
+                order.markCloseSubmitted(null, "SAFETY_CLOSE_UNKNOWN: " + safetyReason);
+            }
+            save(record);
+            throw ex;
+        }
+    }
+
+    private static boolean retryableSafetyFailure(RuntimeException ex) {
+        String message = ex == null ? "" : String.valueOf(ex.getMessage()).toLowerCase();
+        return !message.contains("invalid request")
+                && !message.contains("position_min_size")
+                && !message.contains("canonical")
+                && !message.contains("risk");
     }
 
     public PageResult<ClosePositionRecordView> closeRecords(int page, int size) {
@@ -110,46 +253,96 @@ public class PositionCloseService {
         return new PageResult<>(rows, closePositionRecordRepository.countByUserName(username), safePage, safeSize);
     }
 
-    private void recordCloseSubmitted(PositionSummary position, String posSide, String marginMode,
-                                      OrderExecutionResult result, String closeClOrdId) {
-        if (closePositionRecordRepository == null) {
-            return;
-        }
+    private ClosePositionRecordEntity createCloseIntent(PositionSummary position, String posSide,
+                                                        String marginMode, String closeClOrdId) {
         Instant now = Instant.now();
         ClosePositionRecordEntity record = new ClosePositionRecordEntity();
         record.setUserName(AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER));
         record.setInstId(position.instId());
         record.setPosSide(posSide);
         record.setMarginMode(marginMode);
-        record.setCloseOrderId(result.externalOrderId());
         record.setCloseClOrdId(closeClOrdId);
         record.setSize(decimal(position.size()));
         record.setAvgPx(position.avgPrice());
-        record.setStatus("CLOSE_SUBMITTED");
+        record.setStatus("CLOSE_SUBMITTING");
         record.setSource("MANUAL");
-        bindAutoTradeLifecycle(record, result);
+        record.setRequestSent(false);
         record.setCreatedAt(now);
         record.setUpdatedAt(now);
-        closePositionRecordRepository.save(record);
-        recordManualCloseSubmitted(record);
+        return record;
+    }
+
+    private static ClosePositionRecordEntity createSafetyCloseIntent(PendingOrder order,
+                                                                       PositionSummary position,
+                                                                       String username,
+                                                                       String closeClOrdId,
+                                                                       String reason) {
+        Instant now = Instant.now();
+        ClosePositionRecordEntity record = new ClosePositionRecordEntity();
+        record.setUserName(username);
+        record.setInstId(position.instId());
+        record.setPosSide(position.posSide());
+        record.setMarginMode(hasText(position.marginMode()) ? position.marginMode() : order.tdMode());
+        record.setCloseClOrdId(closeClOrdId);
+        record.setSize(decimal(position.size()));
+        record.setAvgPx(position.avgPrice());
+        record.setStatus("CLOSE_SUBMITTING");
+        record.setSource("SAFETY");
+        record.setRequestSent(false);
+        record.setErrorMessage(reason);
+        record.setRecoveryResult("SAFETY_CLOSE_PENDING");
+        record.setPendingOrderId(order.id().toString());
+        record.setTradePlanId(order.tradePlanId() == null ? null : order.tradePlanId().toString());
+        record.setCreatedAt(now);
+        record.setUpdatedAt(now);
+        return record;
     }
 
     private static String closeClientOrderId() {
         return "CLOSE" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
     }
 
-    private void bindAutoTradeLifecycle(ClosePositionRecordEntity record, OrderExecutionResult result) {
-        Optional<PendingOrder> matched = matchingAutoPendingOrder(record.getInstId(), record.getPosSide());
+    private static String safetyCloseClientOrderId(PendingOrder order, String reason) {
+        String reasonCode = reason == null ? "SLU"
+                : reason.replaceAll("[^A-Za-z0-9]", "").toUpperCase();
+        reasonCode = reasonCode.length() <= 3 ? reasonCode : reasonCode.substring(0, 3);
+        return "SAFE" + order.id().toString().replace("-", "").substring(0, 24) + reasonCode;
+    }
+
+    private Optional<PendingOrder> bindAutoTradeReference(ClosePositionRecordEntity record, PositionSummary position) {
+        Optional<PendingOrder> matched = matchingActivePendingOrder(position);
         if (matched.isEmpty()) {
-            return;
+            return Optional.empty();
         }
         PendingOrder order = matched.get();
         record.setPendingOrderId(order.id().toString());
+        // Persist the lifecycle direction; the exchange payload still uses its observed NET/hedge mode.
+        record.setPosSide(PositionSideMatcher.entryDirection(order.posSide(), order.side()));
         if (autoTradeRecordRepository != null) {
             autoTradeRecordRepository.findFirstByPendingOrderIdOrderByCreatedAtDesc(order.id().toString())
                     .ifPresent(autoTradeRecord -> record.setAutoTradeRecordId(autoTradeRecord.getId()));
         }
-        order.markCloseSubmitted(result.externalOrderId(), "MANUAL_CLOSE_SUBMITTED");
+        return matched;
+    }
+
+    private void rejectDuplicateUnresolvedClose(PositionSummary position) {
+        if (closePositionRecordRepository == null) {
+            return;
+        }
+        String username = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
+        for (String status : List.of("CLOSE_SUBMITTING", "CLOSE_SUBMIT_UNKNOWN", "CLOSE_SUBMITTED")) {
+            boolean duplicate = closePositionRecordRepository.findByUserNameAndStatus(username, status).stream()
+                    .anyMatch(record -> PositionSideMatcher.matches(record.getInstId(), record.getPosSide(), null, position));
+            if (duplicate) {
+                throw new IllegalStateException("已有待确认平仓，请先等待OKX持仓同步，禁止重复提交：" + position.instId());
+            }
+        }
+    }
+
+    private void save(ClosePositionRecordEntity record) {
+        if (closePositionRecordRepository != null) {
+            closePositionRecordRepository.save(record);
+        }
     }
 
     private void recordManualCloseSubmitted(ClosePositionRecordEntity record) {
@@ -177,15 +370,13 @@ public class PositionCloseService {
         }
     }
 
-    private Optional<PendingOrder> matchingAutoPendingOrder(String instId, String posSide) {
+    private Optional<PendingOrder> matchingActivePendingOrder(PositionSummary position) {
         if (pendingOrderService == null) {
             return Optional.empty();
         }
         return pendingOrderService.allOrders().stream()
-                .filter(order -> order.budgetReservationId() != null)
-                .filter(order -> instId.equalsIgnoreCase(order.instId()))
-                .filter(order -> !hasText(posSide) || posSide.equalsIgnoreCase(order.posSide()))
                 .filter(order -> AUTO_CLOSE_BINDING_STATUSES.contains(order.status()))
+                .filter(order -> PositionSideMatcher.matches(order.instId(), order.posSide(), order.side(), position))
                 .findFirst();
     }
 
@@ -202,5 +393,27 @@ public class PositionCloseService {
 
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private static String compact(String value) {
+        if (!hasText(value)) {
+            return "UNKNOWN_CLOSE_SUBMIT_ERROR";
+        }
+        return value.length() <= 500 ? value : value.substring(0, 500);
+    }
+
+    private static boolean beforeSendFailure(RuntimeException ex) {
+        String message = ex == null ? "" : String.valueOf(ex.getMessage()).toLowerCase();
+        return message.contains("未发送") || message.contains("未向交易所发送") || message.contains("not sent")
+                || message.contains("position_not_confirmed")
+                || message.contains("trading_mode_mismatch")
+                || message.contains("owner_mismatch")
+                || message.contains("reduction_");
+    }
+
+    private static boolean exchangeRejected(RuntimeException ex) {
+        String message = ex == null ? "" : String.valueOf(ex.getMessage()).toLowerCase();
+        return message.contains("okx code=") || message.contains("okx http ")
+                || message.contains("s_code=") || message.contains("smsg=");
     }
 }

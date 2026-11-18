@@ -107,7 +107,7 @@ export function LoginPage() {
                 Quant Desk
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                OKX 合约实盘控制台
+                OKX 量化交易终端
               </Typography>
             </Box>
           </Stack>

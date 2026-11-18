@@ -13,7 +13,10 @@ public record AuthProperties(
     }
 
     public String effectivePassword() {
-        return hasText(password) ? password : "admin123";
+        if (!hasText(password)) {
+            throw new IllegalStateException("首次启动必须配置QUANT_AUTH_PASSWORD");
+        }
+        return password;
     }
 
     public int effectiveSessionTtlMinutes() {

@@ -18,7 +18,7 @@ class AuthUserServiceTest {
         AuthUserService service = new AuthUserService(
                 repository,
                 new Pbkdf2PasswordHasher(),
-                new AuthProperties("admin", "admin123", 480)
+                new AuthProperties("admin", "test-auth-fixture-password", 480)
         );
 
         service.initializeDefaultAdmin();
@@ -26,8 +26,8 @@ class AuthUserServiceTest {
         AuthUserEntity admin = repository.findByUsername("admin").orElseThrow();
         assertThat(admin.getRole()).isEqualTo(AuthRole.ADMIN);
         assertThat(admin.isEnabled()).isTrue();
-        assertThat(admin.getPasswordHash()).isNotEqualTo("admin123");
-        assertThat(service.authenticate("admin", "admin123")).isPresent();
+        assertThat(admin.getPasswordHash()).isNotEqualTo("test-auth-fixture-password");
+        assertThat(service.authenticate("admin", "test-auth-fixture-password")).isPresent();
     }
 
     @Test
@@ -35,9 +35,9 @@ class AuthUserServiceTest {
         InMemoryAuthUserRepository repository = new InMemoryAuthUserRepository();
         AuthUserService service = seededService(repository);
 
-        service.changeOwnPassword("admin", new ChangePasswordRequest("admin123", "newSecret123"));
+        service.changeOwnPassword("admin", new ChangePasswordRequest("test-auth-fixture-password", "newSecret123"));
 
-        assertThat(service.authenticate("admin", "admin123")).isEmpty();
+        assertThat(service.authenticate("admin", "test-auth-fixture-password")).isEmpty();
         assertThat(service.authenticate("admin", "newSecret123")).isPresent();
     }
 
@@ -67,7 +67,7 @@ class AuthUserServiceTest {
         AuthUserService service = new AuthUserService(
                 repository,
                 new Pbkdf2PasswordHasher(),
-                new AuthProperties("admin", "admin123", 480)
+                new AuthProperties("admin", "test-auth-fixture-password", 480)
         );
         service.initializeDefaultAdmin();
         return service;

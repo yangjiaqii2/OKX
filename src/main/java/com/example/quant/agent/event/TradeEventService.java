@@ -9,11 +9,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.example.quant.notification.NotificationOutboxService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class TradeEventService {
+    private static final Logger log = LoggerFactory.getLogger(TradeEventService.class);
     private final TradeEventRepository repository;
     private final Clock clock;
+    private NotificationOutboxService outboxService;
 
     @Autowired
     public TradeEventService(TradeEventRepository repository) {
@@ -23,6 +28,11 @@ public class TradeEventService {
     public TradeEventService(TradeEventRepository repository, Clock clock) {
         this.repository = repository;
         this.clock = clock == null ? Clock.systemUTC() : clock;
+    }
+
+    @Autowired(required = false)
+    void configureOutboxService(NotificationOutboxService outboxService) {
+        this.outboxService = outboxService;
     }
 
     @Transactional
@@ -45,7 +55,12 @@ public class TradeEventService {
         entity.setClOrdId(trimToNull(payload.clOrdId()));
         entity.setAlgoId(trimToNull(payload.algoId()));
         entity.setCreatedAt(Instant.now(clock));
-        return TradeEventView.from(repository.save(entity));
+        TradeEventEntity saved = repository.save(entity);
+        if (outboxService != null) {
+            try { outboxService.enqueue(saved); }
+            catch (RuntimeException ex) { log.warn("Failed to enqueue trade notification eventId={}", saved.getId()); }
+        }
+        return TradeEventView.from(saved);
     }
 
     @Transactional(readOnly = true)

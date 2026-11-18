@@ -6,44 +6,44 @@ export const theme: RaThemeOptions = {
   palette: {
     mode: 'dark' as const,
     primary: {
-      main: '#14b8a6',
-      dark: '#0f766e',
-      contrastText: '#04111f',
+      main: '#E8ECE7',
+      dark: '#B8C0B8',
+      contrastText: '#000000',
     },
     secondary: {
-      main: '#38bdf8',
+      main: '#7AA2F7',
     },
     info: {
       main: '#38bdf8',
     },
     success: {
-      main: '#22c55e',
-      dark: '#15803d',
+      main: '#00E676',
+      dark: '#00B85C',
     },
     warning: {
-      main: '#f59e0b',
+      main: '#FFB800',
     },
     error: {
-      main: '#ef4444',
-      dark: '#dc2626',
+      main: '#FF3B30',
+      dark: '#D92D24',
     },
     background: {
-      default: '#080c14',
-      paper: '#111827',
+      default: '#000000',
+      paper: '#0B0C0A',
     },
     text: {
-      primary: '#e5edf6',
-      secondary: '#94a3b8',
+      primary: '#E8ECE7',
+      secondary: '#8B938B',
     },
-    divider: 'rgba(148, 163, 184, 0.14)',
+    divider: '#242824',
   },
   shape: {
-    borderRadius: 8,
+    borderRadius: 4,
   },
   typography: {
     ...defaultTheme.typography,
     fontFamily:
-      'Inter, "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif',
+      '"IBM Plex Mono", "JetBrains Mono", "SFMono-Regular", "Microsoft YaHei", ui-monospace, monospace',
     h5: {
       fontWeight: 900,
       letterSpacing: 0,
@@ -66,21 +66,21 @@ export const theme: RaThemeOptions = {
     MuiCssBaseline: {
       styleOverrides: {
         body: {
-          background:
-            'linear-gradient(180deg, #080c14 0%, #0b111c 46%, #080c14 100%)',
-          backgroundAttachment: 'fixed',
-          color: '#e5edf6',
+          background: '#000000',
+          color: '#E8ECE7',
+          overflowX: 'hidden',
         },
         '*': {
           boxSizing: 'border-box',
           scrollbarColor: 'rgba(148, 163, 184, 0.36) transparent',
+          fontVariantNumeric: 'tabular-nums',
         },
         '*::-webkit-scrollbar': {
           width: 10,
           height: 10,
         },
         '*::-webkit-scrollbar-thumb': {
-          borderRadius: 8,
+          borderRadius: 4,
           background: 'rgba(148, 163, 184, 0.30)',
           border: '2px solid transparent',
           backgroundClip: 'content-box',
@@ -90,12 +90,12 @@ export const theme: RaThemeOptions = {
     MuiButton: {
       styleOverrides: {
         root: {
-          borderRadius: 8,
+          borderRadius: 3,
           textTransform: 'none',
           fontWeight: 800,
           fontSize: '0.8125rem',
           letterSpacing: 0,
-          minHeight: 36,
+          minHeight: 44,
           boxShadow: 'none',
           transition: 'background 140ms ease, border-color 140ms ease, color 140ms ease',
           '&:active': {
@@ -109,18 +109,18 @@ export const theme: RaThemeOptions = {
           },
         },
         containedPrimary: {
-          background: '#14b8a6',
-          color: '#031313',
+          background: '#E8ECE7',
+          color: '#000000',
           '&:hover': {
-            background: '#2dd4bf',
+            background: '#FFFFFF',
           },
         },
         outlined: {
           borderColor: 'rgba(148, 163, 184, 0.24)',
-          background: '#0f172a',
+          background: '#0B0C0A',
           '&:hover': {
-            borderColor: 'rgba(20, 184, 166, 0.48)',
-            background: '#111c2e',
+            borderColor: '#8B938B',
+            background: '#111311',
           },
         },
       },
@@ -131,9 +131,9 @@ export const theme: RaThemeOptions = {
           backgroundImage: 'none',
           position: 'relative',
           overflow: 'hidden',
-          background: '#111827',
-          border: '1px solid rgba(148, 163, 184, 0.16)',
-          boxShadow: '0 16px 42px rgba(0, 0, 0, 0.22)',
+          background: '#0B0C0A',
+          border: '1px solid #242824',
+          boxShadow: 'none',
         },
       },
     },
@@ -142,18 +142,18 @@ export const theme: RaThemeOptions = {
         root: {
           backgroundImage: 'none',
           borderColor: 'rgba(148, 163, 184, 0.16)',
-          backgroundColor: '#111827',
+          backgroundColor: '#0B0C0A',
         },
       },
     },
     MuiChip: {
       styleOverrides: {
         root: {
-          borderRadius: 6,
+          borderRadius: 3,
           fontWeight: 800,
           fontSize: '0.75rem',
           borderColor: 'rgba(148, 163, 184, 0.24)',
-          background: '#0f172a',
+          background: '#111311',
         },
         icon: {
           fontSize: 15,
@@ -164,8 +164,8 @@ export const theme: RaThemeOptions = {
       styleOverrides: {
         root: {
           '& .MuiOutlinedInput-root': {
-            borderRadius: 8,
-            background: '#0b1220',
+            borderRadius: 4,
+            background: '#080A08',
           },
         },
       },
@@ -183,7 +183,7 @@ export const theme: RaThemeOptions = {
           fontSize: '0.75rem',
           textTransform: 'uppercase',
           letterSpacing: 0,
-          background: '#0b1220',
+          background: '#080A08',
         },
       },
     },
@@ -191,7 +191,7 @@ export const theme: RaThemeOptions = {
       styleOverrides: {
         root: {
           '&:hover': {
-            backgroundColor: 'rgba(20, 184, 166, 0.06)',
+            backgroundColor: '#111311',
           },
         },
       },
@@ -199,33 +199,33 @@ export const theme: RaThemeOptions = {
     MuiAppBar: {
       styleOverrides: {
         root: {
-          background: '#0b111c',
-          borderBottom: '1px solid rgba(148, 163, 184, 0.14)',
-          boxShadow: '0 10px 30px rgba(0, 0, 0, 0.22)',
+          background: '#080A08',
+          borderBottom: '1px solid #242824',
+          boxShadow: 'none',
         },
       },
     },
     MuiDrawer: {
       styleOverrides: {
         paper: {
-          background: '#0b111c',
-          borderRight: '1px solid rgba(148, 163, 184, 0.14)',
+          background: '#080A08',
+          borderRight: '1px solid #242824',
         },
       },
     },
     MuiDialog: {
       styleOverrides: {
         paper: {
-          borderRadius: 8,
-          border: '1px solid rgba(148, 163, 184, 0.18)',
-          background: '#111827',
+          borderRadius: 4,
+          border: '1px solid #242824',
+          background: '#0B0C0A',
         },
       },
     },
     MuiAlert: {
       styleOverrides: {
         root: {
-          borderRadius: 8,
+          borderRadius: 4,
           border: '1px solid rgba(255,255,255,0.08)',
         },
       },

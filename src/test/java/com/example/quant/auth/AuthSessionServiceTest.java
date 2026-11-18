@@ -48,6 +48,29 @@ class AuthSessionServiceTest {
         assertFalse(service.isAuthenticated(response.token()));
     }
 
+    @Test
+    void disabledUserExistingSessionIsImmediatelyRejected() {
+        AuthProperties properties = new AuthProperties("admin", "secret", 30);
+        AuthUserService userService = new AuthUserService(
+                new InMemoryAuthUserRepository(),
+                new Pbkdf2PasswordHasher(),
+                properties
+        );
+        userService.initializeDefaultAdmin();
+        AuthSessionService service = new AuthSessionService(
+                userService,
+                properties,
+                Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC)
+        );
+        var response = service.login(new AuthLoginRequest("admin", "secret"));
+
+        userService.setEnabled("admin", false);
+
+        assertFalse(service.isAuthenticated(response.token()));
+        assertTrue(service.currentUsername(response.token()).isEmpty());
+        assertFalse(service.session(response.token()).authenticated());
+    }
+
     private static AuthSessionService sessionService(AuthProperties properties, Clock clock) {
         AuthUserService userService = new AuthUserService(
                 new InMemoryAuthUserRepository(),

@@ -2,6 +2,8 @@ package com.example.quant.crypto;
 
 import com.example.quant.account.OkxAccountBindingService;
 import com.example.quant.config.OkxProperties;
+import com.example.quant.config.TradingMode;
+import com.example.quant.config.TradingProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,6 +33,7 @@ public class OkxRestClient {
     private final OkxSigner signer;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private TradingMode tradingMode = TradingMode.DISABLED;
     private volatile long okxTimeOffsetMillis;
     private volatile long okxTimeOffsetExpiresAtMillis;
 
@@ -38,16 +41,28 @@ public class OkxRestClient {
     public OkxRestClient(OkxProperties okxProperties, OkxAccountBindingService bindingService,
                          OkxSigner signer, ObjectMapper objectMapper) {
         this(okxProperties, bindingService, signer, objectMapper,
-                HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build());
+                HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build(),
+                TradingMode.DISABLED);
+    }
+
+    @Autowired
+    void configureTradingMode(TradingProperties tradingProperties) {
+        this.tradingMode = tradingProperties == null ? TradingMode.DISABLED : tradingProperties.mode();
     }
 
     OkxRestClient(OkxProperties okxProperties, OkxAccountBindingService bindingService,
                   OkxSigner signer, ObjectMapper objectMapper, HttpClient httpClient) {
+        this(okxProperties, bindingService, signer, objectMapper, httpClient, TradingMode.LIVE);
+    }
+
+    OkxRestClient(OkxProperties okxProperties, OkxAccountBindingService bindingService,
+                  OkxSigner signer, ObjectMapper objectMapper, HttpClient httpClient, TradingMode tradingMode) {
         this.okxProperties = okxProperties;
         this.bindingService = bindingService;
         this.signer = signer;
         this.objectMapper = objectMapper;
         this.httpClient = httpClient;
+        this.tradingMode = tradingMode == null ? TradingMode.DISABLED : tradingMode;
     }
 
     public String status() {
@@ -58,8 +73,39 @@ public class OkxRestClient {
         return credentials().isPresent();
     }
 
+    /**
+     * 仅供测试用 no-arg 构造器：所有字段为 null，生产代码不应调用。
+     * 测试通过子类化并 override {@link #publicGet(String)} 来注入测试数据。
+     */
+    protected OkxRestClient() {
+        this.okxProperties = null;
+        this.bindingService = null;
+        this.signer = null;
+        this.objectMapper = null;
+        this.httpClient = null;
+        this.tradingMode = TradingMode.DISABLED;
+    }
+
     public JsonNode publicGet(String requestPath) {
-        return send(requestBuilder(requestPath).GET().build());
+        return publicGet(requestPath, REQUEST_TIMEOUT);
+    }
+
+    public JsonNode publicGet(String requestPath, Duration timeout) {
+        if (httpClient == null || okxProperties == null) {
+            return publicGetWithoutHttpClient(requestPath);
+        }
+        String marketMode = System.getProperty("MARKET_DATA_MODE", System.getenv().getOrDefault("MARKET_DATA_MODE", "PUBLIC"));
+        if ("DEMO".equalsIgnoreCase(marketMode)) {
+            throw new IllegalStateException("MARKET_DATA_MODE=DEMO is unavailable for OKX public REST market data; refusing silent PUBLIC fallback");
+        }
+        Duration effectiveTimeout = timeout == null || timeout.isZero() || timeout.isNegative()
+                ? REQUEST_TIMEOUT
+                : timeout;
+        return send(requestBuilder(requestPath, effectiveTimeout).GET().build());
+    }
+
+    protected JsonNode publicGetWithoutHttpClient(String requestPath) {
+        throw new IllegalStateException("OKX REST client unavailable for path: " + requestPath);
     }
 
     public JsonNode privateGet(String requestPath) {
@@ -67,14 +113,14 @@ public class OkxRestClient {
                 .orElseThrow(() -> new IllegalStateException("OKX account is not bound"));
         String timestamp = okxTimestamp();
         String signature = signer.sign(timestamp, "GET", requestPath, "", credentials.secret());
-        HttpRequest request = requestBuilder(requestPath)
+        HttpRequest.Builder builder = requestBuilder(requestPath)
                 .GET()
                 .header("OK-ACCESS-KEY", credentials.apiKey())
                 .header("OK-ACCESS-SIGN", signature)
                 .header("OK-ACCESS-TIMESTAMP", timestamp)
-                .header("OK-ACCESS-PASSPHRASE", credentials.passphrase())
-                .build();
-        return send(request);
+                .header("OK-ACCESS-PASSPHRASE", credentials.passphrase());
+        applyTradingMode(builder);
+        return send(builder.build());
     }
 
     public JsonNode privatePost(String requestPath, Map<String, String> payload) {
@@ -92,15 +138,15 @@ public class OkxRestClient {
             String body = objectMapper.writeValueAsString(payload);
             String timestamp = okxTimestamp();
             String signature = signer.sign(timestamp, "POST", requestPath, body, credentials.secret());
-            HttpRequest request = requestBuilder(requestPath)
+            HttpRequest.Builder builder = requestBuilder(requestPath)
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .header("Content-Type", "application/json")
                     .header("OK-ACCESS-KEY", credentials.apiKey())
                     .header("OK-ACCESS-SIGN", signature)
                     .header("OK-ACCESS-TIMESTAMP", timestamp)
-                    .header("OK-ACCESS-PASSPHRASE", credentials.passphrase())
-                    .build();
-            return send(request);
+                    .header("OK-ACCESS-PASSPHRASE", credentials.passphrase());
+            applyTradingMode(builder);
+            return send(builder.build());
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("OKX request failed: " + ex.getMessage(), ex);
         }
@@ -127,8 +173,18 @@ public class OkxRestClient {
     }
 
     private HttpRequest.Builder requestBuilder(String requestPath) {
+        return requestBuilder(requestPath, REQUEST_TIMEOUT);
+    }
+
+    private HttpRequest.Builder requestBuilder(String requestPath, Duration timeout) {
         return HttpRequest.newBuilder(URI.create(okxProperties.api().baseUrl() + requestPath))
-                .timeout(REQUEST_TIMEOUT);
+                .timeout(timeout == null || timeout.isZero() || timeout.isNegative() ? REQUEST_TIMEOUT : timeout);
+    }
+
+    private void applyTradingMode(HttpRequest.Builder builder) {
+        if (tradingMode.demo()) {
+            builder.header("x-simulated-trading", "1");
+        }
     }
 
     private String okxTimestamp() {
@@ -171,7 +227,7 @@ public class OkxRestClient {
             JsonNode root = objectMapper.readTree(response.body());
             String code = root.path("code").asText("0");
             if (!"0".equals(code)) {
-                throw new IllegalStateException(okxErrorDetail(root));
+                throw com.example.quant.okxtrade.OkxApiRejectedException.fromResponse(root, okxErrorDetail(root));
             }
             return root;
         } catch (InterruptedException ex) {

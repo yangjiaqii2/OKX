@@ -118,14 +118,14 @@ class AutoTradeBudgetServiceTest {
         BudgetAllocation allocation = service.allocate(request("50", 1, "92", "30"));
 
         assertThat(allocation.totalBudgetUsdt()).isEqualByComparingTo("50");
-        assertThat(allocation.targetUsedBudgetUsdt()).isEqualByComparingTo("45");
-        assertThat(allocation.minTargetUsedBudgetUsdt()).isEqualByComparingTo("40");
+        assertThat(allocation.targetUsedBudgetUsdt()).isEqualByComparingTo("50");
+        assertThat(allocation.minTargetUsedBudgetUsdt()).isEqualByComparingTo("50");
         assertThat(allocation.maxUtilizationUsdt()).isEqualByComparingTo("50");
-        assertThat(allocation.allocationMode()).isEqualTo("TARGET_UTILIZATION");
+        assertThat(allocation.allocationMode()).isEqualTo("EQUAL_SPLIT");
     }
 
     @Test
-    void allocatesFullSlotBudgetsWithoutTreatingBudgetAsPerOrderMargin() {
+    void allocatesTotalBudgetEquallyAcrossThreePositionSlots() {
         AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties());
 
         BudgetAllocation first = service.allocate(request("50", 1, "92", "30"));
@@ -134,16 +134,16 @@ class AutoTradeBudgetServiceTest {
         service.reserveBudget(UUID.randomUUID(), UUID.randomUUID(), "ETH-USDT-SWAP", second.finalOrderMarginUsdt(), new BigDecimal("50"));
         BudgetAllocation third = service.allocate(request("50", 3, "82", "30"));
 
-        assertThat(first.slotWeight()).isEqualByComparingTo("0.45");
-        assertThat(first.finalOrderMarginUsdt()).isEqualByComparingTo("22.5");
-        assertThat(second.finalOrderMarginUsdt()).isEqualByComparingTo("15.0");
-        assertThat(third.finalOrderMarginUsdt()).isEqualByComparingTo("12.5");
+        assertThat(first.slotWeight()).isEqualByComparingTo("0.33333334");
+        assertThat(first.finalOrderMarginUsdt()).isEqualByComparingTo("16.666667");
+        assertThat(second.finalOrderMarginUsdt()).isEqualByComparingTo("16.6666665");
+        assertThat(third.finalOrderMarginUsdt()).isEqualByComparingTo("16.6666665");
         assertThat(first.finalOrderMarginUsdt().add(second.finalOrderMarginUsdt()).add(third.finalOrderMarginUsdt()))
                 .isEqualByComparingTo("50.0");
     }
 
     @Test
-    void allocatesConfiguredHundredUsdtAcrossThreeSlots() {
+    void scoreDoesNotBreakEqualSplitForAlreadyEligibleCandidates() {
         AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties());
 
         BudgetAllocation first = service.allocate(request("100", 1, "70", "100"));
@@ -152,23 +152,33 @@ class AutoTradeBudgetServiceTest {
         service.reserveBudget(UUID.randomUUID(), UUID.randomUUID(), "ETH-USDT-SWAP", second.finalOrderMarginUsdt(), new BigDecimal("100"));
         BudgetAllocation third = service.allocate(request("100", 3, "70", "100"));
 
-        assertThat(first.finalOrderMarginUsdt()).isEqualByComparingTo("45");
-        assertThat(second.finalOrderMarginUsdt()).isEqualByComparingTo("30");
-        assertThat(third.finalOrderMarginUsdt()).isEqualByComparingTo("25");
+        assertThat(first.finalOrderMarginUsdt()).isEqualByComparingTo("33.333334");
+        assertThat(second.finalOrderMarginUsdt()).isEqualByComparingTo("33.333333");
+        assertThat(third.finalOrderMarginUsdt()).isEqualByComparingTo("33.333333");
         assertThat(first.finalOrderMarginUsdt().add(second.finalOrderMarginUsdt()).add(third.finalOrderMarginUsdt()))
                 .isEqualByComparingTo("100");
     }
 
     @Test
-    void scoreFactorDoesNotReduceSpendableSlotBudget() {
+    void scoreFactorIsAuditedButDoesNotBreakEqualSplit() {
         AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties());
 
         BudgetAllocation allocation = service.allocate(request("50", 1, "69", "30"));
 
         assertThat(allocation.scoreFactor()).isEqualByComparingTo("0.6");
-        assertThat(allocation.slotBudgetUsdt()).isEqualByComparingTo("22.5");
-        assertThat(allocation.qualityAdjustedBudgetUsdt()).isEqualByComparingTo("13.5");
-        assertThat(allocation.finalOrderMarginUsdt()).isEqualByComparingTo("22.5");
+        assertThat(allocation.slotBudgetUsdt()).isEqualByComparingTo("16.666667");
+        assertThat(allocation.qualityAdjustedBudgetUsdt()).isEqualByComparingTo("10.00000020");
+        assertThat(allocation.finalOrderMarginUsdt()).isEqualByComparingTo("16.666667");
+    }
+
+    @Test
+    void riskBasedMarginIsAnAbsoluteAllocationCap() {
+        AutoTradeBudgetService service = new AutoTradeBudgetService(new AgentProperties());
+
+        BudgetAllocation allocation = service.allocate(request("100", 1, "95", "7.25"));
+
+        assertThat(allocation.slotBudgetUsdt()).isGreaterThan(new BigDecimal("7.25"));
+        assertThat(allocation.finalOrderMarginUsdt()).isEqualByComparingTo("7.25");
     }
 
     @Test
@@ -177,8 +187,8 @@ class AutoTradeBudgetServiceTest {
 
         BudgetAllocation allocation = service.allocate(request("50", 1, "95", "100"));
 
-        assertThat(allocation.maxSinglePositionBudgetUsdt()).isEqualByComparingTo("25");
-        assertThat(allocation.finalOrderMarginUsdt()).isLessThanOrEqualTo(new BigDecimal("25"));
+        assertThat(allocation.maxSinglePositionBudgetUsdt()).isEqualByComparingTo("16.666667");
+        assertThat(allocation.finalOrderMarginUsdt()).isLessThanOrEqualTo(new BigDecimal("16.666667"));
     }
 
     @Test

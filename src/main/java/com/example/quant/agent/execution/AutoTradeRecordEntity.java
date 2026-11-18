@@ -106,6 +106,21 @@ public class AutoTradeRecordEntity {
     @Column(name = "fallback_allowed")
     private Boolean fallbackAllowed;
 
+    @Column(name = "decision_source", length = 32)
+    private String decisionSource;
+
+    @Column(name = "ai_confidence", precision = 8, scale = 6)
+    private BigDecimal aiConfidence;
+
+    @Column(name = "ai_direction", length = 16)
+    private String aiDirection;
+
+    @Column(name = "ai_entry_mode", length = 32)
+    private String aiEntryMode;
+
+    @Column(name = "selection_reason", columnDefinition = "TEXT")
+    private String selectionReason;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -236,6 +251,26 @@ public class AutoTradeRecordEntity {
         return fallbackAllowed;
     }
 
+    public String getDecisionSource() {
+        return decisionSource;
+    }
+
+    public BigDecimal getAiConfidence() {
+        return aiConfidence;
+    }
+
+    public String getAiDirection() {
+        return aiDirection;
+    }
+
+    public String getAiEntryMode() {
+        return aiEntryMode;
+    }
+
+    public String getSelectionReason() {
+        return selectionReason;
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
     }
@@ -362,6 +397,26 @@ public class AutoTradeRecordEntity {
 
     public void setFallbackAllowed(Boolean fallbackAllowed) {
         this.fallbackAllowed = fallbackAllowed;
+    }
+
+    public void setDecisionSource(String decisionSource) {
+        this.decisionSource = decisionSource;
+    }
+
+    public void setAiConfidence(BigDecimal aiConfidence) {
+        this.aiConfidence = aiConfidence;
+    }
+
+    public void setAiDirection(String aiDirection) {
+        this.aiDirection = aiDirection;
+    }
+
+    public void setAiEntryMode(String aiEntryMode) {
+        this.aiEntryMode = aiEntryMode;
+    }
+
+    public void setSelectionReason(String selectionReason) {
+        this.selectionReason = selectionReason;
     }
 
     public void setCreatedAt(Instant createdAt) {

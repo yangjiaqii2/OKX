@@ -32,18 +32,22 @@ type PendingOrderState = {
   risk?: Record<string, unknown>;
   account?: Record<string, unknown>;
   orders: Record<string, unknown>[];
+  tradingMode: string;
 };
 
 const emptyState: PendingOrderState = {
   orders: [],
+  tradingMode: 'DISABLED',
 };
 
 const PendingOrderActions = ({
   record,
   onChanged,
+  tradingMode,
 }: {
   record: Record<string, unknown>;
   onChanged: () => void;
+  tradingMode: string;
 }) => {
   const notify = useNotify();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -87,11 +91,12 @@ const PendingOrderActions = ({
       <Button
         size="small"
         variant="contained"
-        color="warning"
+        color={tradingMode === 'LIVE' ? 'error' : 'info'}
         startIcon={<CheckCircleIcon />}
         onClick={() => setConfirmOpen(true)}
+        disabled={tradingMode === 'DISABLED'}
       >
-        实盘确认
+        {tradingMode === 'LIVE' ? 'LIVE 确认' : tradingMode === 'DEMO' ? 'DEMO 确认' : '交易已关闭'}
       </Button>
       <Button size="small" variant="outlined" color="warning" startIcon={<CancelIcon />} onClick={() => setCancelOpen(true)}>
         取消
@@ -100,6 +105,7 @@ const PendingOrderActions = ({
         open={confirmOpen}
         record={record}
         submitting={submitting}
+        tradingMode={tradingMode}
         onConfirm={(marginAmount) => void confirmOrder(marginAmount)}
         onClose={() => setConfirmOpen(false)}
       />
@@ -131,15 +137,17 @@ export function PendingOrderList() {
       setLoading(true);
     }
     try {
-      const [risk, account, orders] = await Promise.all([
+      const [risk, account, orders, runtime] = await Promise.all([
         quantApi.riskStatus(),
         quantApi.accountSummary(),
         quantApi.pendingOrders(),
+        quantApi.runtimeStatus(),
       ]);
       setState({
         risk: risk as Record<string, unknown>,
         account: account as Record<string, unknown>,
         orders: Array.isArray(orders) ? (orders as Record<string, unknown>[]) : [],
+        tradingMode: String((runtime as Record<string, unknown>).tradingMode ?? 'DISABLED'),
       });
       setError('');
     } catch (loadError) {
@@ -177,7 +185,7 @@ export function PendingOrderList() {
       <Stack spacing={2}>
         <PageHeader
           title="待确认订单"
-          subtitle="这里是 OKX 实盘提交前的人工审核台。确认前必须填写保证金并复核方向、杠杆、止损和止盈。"
+          subtitle="这里是 OKX 订单提交前的人工审核台。确认前必须填写保证金并复核方向、杠杆、止损和止盈。"
           eyebrow="Order Review"
           actions={
             <>
@@ -210,8 +218,8 @@ export function PendingOrderList() {
 
         <TradingStatusStrip risk={state.risk} account={state.account} pendingCount={state.orders.length} />
 
-        <Alert severity="warning">
-          实盘确认会调用 OKX 下单接口。确认前请核对合约、方向、保证金、杠杆、止损和止盈。
+        <Alert severity={state.tradingMode === 'LIVE' ? 'error' : state.tradingMode === 'DEMO' ? 'info' : 'warning'}>
+          当前模式：{state.tradingMode}。{state.tradingMode === 'LIVE' ? '确认会操作真实资金。' : state.tradingMode === 'DEMO' ? '确认只提交 OKX 模拟交易。' : '交易写请求已关闭。'}
         </Alert>
 
         {error ? <Alert severity="error">{error}</Alert> : null}
@@ -255,7 +263,7 @@ export function PendingOrderList() {
                         <StatusChip value={String(order.status ?? '-')} />
                       </TableCell>
                       <TableCell align="right">
-                        <PendingOrderActions record={order} onChanged={() => void load(true)} />
+                        <PendingOrderActions record={order} tradingMode={state.tradingMode} onChanged={() => void load(true)} />
                       </TableCell>
                     </TableRow>
                   ))}

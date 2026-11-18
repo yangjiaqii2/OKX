@@ -4,6 +4,7 @@ import com.example.quant.account.OkxCredentialStore;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.TradingProperties;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -25,6 +26,8 @@ public class SystemControlService {
     private final AtomicBoolean emergencyStop;
     private final AtomicBoolean autoTradeEnabled = new AtomicBoolean(false);
     private volatile BigDecimal autoTradeMarginUsdt = BigDecimal.ZERO;
+    private volatile AutoTradeBudgetMode autoTradeBudgetMode = AutoTradeBudgetMode.FIXED_USDT;
+    private volatile BigDecimal autoTradeMarginPct = BigDecimal.ZERO;
     private volatile AutoTradeRiskMode autoTradeRiskMode = AutoTradeRiskMode.STRICT;
     private volatile int noRiskMinScore = DEFAULT_NO_RISK_MIN_SCORE;
     private volatile int autoTradeMinLeverage = DEFAULT_AUTO_TRADE_MIN_LEVERAGE;
@@ -45,7 +48,8 @@ public class SystemControlService {
 
     public SystemStatus status() {
         return new SystemStatus(emergencyStop.get(), autoTradeEnabled.get(), autoTradeMarginUsdt,
-                autoTradeRiskMode, noRiskMinScore, autoTradeMinLeverage, autoTradeOwnerUsername, updatedAt);
+                autoTradeBudgetMode, autoTradeMarginPct, autoTradeRiskMode, noRiskMinScore,
+                autoTradeMinLeverage, autoTradeOwnerUsername, updatedAt);
     }
 
     public boolean emergencyStopEnabled() {
@@ -58,6 +62,27 @@ public class SystemControlService {
 
     public BigDecimal autoTradeMarginUsdt() {
         return autoTradeMarginUsdt;
+    }
+
+    public AutoTradeBudgetMode autoTradeBudgetMode() {
+        return autoTradeBudgetMode;
+    }
+
+    public BigDecimal autoTradeMarginPct() {
+        return autoTradeMarginPct;
+    }
+
+    public BigDecimal resolveAutoTradeTotalBudget(BigDecimal availableBalance) {
+        if (autoTradeBudgetMode == AutoTradeBudgetMode.AVAILABLE_BALANCE_PERCENT) {
+            if (availableBalance == null || availableBalance.signum() <= 0 || autoTradeMarginPct.signum() <= 0) {
+                return BigDecimal.ZERO;
+            }
+            return availableBalance.multiply(autoTradeMarginPct)
+                    .divide(BigDecimal.valueOf(100), 8, RoundingMode.DOWN)
+                    .max(BigDecimal.ZERO)
+                    .stripTrailingZeros();
+        }
+        return autoTradeMarginUsdt == null ? BigDecimal.ZERO : autoTradeMarginUsdt.max(BigDecimal.ZERO);
     }
 
     public AutoTradeRiskMode autoTradeRiskMode() {
@@ -74,6 +99,16 @@ public class SystemControlService {
 
     public String autoTradeOwnerUsername() {
         return autoTradeOwnerUsername;
+    }
+
+    public SystemStatus selectTradingOwner(String username) {
+        if (username == null || username.isBlank()) {
+            throw new IllegalArgumentException("交易账户用户不能为空");
+        }
+        autoTradeOwnerUsername = username.trim();
+        updatedAt = Instant.now();
+        persist();
+        return status();
     }
 
     public SystemStatus emergencyStop() {
@@ -94,7 +129,7 @@ public class SystemControlService {
     }
 
     public SystemStatus enableAutoTrade() {
-        return enableAutoTrade(null, AutoTradeRiskMode.STRICT);
+        return finishEnable(AutoTradeRiskMode.STRICT, null, null);
     }
 
     public SystemStatus enableAutoTrade(BigDecimal marginUsdt) {
@@ -111,21 +146,41 @@ public class SystemControlService {
 
     public SystemStatus enableAutoTrade(BigDecimal marginUsdt, AutoTradeRiskMode riskMode, Integer requestedNoRiskMinScore,
                                         Integer requestedAutoTradeMinLeverage) {
+        if (marginUsdt == null || marginUsdt.signum() <= 0) {
+            throw new IllegalArgumentException("自动交易总保证金目标预算必须大于0");
+        }
+        autoTradeBudgetMode = AutoTradeBudgetMode.FIXED_USDT;
+        autoTradeMarginUsdt = marginUsdt;
+        autoTradeMarginPct = BigDecimal.ZERO;
+        return finishEnable(riskMode, requestedNoRiskMinScore, requestedAutoTradeMinLeverage);
+    }
+
+    public SystemStatus enableAutoTradePercent(BigDecimal marginPct, AutoTradeRiskMode riskMode) {
+        return enableAutoTradePercent(marginPct, riskMode, null, null);
+    }
+
+    public SystemStatus enableAutoTradePercent(BigDecimal marginPct, AutoTradeRiskMode riskMode,
+                                               Integer requestedNoRiskMinScore, Integer requestedAutoTradeMinLeverage) {
+        if (marginPct == null || marginPct.signum() <= 0 || marginPct.compareTo(BigDecimal.valueOf(100)) > 0) {
+            throw new IllegalArgumentException("可用余额百分比必须在0到100之间");
+        }
+        autoTradeBudgetMode = AutoTradeBudgetMode.AVAILABLE_BALANCE_PERCENT;
+        autoTradeMarginPct = marginPct.stripTrailingZeros();
+        autoTradeMarginUsdt = BigDecimal.ZERO;
+        return finishEnable(riskMode, requestedNoRiskMinScore, requestedAutoTradeMinLeverage);
+    }
+
+    private SystemStatus finishEnable(AutoTradeRiskMode riskMode, Integer requestedNoRiskMinScore,
+                                      Integer requestedAutoTradeMinLeverage) {
         if (emergencyStop.get()) {
             throw new IllegalArgumentException("紧急停止状态下不能开启自动交易");
         }
         if (riskMode == null) {
             throw new IllegalArgumentException("自动交易风险模式不能为空");
         }
-        if (marginUsdt != null) {
-            if (marginUsdt.signum() <= 0) {
-                throw new IllegalArgumentException("自动交易总保证金目标预算必须大于0");
-            }
-            autoTradeMarginUsdt = marginUsdt;
-        }
         if (requestedNoRiskMinScore != null) {
             if (requestedNoRiskMinScore < MIN_NO_RISK_SCORE || requestedNoRiskMinScore > MAX_NO_RISK_SCORE) {
-                throw new IllegalArgumentException("无风控最低自动交易分数必须在60到100之间");
+                throw new IllegalArgumentException("Shadow 最低观察分数必须在60到100之间");
             }
             noRiskMinScore = requestedNoRiskMinScore;
         }
@@ -141,8 +196,8 @@ public class SystemControlService {
         autoTradeEnabled.set(true);
         updatedAt = Instant.now();
         persist();
-        log.warn("Auto trade runtime switch enabled by user action, totalBudgetUsdt={}, budgetMode=TARGET_UTILIZATION, riskMode={}, noRiskMinScore={}, minLeverage={}",
-                autoTradeMarginUsdt, autoTradeRiskMode, noRiskMinScore, autoTradeMinLeverage);
+        log.warn("Auto trade runtime switch enabled by user action, fixedBudgetUsdt={}, balancePercent={}, budgetMode={}, riskMode={}, noRiskMinScore={}, minLeverage={}",
+                autoTradeMarginUsdt, autoTradeMarginPct, autoTradeBudgetMode, autoTradeRiskMode, noRiskMinScore, autoTradeMinLeverage);
         return status();
     }
 
@@ -168,6 +223,10 @@ public class SystemControlService {
             autoTradeMarginUsdt = entity.getAutoTradeMarginUsdt() == null
                     ? BigDecimal.ZERO
                     : entity.getAutoTradeMarginUsdt();
+            autoTradeBudgetMode = parseBudgetMode(entity.getAutoTradeBudgetMode());
+            autoTradeMarginPct = entity.getAutoTradeMarginPct() == null
+                    ? BigDecimal.ZERO
+                    : entity.getAutoTradeMarginPct();
             noRiskMinScore = entity.getNoRiskMinScore() <= 0
                     ? DEFAULT_NO_RISK_MIN_SCORE
                     : entity.getNoRiskMinScore();
@@ -189,6 +248,8 @@ public class SystemControlService {
         entity.setAutoTradeOwnerUsername(autoTradeOwnerUsername);
         entity.setAutoTradeRiskMode(autoTradeRiskMode.name());
         entity.setAutoTradeMarginUsdt(autoTradeMarginUsdt);
+        entity.setAutoTradeBudgetMode(autoTradeBudgetMode.name());
+        entity.setAutoTradeMarginPct(autoTradeMarginPct);
         entity.setNoRiskMinScore(noRiskMinScore);
         entity.setAutoTradeMinLeverage(autoTradeMinLeverage);
         entity.setUpdatedAt(updatedAt);
@@ -206,6 +267,17 @@ public class SystemControlService {
         }
     }
 
+    private static AutoTradeBudgetMode parseBudgetMode(String value) {
+        if (!hasText(value)) {
+            return AutoTradeBudgetMode.FIXED_USDT;
+        }
+        try {
+            return AutoTradeBudgetMode.valueOf(value.trim());
+        } catch (IllegalArgumentException ex) {
+            return AutoTradeBudgetMode.FIXED_USDT;
+        }
+    }
+
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
     }
@@ -214,6 +286,8 @@ public class SystemControlService {
             boolean emergencyStop,
             boolean autoTradeEnabled,
             BigDecimal autoTradeMarginUsdt,
+            AutoTradeBudgetMode autoTradeBudgetMode,
+            BigDecimal autoTradeMarginPct,
             AutoTradeRiskMode autoTradeRiskMode,
             int noRiskMinScore,
             int autoTradeMinLeverage,

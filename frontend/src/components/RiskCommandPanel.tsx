@@ -19,8 +19,9 @@ export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: Risk
   const rejectReason = String(risk.rejectReason ?? '');
   const createdAt = String(risk.createdAt ?? '');
   const isBlocked = passed === false || riskLevel === 'HIGH';
-  const progressValue = riskLevel === 'HIGH' ? 92 : riskLevel === 'MEDIUM' ? 62 : 28;
-  const progressColor = riskLevel === 'HIGH' ? 'error' : riskLevel === 'MEDIUM' ? 'warning' : 'success';
+  const isNotEvaluated = passed == null || riskLevel === 'NOT_EVALUATED';
+  const progressValue = isNotEvaluated ? 0 : riskLevel === 'HIGH' ? 92 : riskLevel === 'MEDIUM' ? 62 : 28;
+  const progressColor = riskLevel === 'HIGH' ? 'error' : riskLevel === 'MEDIUM' || isNotEvaluated ? 'warning' : 'success';
 
   return (
     <Card
@@ -79,8 +80,8 @@ export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: Risk
             <MiniStat label="检查时间" value={createdAt ? createdAt.slice(11, 19) : '-'} />
           </Box>
 
-          {rejectReason ? <Alert severity="error">{rejectReason}</Alert> : null}
-          {accountMode === 'OKX_UNBOUND' ? <Alert severity="warning">OKX API 未绑定，实盘接口不可用。</Alert> : null}
+          {rejectReason ? <Alert severity={isBlocked ? 'error' : 'warning'}>{rejectReason}</Alert> : null}
+          {accountMode === 'OKX_UNBOUND' ? <Alert severity="warning">OKX API 未绑定，私有交易接口不可用。</Alert> : null}
           {accountMode === 'OKX_ERROR' ? <Alert severity="error">{String(account.message ?? 'OKX接口异常')}</Alert> : null}
         </Stack>
       </CardContent>

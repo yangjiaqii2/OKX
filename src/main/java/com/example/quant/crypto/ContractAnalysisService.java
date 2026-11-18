@@ -1,16 +1,24 @@
 package com.example.quant.crypto;
 
+import com.example.quant.agent.scan.ScanContext;
+import com.example.quant.agent.scan.ScanRunReport;
+import com.example.quant.agent.scan.ScanRunStatus;
 import com.example.quant.agent.score.ContractCandidateScoreRecorder;
+import com.example.quant.config.AgentProperties;
+import com.example.quant.config.ContractProperties;
 import com.example.quant.crypto.dto.ContractAnalysisReport;
 import com.example.quant.crypto.dto.ContractCandidate;
+import com.example.quant.crypto.selection.V2SelectionScoreResult;
 import com.example.quant.score.ContractScoreCalculator;
-import com.example.quant.score.ContractScoreInput;
-import com.example.quant.score.ScoreDetail;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -18,9 +26,13 @@ public class ContractAnalysisService {
     private static final Logger log = LoggerFactory.getLogger(ContractAnalysisService.class);
 
     private final OkxContractScanner scanner;
-    private final ContractScoreCalculator calculator;
     private final ContractCandidateScoreRecorder scoreRecorder;
-    private final AtomicReference<List<ContractCandidate>> cachedCandidates = new AtomicReference<>(List.of());
+    private final AtomicReference<LiveScanSnapshot> liveSnapshot =
+            new AtomicReference<>(LiveScanSnapshot.empty());
+    private final ReentrantLock refreshLock = new ReentrantLock();
+    private volatile ScanContext activeScanContext;
+    private ContractProperties contractProperties;
+    private AgentProperties agentProperties = new AgentProperties();
 
     public ContractAnalysisService(
             OkxContractScanner scanner,
@@ -28,59 +40,181 @@ public class ContractAnalysisService {
             ContractCandidateScoreRecorder scoreRecorder
     ) {
         this.scanner = scanner;
-        this.calculator = calculator;
         this.scoreRecorder = scoreRecorder;
     }
 
     public List<ContractCandidate> candidates() {
-        List<ContractCandidate> cached = cachedCandidates.get();
-        if (!cached.isEmpty()) {
-            return cached;
+        if (contractProperties != null && !contractProperties.enabled()) {
+            return List.of();
         }
-        List<ContractCandidate> next = scanLiveCandidates();
-        log.info("Live contract candidates refreshed on first request, recommendations={}", next.size());
-        return next;
+        return liveSnapshot.get().candidates();
     }
 
     public List<ContractCandidate> refreshCandidates() {
-        List<ContractCandidate> next = scanLiveCandidates();
-        log.info("Live contract candidates refreshed by scheduler, recommendations={}", next.size());
-        return next;
+        return refreshScan(null).candidates();
     }
 
-    private List<ContractCandidate> scanLiveCandidates() {
-        Instant startedAt = Instant.now();
-        List<ContractCandidate> next = scanner.scan();
-        Instant finishedAt = Instant.now();
-        cachedCandidates.set(next);
-        scoreRecorder.recordLiveScan(next, startedAt, finishedAt);
-        return next;
+    public ContractScanResult refreshScan(String scanId) {
+        if (contractProperties != null && !contractProperties.enabled()) {
+            return new ContractScanResult(List.of(), null);
+        }
+        refreshLock.lock();
+        try {
+            ContractScanResult result = scanLiveCandidates(scanId);
+            log.info("Live contract candidates refreshed by scheduler, scanId={}, recommendations={}, result={}",
+                    scanId, result.candidates().size(), result.status());
+            return result;
+        } finally {
+            refreshLock.unlock();
+        }
+    }
+
+    public ScanContext runningScanContext() {
+        ScanContext local = activeScanContext;
+        if (local != null) {
+            return local;
+        }
+        return scanner == null ? null : scanner.activeScanContext();
+    }
+
+    public Map<String, V2SelectionScoreResult> cachedV2Scores() {
+        return liveSnapshot.get().v2Scores();
+    }
+
+    public LiveScanSnapshot liveSnapshot() {
+        return liveSnapshot.get();
+    }
+
+    @Autowired
+    void configureContractProperties(ContractProperties contractProperties) {
+        this.contractProperties = contractProperties;
+    }
+
+    @Autowired
+    void configureAgentProperties(AgentProperties agentProperties) {
+        this.agentProperties = agentProperties == null ? new AgentProperties() : agentProperties;
+    }
+
+    private ContractScanResult scanLiveCandidates(String scanId) {
+        ScanContext context = ScanContext.create(scanId, agentProperties);
+        activeScanContext = context;
+        Instant startedAt = context.startedAt();
+        try {
+            List<ContractCandidate> scanned = scanner.scan(context);
+            ScanRunReport report = scanner.lastScanReport();
+            if (report == null) {
+                log.warn("scanId={} status=UNKNOWN reason=SCAN_REPORT_MISSING", context.scanId());
+                Instant finishedAt = Instant.now();
+                persistScanOutcome(null, List.of(), startedAt, finishedAt, ScanRunStatus.UNKNOWN);
+                return new ContractScanResult(List.of(), null);
+            }
+            ScanRunStatus status = report.status();
+            Instant finishedAt = Instant.now();
+            persistScanOutcome(report, scanned, startedAt, finishedAt, status);
+            if (status == ScanRunStatus.COMPLETED) {
+                List<ContractCandidate> published = scanned == null
+                        ? List.of()
+                        : scanned.stream().filter(Objects::nonNull).toList();
+                Map<String, V2SelectionScoreResult> v2Scores = scanner.lastV2ScoreResults();
+                LiveScanSnapshot previous = liveSnapshot.get();
+                if (published.isEmpty() && !previous.candidates().isEmpty()) {
+                    log.warn("scanId={} completed with zero candidates; retaining prior live snapshot scanId={} candidates={}",
+                            report.scanId(), previous.scanId(), previous.candidates().size());
+                    return new ContractScanResult(List.of(), report, Map.of());
+                }
+                liveSnapshot.set(LiveScanSnapshot.completed(
+                        report.scanId(),
+                        published,
+                        v2Scores == null ? Map.of() : Map.copyOf(v2Scores),
+                        startedAt,
+                        finishedAt));
+                return new ContractScanResult(published, report,
+                        v2Scores == null ? Map.of() : Map.copyOf(v2Scores));
+            }
+            return new ContractScanResult(List.of(), report);
+        } finally {
+            activeScanContext = null;
+        }
+    }
+
+    private void persistScanOutcome(ScanRunReport report, List<ContractCandidate> scanned,
+                                    Instant startedAt, Instant finishedAt, ScanRunStatus status) {
+        if (scoreRecorder == null) {
+            return;
+        }
+        try {
+            if (status == ScanRunStatus.COMPLETED) {
+                scoreRecorder.recordScanOutcome(report, scanned, startedAt, finishedAt,
+                        scanner.isV2Mode(), scanner.lastV2ScoreResults());
+            } else {
+                scoreRecorder.recordScanOutcome(report, List.of(), startedAt, finishedAt,
+                        scanner.isV2Mode(), Map.of());
+            }
+        } catch (RuntimeException ex) {
+            log.warn("Historical candidate snapshot persistence failed without changing scan result: {}",
+                    ex.getMessage());
+        }
     }
 
     public ContractAnalysisReport analyze(String instId) {
-        ContractCandidate candidate = candidates().stream()
+        LiveScanSnapshot snapshot = liveSnapshot.get();
+        if (snapshot.status() != ScanRunStatus.COMPLETED) {
+            throw new IllegalArgumentException("合约不在当前有效扫描结果中: " + instId);
+        }
+        ContractCandidate candidate = snapshot.candidates().stream()
                 .filter(item -> item.instId().equals(instId))
                 .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("OKX did not return contract: " + instId));
-        ScoreDetail score = calculator.calculate(new ContractScoreInput(
-                candidate.score(),
-                candidate.volumeSpikeRatio(),
-                candidate.fundingRate(),
-                candidate.volatility(),
-                1,
-                0
-        ));
+                .orElseThrow(() -> new IllegalArgumentException("合约不在当前有效扫描结果中: " + instId));
+        V2SelectionScoreResult v2Score = snapshot.v2Scores().get(instId);
+        int score = requireCanonicalScore(v2Score, instId);
         return new ContractAnalysisReport(
                 candidate.instId(),
-                score.score(),
-                score.recommendLevel(),
+                score,
+                recommendLevel(score),
                 candidate.trendDirection(),
-                "OKX实时ticker生成的合约分析，执行仍必须经过风控和用户确认。",
-                score.reasonList(),
-                score.riskList(),
+                buildSummary(candidate, v2Score, score),
+                candidate.candidateReasonList(),
+                candidate.riskTagList(),
                 "可基于当前OKX价格生成待确认TradePlan。",
                 "行情延迟、风险等级升高或用户未确认时失效。",
                 Instant.now()
         );
+    }
+
+    private static int requireCanonicalScore(V2SelectionScoreResult v2Score, String instId) {
+        if (v2Score != null && v2Score.rankingScore() != null) {
+            return v2Score.rankingScore().setScale(0, java.math.RoundingMode.HALF_UP).intValue();
+        }
+        if (v2Score != null && v2Score.normalizedScore() != null) {
+            return v2Score.normalizedScore().setScale(0, java.math.RoundingMode.HALF_UP).intValue();
+        }
+        throw new IllegalStateException("V2 canonical score 不可用: " + instId);
+    }
+
+    private static String recommendLevel(int score) {
+        if (score >= 85) {
+            return "STRONG";
+        }
+        if (score >= 75) {
+            return "GOOD";
+        }
+        if (score >= 65) {
+            return "WATCH";
+        }
+        return "WEAK";
+    }
+
+    private static String buildSummary(ContractCandidate candidate, V2SelectionScoreResult v2Score, int score) {
+        String ranking = v2Score == null || v2Score.rankingScore() == null
+                ? "UNKNOWN"
+                : v2Score.rankingScore().stripTrailingZeros().toPlainString();
+        String normalized = v2Score == null || v2Score.normalizedScore() == null
+                ? "UNKNOWN"
+                : v2Score.normalizedScore().stripTrailingZeros().toPlainString();
+        return "OKX实时扫描V2评分，rankingScore=" + ranking
+                + "，normalizedScore=" + normalized
+                + "，canonicalScore=" + score
+                + "，finalRankScore=" + (candidate.finalRankScore() == null
+                ? "UNKNOWN" : candidate.finalRankScore().stripTrailingZeros().toPlainString());
     }
 }

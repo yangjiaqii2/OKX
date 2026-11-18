@@ -1,7 +1,11 @@
 target/
 .m2/
 .npm-cache/
+.env
+.env.*
+!.env.example
 .akshare-venv/
+.akshare-venv-linux/
 akshare-service/__pycache__/
 frontend/node_modules/
 frontend/dist/

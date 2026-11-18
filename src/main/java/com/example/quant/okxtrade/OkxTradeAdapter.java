@@ -1,14 +1,18 @@
 package com.example.quant.okxtrade;
 
+import com.example.quant.account.OkxCredentialStore;
 import com.example.quant.agent.execution.TradeOrderRecordService;
 import com.example.quant.agent.execution.TradeOrderRecordService.OrderRecordPayload;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
+import com.example.quant.config.TradingProperties;
+import com.example.quant.config.TradingMode;
 import com.example.quant.order.OrderExecutionResult;
 import com.example.quant.order.PendingOrder;
+import com.example.quant.tradeplan.CanonicalExecutablePlan;
+import com.example.quant.tradeplan.CanonicalPlanCompiler;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,12 +31,15 @@ public class OkxTradeAdapter {
     private final OkxInstrumentRulesProvider instrumentRulesProvider;
     private final OkxPositionModeProvider positionModeProvider;
     private final AgentProperties agentProperties;
+    private final TradingMode tradingMode;
+    private CanonicalPlanCompiler canonicalPlanCompiler;
 
     @Autowired
     public OkxTradeAdapter(OkxOrderGateway okxOrderGateway, TradeOrderRecordService tradeOrderRecordService,
                            OkxInstrumentRulesProvider instrumentRulesProvider,
                            OkxPositionModeProvider positionModeProvider,
-                           AgentProperties agentProperties) {
+                           AgentProperties agentProperties,
+                           TradingProperties tradingProperties) {
         this.okxOrderGateway = okxOrderGateway;
         this.tradeOrderRecordService = tradeOrderRecordService;
         this.instrumentRulesProvider = instrumentRulesProvider == null
@@ -42,6 +49,21 @@ public class OkxTradeAdapter {
                 ? () -> OkxPositionMode.LONG_SHORT
                 : positionModeProvider;
         this.agentProperties = agentProperties == null ? new AgentProperties() : agentProperties;
+        this.tradingMode = tradingProperties == null ? TradingMode.DISABLED : tradingProperties.mode();
+    }
+
+    @Autowired(required = false)
+    public void setCanonicalPlanCompiler(CanonicalPlanCompiler canonicalPlanCompiler) {
+        this.canonicalPlanCompiler = canonicalPlanCompiler;
+    }
+
+    public OkxTradeAdapter(OkxOrderGateway okxOrderGateway, TradeOrderRecordService tradeOrderRecordService,
+                           OkxInstrumentRulesProvider instrumentRulesProvider,
+                           OkxPositionModeProvider positionModeProvider,
+                           AgentProperties agentProperties) {
+        this(okxOrderGateway, tradeOrderRecordService, instrumentRulesProvider,
+                positionModeProvider, agentProperties,
+                new TradingProperties(TradingMode.LIVE, true, 120, false));
     }
 
     public OkxTradeAdapter(OkxOrderGateway okxOrderGateway) {
@@ -58,49 +80,70 @@ public class OkxTradeAdapter {
     }
 
     public OrderExecutionResult placeOrder(PendingOrder order) {
-        OkxInstrumentRules rules = instrumentRulesProvider.rules(order.instId());
-        if (rules == null) {
-            rules = OkxInstrumentRules.defaultFor(order.instId());
+        OkxInstrumentRules rules;
+        OkxPositionMode positionMode;
+        Map<String, Object> payload;
+        OrderRecordPayload entryRecord;
+        try {
+            requireTradingEnabled();
+            rules = instrumentRulesProvider.rules(order.instId());
+            if (rules == null) {
+                throw new IllegalStateException("无法加载OKX合约规则，禁止下单：" + order.instId());
+            }
+            if (canonicalPlanCompiler != null) {
+                CanonicalExecutablePlan canonicalPlan = order.canonicalExecutablePlan();
+                if (canonicalPlan == null
+                        || canonicalPlan.status() != CanonicalExecutablePlan.CompilationStatus.ACCEPTED) {
+                    throw new IllegalStateException("CANONICAL_PLAN_MISSING");
+                }
+                if (order.executableContractQuantity() == null
+                        || canonicalPlan.entry().executableContractQuantity()
+                        .compareTo(order.executableContractQuantity()) != 0) {
+                    throw new IllegalStateException("CANONICAL_ENTRY_QUANTITY_MISMATCH");
+                }
+                if (!canonicalPlanCompiler.matchesSnapshot(canonicalPlan, rules)) {
+                    throw new IllegalStateException("CANONICAL_PLAN_RULES_CHANGED");
+                }
+            }
+            positionMode = positionModeProvider.positionMode();
+            if (positionMode == null) {
+                positionMode = OkxPositionMode.NET;
+            }
+            setLeverage(order, positionMode);
+            payload = orderPayload(order, rules, positionMode);
+            entryRecord = entryRecord(order, payload, null);
+        } catch (RuntimeException ex) {
+            throw new OrderNotSubmittedException("PRE_ORDER_SETUP_FAILED: " + compact(ex.getMessage()), ex);
         }
-        OkxPositionMode positionMode = positionModeProvider.positionMode();
-        if (positionMode == null) {
-            positionMode = OkxPositionMode.NET;
-        }
-        setLeverage(order, positionMode);
-        Map<String, Object> payload = orderPayload(order, rules, positionMode);
-        OrderRecordPayload entryRecord = entryRecord(order, payload, null);
         log.info("Calling OKX trade order instId={} side={} posSide={} posMode={} ordType={} tdMode={} sz={} px={} clOrdId={}",
                 payload.get("instId"), payload.get("side"), payload.getOrDefault("posSide", ""), positionMode,
                 payload.get("ordType"),
                 payload.get("tdMode"), payload.get("sz"), payload.getOrDefault("px", ""), payload.get("clOrdId"));
+        String acceptedOrderId;
         try {
             JsonNode response = okxOrderGateway.placeOrder(payload);
-            String orderId = orderId(response, "ordId");
-            log.info("OKX trade order accepted instId={} ordId={} clOrdId={}", order.instId(), orderId, payload.get("clOrdId"));
-            recordSubmitted(order, entryRecord.withOkxOrdId(orderId));
-            if (!"market".equalsIgnoreCase(order.orderType())) {
-                return OrderExecutionResult.submitted(orderId, "入场委托已提交，等待成交");
-            }
-            return OrderExecutionResult.filled(orderId, "市价入场委托已提交，随单止盈止损已附加");
+            acceptedOrderId = orderId(response, "ordId");
         } catch (RuntimeException ex) {
-            if (isTimeout(ex)) {
-                OrderExecutionResult recovered = recoverTimedOutSubmit(order, payload, entryRecord, ex);
-                if (recovered != null) {
-                    return recovered;
-                }
+            if (ex instanceof OrderNotSubmittedException || ex instanceof OkxApiRejectedException) {
+                recordFailed(order, entryRecord, ex.getMessage());
                 throw ex;
             }
-            recordFailed(order, entryRecord, ex.getMessage());
-            throw ex;
+            OrderExecutionResult recovered = recoverUncertainSubmit(order, payload, entryRecord, ex);
+            if (recovered != null) return recovered;
+            throw new com.example.quant.order.OrderSubmitStatusUnknownException(ex.getMessage(), ex);
         }
+        log.info("OKX trade order accepted instId={} ordId={} clOrdId={}",
+                order.instId(), acceptedOrderId, payload.get("clOrdId"));
+        recordAccepted(order, entryRecord.withOkxOrdId(acceptedOrderId));
+        return OrderExecutionResult.submitted(acceptedOrderId,
+                "入场委托已提交，等待成交确认（以OKX订单状态为准）；计划止损已随单附加");
     }
 
     public OrderExecutionResult recoverUnknownSubmitStatus(PendingOrder order) {
         Map<String, String> payload = new LinkedHashMap<>();
         payload.put("instId", order.instId());
         payload.put("clOrdId", order.clientOrderId());
-        JsonNode response = okxOrderGateway.queryOrder(payload);
-        JsonNode item = firstDataItem(response);
+        JsonNode item = findOrderByClientOrderId(payload, order.clientOrderId());
         if (item == null) {
             return new OrderExecutionResult(false, true, null,
                     "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId(),
@@ -114,6 +157,9 @@ public class OkxTradeAdapter {
                     false, false, false, false);
         }
         BigDecimal filledSize = decimal(item, "accFillSz");
+        if (filledSize.signum() <= 0) {
+            filledSize = decimal(item, "fillSz");
+        }
         boolean filled = filledSize.signum() > 0 && "filled".equalsIgnoreCase(state);
         boolean partiallyFilled = filledSize.signum() > 0 && !filled;
         return new OrderExecutionResult(true, true, ordId,
@@ -121,8 +167,61 @@ public class OkxTradeAdapter {
                 true, filled, partiallyFilled, false);
     }
 
-    private OrderExecutionResult recoverTimedOutSubmit(PendingOrder order, Map<String, Object> payload,
-                                                       OrderRecordPayload entryRecord, RuntimeException timeout) {
+    private JsonNode findOrderByClientOrderId(Map<String, String> payload, String clientOrderId) {
+        try {
+            JsonNode direct = matchingDataItem(okxOrderGateway.queryOrder(payload), clientOrderId);
+            if (direct != null) {
+                return direct;
+            }
+        } catch (RuntimeException ex) {
+            if (!isOrderNotFound(ex)) {
+                throw ex;
+            }
+        }
+        Map<String, String> currentPayload = Map.of("instType", "SWAP");
+        JsonNode current = matchingDataItem(okxOrderGateway.currentOrders(currentPayload), clientOrderId);
+        if (current != null) {
+            return current;
+        }
+        Map<String, String> historyPayload = new LinkedHashMap<>(payload);
+        historyPayload.put("instType", "SWAP");
+        JsonNode history = matchingDataItem(okxOrderGateway.queryOrderHistory(historyPayload), clientOrderId);
+        if (history != null) {
+            return history;
+        }
+        Map<String, String> fillPayload = new LinkedHashMap<>();
+        fillPayload.put("instType", "SWAP");
+        fillPayload.put("instId", payload.getOrDefault("instId", ""));
+        return matchingDataItem(okxOrderGateway.fills(fillPayload), clientOrderId);
+    }
+
+    private static JsonNode matchingDataItem(JsonNode response, String clientOrderId) {
+        JsonNode data = response == null ? null : response.path("data");
+        if (data == null || !data.isArray() || data.isEmpty()) {
+            return null;
+        }
+        for (JsonNode item : data) {
+            String itemClientId = item.path("clOrdId").asText("");
+            if (!hasText(clientOrderId) || clientOrderId.equals(itemClientId)) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isOrderNotFound(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            String message = current.getMessage();
+            if (hasText(message) && (message.contains("51603")
+                    || message.toLowerCase(java.util.Locale.ROOT).contains("order does not exist"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private OrderExecutionResult recoverUncertainSubmit(PendingOrder order, Map<String, Object> payload,
+                                                       OrderRecordPayload entryRecord, RuntimeException submitFailure) {
         String clOrdId = text(payload.get("clOrdId"));
         if (!hasText(clOrdId)) {
             return null;
@@ -133,7 +232,8 @@ public class OkxTradeAdapter {
         try {
             JsonNode response = okxOrderGateway.queryOrder(queryPayload);
             JsonNode item = firstDataItem(response);
-            if (item == null) {
+            if (item == null || (hasText(item.path("clOrdId").asText(""))
+                    && !clOrdId.equals(item.path("clOrdId").asText("")))) {
                 return null;
             }
             String ordId = item.path("ordId").asText("");
@@ -141,17 +241,17 @@ public class OkxTradeAdapter {
             if (!hasText(ordId)) {
                 return null;
             }
-            recordSubmitted(order, entryRecord.withOkxOrdId(ordId));
-            log.warn("OKX order submit timeout recovered by clOrdId instId={} clOrdId={} ordId={} state={}",
+            recordAccepted(order, entryRecord.withOkxOrdId(ordId));
+            log.warn("OKX order submit uncertain result recovered by clOrdId instId={} clOrdId={} ordId={} state={}",
                     order.instId(), clOrdId, ordId, state);
             BigDecimal filledSize = decimal(item, "accFillSz");
             boolean filled = filledSize.signum() > 0 && "filled".equalsIgnoreCase(state);
             boolean partiallyFilled = filledSize.signum() > 0 && !filled;
             return new OrderExecutionResult(true, true, ordId,
-                    "OKX提交超时后已通过clOrdId恢复：clOrdId=" + clOrdId + "，订单号 " + ordId + "，state=" + state,
+                    "OKX提交结果不确定后已通过clOrdId恢复：clOrdId=" + clOrdId + "，订单号 " + ordId + "，state=" + state,
                     true, filled, partiallyFilled, false);
         } catch (RuntimeException queryEx) {
-            timeout.addSuppressed(queryEx);
+            submitFailure.addSuppressed(queryEx);
             return null;
         }
     }
@@ -161,6 +261,14 @@ public class OkxTradeAdapter {
     }
 
     public OrderExecutionResult closePosition(String instId, String posSide, String marginMode, String clOrdId) {
+        return closePosition(instId, posSide, marginMode, clOrdId,
+                TradingOperationContext.of(TradingOperationType.CLOSE_POSITION,
+                        currentUsername(), null, null));
+    }
+
+    public OrderExecutionResult closePosition(String instId, String posSide, String marginMode, String clOrdId,
+                                              TradingOperationContext context) {
+        requireTradingEnabled();
         if (instId == null || instId.isBlank()) {
             throw new IllegalArgumentException("平仓合约不能为空");
         }
@@ -172,11 +280,21 @@ public class OkxTradeAdapter {
         log.warn("Calling OKX close-position instId={} posSide={} posMode={} mgnMode={} clOrdId={}",
                 payload.get("instId"), payload.getOrDefault("posSide", ""), positionMode, payload.get("mgnMode"),
                 payload.getOrDefault("clOrdId", ""));
-        JsonNode response = okxOrderGateway.closePosition(payload);
+        JsonNode response = okxOrderGateway.closePosition(payload, context);
         String closeId = closePositionId(response, instId, payload.getOrDefault("posSide", ""));
         return OrderExecutionResult.submitted(closeId,
                 "OKX一键平仓请求已提交：" + instId + " " + payload.getOrDefault("posSide", "net")
                         + "。请在OKX当前委托/持仓确认最终成交。");
+    }
+
+    private void requireTradingEnabled() {
+        if (!tradingMode.writesEnabled()) {
+            throw new IllegalStateException("交易模式为DISABLED（实盘交易已禁用）；未向交易所发送请求");
+        }
+    }
+
+    private static String currentUsername() {
+        return AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
     }
 
     private void setLeverage(PendingOrder order, OkxPositionMode positionMode) {
@@ -190,32 +308,21 @@ public class OkxTradeAdapter {
         okxOrderGateway.setLeverage(payload);
     }
 
-    private ProtectionSubmitResult placeProtectionOrders(PendingOrder order, List<Map<String, String>> protectionOrders) {
-        int submitted = 0;
-        int failed = 0;
-        for (Map<String, String> payload : protectionOrders) {
-            OrderRecordPayload recordPayload = protectionRecord(order, payload, null);
-            try {
-                JsonNode response = okxOrderGateway.placeAlgoOrder(apiPayload(payload));
-                String algoId = orderId(response, "algoId");
-                recordSubmitted(order, recordPayload.withOkxOrdId(algoId));
-                submitted++;
-            } catch (RuntimeException ex) {
-                failed++;
-                recordFailed(order, recordPayload, ex.getMessage());
-                log.warn("OKX protection order failed instId={} role={} clOrdId={} message={}",
-                        order.instId(), payload.get("orderRole"), payload.get("algoClOrdId"), ex.getMessage());
-            }
-        }
-        return new ProtectionSubmitResult(submitted, failed);
-    }
-
     static Map<String, Object> orderPayload(PendingOrder order, OkxInstrumentRules rules, OkxPositionMode positionMode) {
-        BigDecimal contractSize = rules.normalizeEntrySize(order.size(), order.price());
+        BigDecimal rawContractSize = rules.contractSizeFromBaseQuantity(order.size(), order.price());
+        CanonicalExecutablePlan canonicalPlan = order.canonicalExecutablePlan();
+        BigDecimal contractSize = canonicalPlan != null
+                && canonicalPlan.status() == CanonicalExecutablePlan.CompilationStatus.ACCEPTED
+                ? canonicalPlan.entry().executableContractQuantity()
+                : order.executableContractQuantity() == null
+                ? rules.normalizeEntrySize(order.size(), order.price()) : order.executableContractQuantity();
         if (contractSize.signum() <= 0) {
+            if (rawContractSize.signum() > 0 && rawContractSize.compareTo(rules.minSize()) < 0) {
+                throw new IllegalStateException("下单数量低于OKX最小下单量，禁止自动放大：raw="
+                        + value(rawContractSize) + ", minSz=" + value(rules.minSize()));
+            }
             throw new IllegalStateException("OKX下单数量无效，无法按合约步进规整");
         }
-        BigDecimal rawContractSize = rules.contractSizeFromBaseQuantity(order.size(), order.price());
         if (rawContractSize.compareTo(contractSize) != 0) {
             log.warn("OKX order size normalized instId={} baseSize={} rawContracts={} finalContracts={} lotSz={} minSz={}",
                     order.instId(), value(order.size()), value(rawContractSize), value(contractSize),
@@ -232,53 +339,41 @@ public class OkxTradeAdapter {
         payload.put("sz", value(contractSize));
         payload.put("clOrdId", hasText(order.clientOrderId()) ? order.clientOrderId() : clientOrderId(order.id(), "e"));
         if (!"market".equalsIgnoreCase(order.orderType())) {
-            payload.put("px", value(rules.normalizePrice(order.price())));
+            BigDecimal normalizedEntry = canonicalPlan != null
+                    && canonicalPlan.status() == CanonicalExecutablePlan.CompilationStatus.ACCEPTED
+                    ? canonicalPlan.entry().normalizedEntryPrice() : rules.normalizePrice(order.price());
+            payload.put("px", value(normalizedEntry));
         }
-        payload.put("attachAlgoOrds", List.of(
-                attachedStopLoss(order, rules),
-                attachedTakeProfit(order, rules)
-        ));
+        payload.put("attachAlgoOrds", List.of(attachedStopLoss(order, rules)));
         return payload;
     }
 
     private static Map<String, String> attachedStopLoss(PendingOrder order, OkxInstrumentRules rules) {
         BigDecimal entry = order.price() == null ? BigDecimal.ZERO : order.price();
-        if (entry.signum() <= 0 || order.leverage() <= 0) {
-            throw new IllegalStateException("止损强制要求：入场价或杠杆无效，禁止交易");
+        BigDecimal stopLoss = order.stopLossPrice() == null ? BigDecimal.ZERO : order.stopLossPrice();
+        if (entry.signum() <= 0 || stopLoss.signum() <= 0) {
+            throw new IllegalStateException("止损强制要求：计划入场价或止损价无效，禁止交易");
         }
-        BigDecimal priceMove = entry.multiply(new BigDecimal("0.03"))
-                .divide(BigDecimal.valueOf(order.leverage()), 12, RoundingMode.HALF_UP);
-        BigDecimal stopLoss = "short".equalsIgnoreCase(order.posSide())
-                ? entry.add(priceMove)
-                : entry.subtract(priceMove);
-        BigDecimal normalized = rules.normalizePrice(stopLoss);
+        boolean shortSide = "short".equalsIgnoreCase(order.posSide());
+        if ((!shortSide && stopLoss.compareTo(entry) >= 0) || (shortSide && stopLoss.compareTo(entry) <= 0)) {
+            throw new IllegalStateException("止损强制要求：计划止损价方向错误，禁止交易");
+        }
+        CanonicalExecutablePlan canonicalPlan = order.canonicalExecutablePlan();
+        BigDecimal normalized = canonicalPlan != null
+                && canonicalPlan.status() == CanonicalExecutablePlan.CompilationStatus.ACCEPTED
+                ? canonicalPlan.stopLoss().normalizedPrice() : rules.normalizePrice(stopLoss);
         if (normalized.signum() <= 0) {
             throw new IllegalStateException("止损强制要求：止损价无效，禁止交易");
         }
         Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("attachAlgoClOrdId", attachedStopLossClientOrderId(order));
         payload.put("slTriggerPx", value(normalized));
         payload.put("slOrdPx", "-1");
         return payload;
     }
 
-    private static Map<String, String> attachedTakeProfit(PendingOrder order, OkxInstrumentRules rules) {
-        BigDecimal entry = order.price() == null ? BigDecimal.ZERO : order.price();
-        BigDecimal takeProfit = order.takeProfitPrice() == null ? BigDecimal.ZERO : order.takeProfitPrice();
-        if (entry.signum() <= 0 || takeProfit.signum() <= 0) {
-            throw new IllegalStateException("止盈强制要求：AI止盈价无效，禁止交易");
-        }
-        boolean shortSide = "short".equalsIgnoreCase(order.posSide());
-        if ((!shortSide && takeProfit.compareTo(entry) <= 0) || (shortSide && takeProfit.compareTo(entry) >= 0)) {
-            throw new IllegalStateException("止盈强制要求：AI止盈价方向错误，禁止交易");
-        }
-        BigDecimal normalized = rules.normalizePrice(takeProfit);
-        if (normalized.signum() <= 0) {
-            throw new IllegalStateException("止盈强制要求：止盈价无效，禁止交易");
-        }
-        Map<String, String> payload = new LinkedHashMap<>();
-        payload.put("tpTriggerPx", value(normalized));
-        payload.put("tpOrdPx", "-1");
-        return payload;
+    public static String attachedStopLossClientOrderId(PendingOrder order) {
+        return clientOrderId(order.id(), "sl");
     }
 
     static Map<String, String> closePositionPayload(String instId, String posSide, String marginMode,
@@ -301,156 +396,18 @@ public class OkxTradeAdapter {
         return payload;
     }
 
-    private ProtectionPlanResult protectionPlan(PendingOrder order, OkxInstrumentRules rules,
-                                                OkxPositionMode positionMode, String orderId,
-                                                BigDecimal submittedContractSize) {
-        OkxOrderFill fill = protectionFill(order, orderId, submittedContractSize);
-        if (!fill.complete()) {
-            return new ProtectionPlanResult(false, "ENTRY_FILL_NOT_CONFIRMED", fill, List.of());
-        }
-        if ("market".equalsIgnoreCase(order.orderType())) {
-            BigDecimal deviationPct = fill.avgPx().subtract(order.price()).abs()
-                    .multiply(BigDecimal.valueOf(100))
-                    .divide(order.price(), 8, RoundingMode.HALF_UP);
-            if (deviationPct.compareTo(agentProperties.protection().maxEntryPriceDeviationPct()) > 0) {
-                return new ProtectionPlanResult(false,
-                        "ENTRY_PRICE_DEVIATION_TOO_WIDE_" + deviationPct + "%", fill, List.of());
-            }
-            BigDecimal stopLossPct = fill.avgPx().subtract(order.stopLossPrice()).abs()
-                    .multiply(BigDecimal.valueOf(100))
-                    .divide(fill.avgPx(), 8, RoundingMode.HALF_UP);
-            if (stopLossPct.compareTo(agentProperties.protection().maxStopLossPctAfterFill()) > 0) {
-                return new ProtectionPlanResult(false,
-                        "STOP_LOSS_PCT_TOO_WIDE_AFTER_FILL_" + stopLossPct + "%", fill, List.of());
-            }
-        }
-        return new ProtectionPlanResult(true, null, fill,
-                protectionPayloads(order, rules, positionMode, fill.filledSize(), fill.avgPx()));
-    }
-
-    private OkxOrderFill protectionFill(PendingOrder order, String orderId, BigDecimal submittedContractSize) {
-        if (!"market".equalsIgnoreCase(order.orderType()) || !agentProperties.protection().recalcAfterFill()) {
-            return new OkxOrderFill(orderId, order.price(), submittedContractSize);
-        }
-        Map<String, String> queryPayload = new LinkedHashMap<>();
-        queryPayload.put("instId", order.instId());
-        queryPayload.put("ordId", orderId);
-        JsonNode root = okxOrderGateway.queryOrder(queryPayload);
-        JsonNode data = root == null ? null : root.path("data");
-        if (data == null || !data.isArray() || data.isEmpty()) {
-            return new OkxOrderFill(orderId, BigDecimal.ZERO, BigDecimal.ZERO);
-        }
-        JsonNode item = data.get(0);
-        return new OkxOrderFill(
-                orderId,
-                decimal(item, "avgPx"),
-                decimal(item, "accFillSz")
-        );
-    }
-
-    private List<Map<String, String>> protectionPayloads(PendingOrder order, OkxInstrumentRules rules,
-                                                         OkxPositionMode positionMode,
-                                                         BigDecimal filledContractSize,
-                                                         BigDecimal avgPx) {
-        List<Map<String, String>> payloads = new ArrayList<>();
-        BigDecimal normalizedFilledSize = rules.floorToLot(filledContractSize);
-        payloads.add(stopLossPayload(order, rules, positionMode, normalizedFilledSize));
-        List<TakeProfitLeg> legs = takeProfitLegs(normalizedFilledSize, rules);
-        BigDecimal risk = avgPx.subtract(order.stopLossPrice()).abs();
-        for (TakeProfitLeg leg : legs) {
-            BigDecimal price = takeProfitPrice(order, avgPx, risk, leg.rMultiple());
-            payloads.add(takeProfitPayload(order, rules, positionMode, leg.suffix(), leg.size(), price));
-        }
-        return payloads.stream()
-                .filter(payload -> new BigDecimal(payload.get("sz")).signum() > 0)
-                .toList();
-    }
-
-    private List<TakeProfitLeg> takeProfitLegs(BigDecimal filledSize, OkxInstrumentRules rules) {
-        BigDecimal tp1 = rules.floorToLot(filledSize.multiply(agentProperties.takeProfit().tp1Ratio()));
-        BigDecimal tp2 = rules.floorToLot(filledSize.multiply(agentProperties.takeProfit().tp2Ratio()));
-        if (tp1.compareTo(rules.minSize()) < 0) {
-            tp1 = BigDecimal.ZERO;
-        }
-        if (tp2.compareTo(rules.minSize()) < 0) {
-            tp2 = BigDecimal.ZERO;
-        }
-        BigDecimal tp3 = rules.floorToLot(filledSize.subtract(tp1).subtract(tp2));
-        if (tp3.compareTo(rules.minSize()) < 0) {
-            if (tp2.compareTo(rules.minSize()) >= 0) {
-                tp2 = tp2.add(tp3);
-            } else if (tp1.compareTo(rules.minSize()) >= 0) {
-                tp1 = tp1.add(tp3);
-            } else {
-                tp3 = filledSize;
-            }
-            if (!filledSize.equals(tp3)) {
-                tp3 = BigDecimal.ZERO;
-            }
-        }
-        List<TakeProfitLeg> legs = new ArrayList<>();
-        if (tp1.compareTo(rules.minSize()) >= 0) {
-            legs.add(new TakeProfitLeg("tp1", tp1, BigDecimal.ONE));
-        }
-        if (tp2.compareTo(rules.minSize()) >= 0) {
-            legs.add(new TakeProfitLeg("tp2", tp2, BigDecimal.valueOf(2)));
-        }
-        if (tp3.compareTo(rules.minSize()) >= 0) {
-            legs.add(new TakeProfitLeg("tp3", tp3, BigDecimal.valueOf(3)));
-        }
-        return legs;
-    }
-
-    private static Map<String, String> stopLossPayload(PendingOrder order, OkxInstrumentRules rules,
-                                                       OkxPositionMode positionMode,
-                                                       BigDecimal entryContractSize) {
-        Map<String, String> payload = baseAlgoPayload(order, positionMode, "sl");
-        payload.put("orderRole", "STOP_LOSS");
-        payload.put("sz", value(entryContractSize));
-        payload.put("slTriggerPx", value(rules.normalizePrice(order.stopLossPrice())));
-        payload.put("slOrdPx", "-1");
-        return payload;
-    }
-
-    private static Map<String, String> takeProfitPayload(PendingOrder order, OkxInstrumentRules rules,
-                                                         OkxPositionMode positionMode, String suffix,
-                                                         BigDecimal size, BigDecimal price) {
-        Map<String, String> payload = baseAlgoPayload(order, positionMode, suffix);
-        payload.put("orderRole", suffix.toUpperCase());
-        payload.put("sz", value(size));
-        payload.put("tpTriggerPx", value(rules.normalizePrice(price)));
-        payload.put("tpOrdPx", "-1");
-        return payload;
-    }
-
-    private static Map<String, String> baseAlgoPayload(PendingOrder order, OkxPositionMode positionMode,
-                                                       String suffix) {
-        Map<String, String> payload = new LinkedHashMap<>();
-        payload.put("instId", order.instId());
-        payload.put("tdMode", order.tdMode());
-        payload.put("side", closeSide(order));
-        if (positionMode == OkxPositionMode.LONG_SHORT) {
-            payload.put("posSide", order.posSide());
-        }
-        payload.put("ordType", "conditional");
-        payload.put("reduceOnly", "true");
-        payload.put("algoClOrdId", clientOrderId(order.id(), suffix));
-        return payload;
-    }
-
-    private static Map<String, String> apiPayload(Map<String, String> payload) {
-        Map<String, String> apiPayload = new LinkedHashMap<>(payload);
-        apiPayload.remove("orderRole");
-        return apiPayload;
-    }
-
-    private static BigDecimal takeProfitPrice(PendingOrder order, BigDecimal avgPx, BigDecimal risk, BigDecimal multiple) {
-        BigDecimal distance = risk.multiply(multiple);
-        return "short".equalsIgnoreCase(order.posSide()) ? avgPx.subtract(distance) : avgPx.add(distance);
-    }
-
     private static String closeSide(PendingOrder order) {
         return "buy".equalsIgnoreCase(order.side()) ? "sell" : "buy";
+    }
+
+    private void recordAccepted(PendingOrder order, OrderRecordPayload payload) {
+        try {
+            recordSubmitted(order, payload);
+        } catch (RuntimeException ex) {
+            // Exchange acceptance survives failures in local recording/auditing.
+            log.error("OKX_ACK_LOCAL_RECORD_FAILED pendingOrderId={} ordId={} clOrdId={}",
+                    order.id(), payload.okxOrdId(), payload.clOrdId(), ex);
+        }
     }
 
     private void recordSubmitted(PendingOrder order, OrderRecordPayload payload) {
@@ -479,25 +436,6 @@ public class OkxTradeAdapter {
         );
     }
 
-    private static OrderRecordPayload protectionRecord(PendingOrder order, Map<String, String> payload, String okxOrdId) {
-        return new OrderRecordPayload(
-                payload.get("orderRole"),
-                payload.get("side"),
-                order.posSide(),
-                payload.get("ordType"),
-                new BigDecimal(payload.get("sz")),
-                triggerPrice(payload),
-                true,
-                payload.getOrDefault("algoClOrdId", payload.get("clOrdId")),
-                okxOrdId
-        );
-    }
-
-    private static BigDecimal triggerPrice(Map<String, String> payload) {
-        String value = payload.getOrDefault("slTriggerPx", payload.getOrDefault("tpTriggerPx", "0"));
-        return new BigDecimal(value);
-    }
-
     private static BigDecimal decimal(JsonNode node, String field) {
         String value = node == null ? "" : node.path(field).asText("");
         if (value == null || value.isBlank()) {
@@ -518,21 +456,21 @@ public class OkxTradeAdapter {
         return data.get(0);
     }
 
-    private static boolean isTimeout(RuntimeException ex) {
-        String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
-        return message.contains("timeout") || message.contains("timed out") || message.contains("超时");
-    }
-
     private static String orderId(JsonNode response, String preferredField) {
-        JsonNode data = response == null ? null : response.path("data");
-        if (data == null || !data.isArray() || data.isEmpty()) {
-            throw new IllegalStateException("OKX order response does not contain data");
-        }
-        JsonNode item = data.get(0);
-        String sCode = item.path("sCode").asText("");
+        JsonNode item = firstDataItem(response);
+        String sCode = item == null ? "" : item.path("sCode").asText("");
+        // A per-item timeout stays uncertain even when the envelope says failed.
         if (!sCode.isBlank() && !"0".equals(sCode)) {
-            String sMsg = item.path("sMsg").asText("");
-            throw new IllegalStateException("OKX order rejected: sCode=" + sCode + ", sMsg=" + sMsg);
+            throw OkxApiRejectedException.fromResponse(sCode, "OKX order response: sCode=" + sCode
+                    + ", sMsg=" + item.path("sMsg").asText(""));
+        }
+        if (response != null && !"0".equals(response.path("code").asText("0"))) {
+            String code = response.path("code").asText();
+            throw OkxApiRejectedException.fromResponse(code, "OKX order response: code=" + code
+                    + ", msg=" + response.path("msg").asText(""));
+        }
+        if (item == null) {
+            throw new IllegalStateException("OKX order response does not contain data");
         }
         String id = item.path(preferredField).asText("");
         if (id.isBlank()) {
@@ -576,6 +514,14 @@ public class OkxTradeAdapter {
         return value != null && !value.trim().isEmpty();
     }
 
+    private static String compact(String message) {
+        if (!hasText(message)) {
+            return "unknown";
+        }
+        String value = message.replaceAll("\\s+", " ").trim();
+        return value.length() > 240 ? value.substring(0, 240) : value;
+    }
+
     private static String value(BigDecimal value) {
         return value.stripTrailingZeros().toPlainString();
     }
@@ -584,9 +530,4 @@ public class OkxTradeAdapter {
         return value == null ? "" : value.toString();
     }
 
-    private record ProtectionSubmitResult(int submitted, int failed) {
-    }
-
-    private record TakeProfitLeg(String suffix, BigDecimal size, BigDecimal rMultiple) {
-    }
 }

@@ -56,7 +56,9 @@ public class ContractSignalAnalyzer {
         BigDecimal entry = positive(lastPrice) ? lastPrice : lastClose(twentyMinute);
         BigDecimal todayOpen = defaultPositive(open24h, entry);
         BigDecimal todayChangePct = percent(entry.subtract(todayOpen), todayOpen);
-        BigDecimal oiChange = percent(openInterest.subtract(previousOpenInterest), previousOpenInterest);
+        BigDecimal oiChange = positive(openInterest) && positive(previousOpenInterest)
+                ? percent(openInterest.subtract(previousOpenInterest), previousOpenInterest)
+                : null;
         BigDecimal change5m = changeOverBars(fiveMinute.isEmpty() ? twentyMinute : fiveMinute, 1);
         BigDecimal change10m = changeOverBars(fiveMinute.isEmpty() ? twentyMinute : fiveMinute, 2);
         ContractNewsRiskAnalysis newsRisk = ContractNewsRiskAnalysis.low();
@@ -105,7 +107,8 @@ public class ContractSignalAnalyzer {
                 scale(main.volumeRatio()),
                 scale(main.atrPct()),
                 scale(distanceFromEma20Pct),
-                structure.clearFor(direction)
+                structure.clearFor(direction),
+                latestTimestamp(fiveMinute.isEmpty() ? twentyMinute : fiveMinute)
         );
 
         ContractScoreBreakdown scores = scoreBreakdown(
@@ -134,6 +137,9 @@ public class ContractSignalAnalyzer {
 
         List<String> reasons = reasons(signalType, todayChangePct, main, klineAnalysis, scores, newsRisk);
         List<String> risks = risks(signalType, todayChangePct, fundingRate, main, fast, klineAnalysis, newsRisk);
+        if (oiChange == null) {
+            risks.add("OI变化不可用，不能作为增仓确认");
+        }
         if (stopLossPct.compareTo(MAX_STOP_LOSS_PCT) > 0) {
             risks.add("止损距离超过5%，不进入自动交易");
         }
@@ -182,6 +188,10 @@ public class ContractSignalAnalyzer {
                 klineAnalysis,
                 newsRisk
         );
+    }
+
+    private static java.time.Instant latestTimestamp(List<ContractCandle> candles) {
+        return candles == null || candles.isEmpty() ? null : candles.get(candles.size() - 1).timestamp();
     }
 
     private static ContractSignal noTradeSignal(BigDecimal entry, BigDecimal todayChangePct, BigDecimal change5m,
@@ -342,7 +352,7 @@ public class ContractSignalAnalyzer {
         int volume = (int) Math.round(volumeRatioScore * 0.50 + volumeDirection * 0.30
                 + (abnormalVolume(main) ? 35 : 80) * 0.20);
 
-        int liquidity = volume24hScore(volume24h);
+        int liquidity = turnoverScore(volume24h);
 
         int atrScore;
         if (main.atrPct().compareTo(new BigDecimal("0.30")) < 0) {
@@ -435,12 +445,16 @@ public class ContractSignalAnalyzer {
                 || "HIGH".equals(newsRisk.newsRiskLevel())) {
             return "NO_TRADE";
         }
-        if (signalType == ContractSignalType.WAIT_OVERHEATED
+        if (!newsRisk.decision().allowTrade()) {
+            return "WAIT";
+        }
+        if (signalType == ContractSignalType.REVERSAL_SHORT
+                || signalType == ContractSignalType.WAIT_OVERHEATED
                 || signalType == ContractSignalType.WAIT_OVERSOLD
                 || signalType == ContractSignalType.NEUTRAL) {
             return "WAIT";
         }
-        if (score >= 80 && "READY".equals(entryTiming5m)) {
+        if (score >= 65 && "READY".equals(entryTiming5m)) {
             return "AUTO_TRADE_ALLOWED";
         }
         return "WAIT_CONFIRM";
@@ -452,7 +466,7 @@ public class ContractSignalAnalyzer {
             return 0;
         }
         int leverage = switch (signalType) {
-            case STRONG_LONG, TREND_SHORT -> score >= 86 ? 5 : score >= 80 ? 4 : 3;
+            case STRONG_LONG, TREND_SHORT -> score >= 92 ? 10 : score >= 86 ? 8 : score >= 80 ? 6 : 4;
             case PULLBACK_LONG -> score >= 82 ? 4 : 2;
             case REVERSAL_SHORT -> 3;
             default -> 0;
@@ -480,7 +494,7 @@ public class ContractSignalAnalyzer {
         if (signalType == ContractSignalType.REVERSAL_SHORT) {
             leverage = Math.max(1, leverage);
         }
-        return Math.max(0, Math.min(5, leverage));
+        return Math.max(0, Math.min(10, leverage));
     }
 
     private static String entryType(ContractSignalType signalType, String entryTiming5m, String action) {
@@ -742,17 +756,20 @@ public class ContractSignalAnalyzer {
         return 70;
     }
 
-    private static int volume24hScore(BigDecimal volume24h) {
-        if (volume24h == null || volume24h.compareTo(BigDecimal.valueOf(30_000_000L)) < 0) {
-            return 25;
+    static int turnoverScore(BigDecimal turnover24hUsdt) {
+        if (turnover24hUsdt == null || turnover24hUsdt.compareTo(BigDecimal.valueOf(2_000_000)) < 0) {
+            return 20;
         }
-        if (volume24h.compareTo(BigDecimal.valueOf(100_000_000L)) < 0) {
-            return 55;
+        if (turnover24hUsdt.compareTo(BigDecimal.valueOf(5_000_000)) < 0) {
+            return 40;
         }
-        if (volume24h.compareTo(BigDecimal.valueOf(500_000_000L)) < 0) {
-            return 75;
+        if (turnover24hUsdt.compareTo(BigDecimal.valueOf(10_000_000)) < 0) {
+            return 50;
         }
-        if (volume24h.compareTo(BigDecimal.valueOf(1_500_000_000L)) < 0) {
+        if (turnover24hUsdt.compareTo(BigDecimal.valueOf(50_000_000)) < 0) {
+            return 65;
+        }
+        if (turnover24hUsdt.compareTo(BigDecimal.valueOf(150_000_000)) < 0) {
             return 88;
         }
         return 96;
@@ -801,8 +818,8 @@ public class ContractSignalAnalyzer {
 
     private static int oiConsistencyScore(DirectionBias direction, BigDecimal todayChangePct,
                                           BigDecimal openInterest, BigDecimal oiChange) {
-        if (openInterest == null || openInterest.signum() <= 0) {
-            return 60;
+        if (openInterest == null || openInterest.signum() <= 0 || oiChange == null) {
+            return 50;
         }
         if (direction == DirectionBias.BULLISH && todayChangePct.signum() > 0 && oiChange.signum() >= 0) {
             return 85;
@@ -1074,8 +1091,7 @@ public class ContractSignalAnalyzer {
     private static boolean isTradableSignal(ContractSignalType signalType) {
         return signalType == ContractSignalType.STRONG_LONG
                 || signalType == ContractSignalType.PULLBACK_LONG
-                || signalType == ContractSignalType.TREND_SHORT
-                || signalType == ContractSignalType.REVERSAL_SHORT;
+                || signalType == ContractSignalType.TREND_SHORT;
     }
 
     private static BigDecimal scale(BigDecimal value) {

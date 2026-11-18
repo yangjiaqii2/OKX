@@ -4,9 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.quant.market.MarketType;
+import com.example.quant.config.AgentProperties;
+import com.example.quant.config.TradingProperties;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.OrderExecutionResult;
 import com.example.quant.tradeplan.TradePlanType;
+import com.example.quant.tradeplan.CanonicalPlanCompiler;
+import com.example.quant.tradeplan.CanonicalExecutablePlan;
+import com.example.quant.tradeplan.TradeIntent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -19,6 +24,86 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class OkxTradeAdapterTest {
+    @Test
+    void canonicalProductionPathFailsClosedWhenSnapshotIsMissing() {
+        CapturingGateway gateway = new CapturingGateway();
+        OkxTradeAdapter adapter = testAdapter(gateway);
+        adapter.setCanonicalPlanCompiler(new CanonicalPlanCompiler());
+
+        assertThatThrownBy(() -> adapter.placeOrder(order()))
+                .isInstanceOf(OrderNotSubmittedException.class)
+                .hasMessageContaining("CANONICAL_PLAN_MISSING");
+        assertThat(gateway.payload).isNull();
+    }
+
+    @Test
+    void canonicalEntryAndStopFactsAreSerializedWithoutReinterpretation() {
+        CapturingGateway gateway = new CapturingGateway();
+        OkxTradeAdapter adapter = testAdapter(gateway);
+        adapter.setCanonicalPlanCompiler(new CanonicalPlanCompiler());
+        PendingOrder order = order();
+        OkxInstrumentRules rules = new OkxInstrumentRules("BTC-USDT-SWAP", BigDecimal.ONE, "BTC",
+                new BigDecimal("0.01"), new BigDecimal("0.01"), new BigDecimal("0.1"));
+        CanonicalExecutablePlan plan = new CanonicalPlanCompiler().compile(
+                TradeIntent.fromPendingOrder(order, new BigDecimal("0.3"), new BigDecimal("0.4"),
+                        new BigDecimal("0.3"), "strategy-v1"), rules);
+        order.setExecutableContractQuantity(plan.entry().executableContractQuantity());
+        order.setCanonicalExecutablePlan(plan);
+
+        adapter.placeOrder(order);
+
+        assertThat(gateway.payload).containsEntry("sz", "5").containsEntry("px", "100");
+        assertThat(attachedPayload((List<?>) gateway.payload.get("attachAlgoOrds"), 0))
+                .containsEntry("slTriggerPx", "98");
+    }
+
+    @Test
+    void leverageTimeoutIsKnownToOccurBeforeTheOrderRequest() {
+        LeverageTimeoutGateway gateway = new LeverageTimeoutGateway();
+        OkxTradeAdapter adapter = testAdapter(gateway);
+
+        assertThatThrownBy(() -> adapter.placeOrder(order()))
+                .isInstanceOf(OrderNotSubmittedException.class)
+                .hasMessageContaining("PRE_ORDER_SETUP_FAILED");
+        assertThat(gateway.payload).isNull();
+    }
+
+    @Test
+    void unknownSubmitRecoveryFallsBackToOrderHistoryAfterCurrentLookupSaysNotFound() {
+        HistoryRecoveryGateway gateway = new HistoryRecoveryGateway();
+        OkxTradeAdapter adapter = testAdapter(gateway);
+        PendingOrder order = order();
+
+        OrderExecutionResult result = adapter.recoverUnknownSubmitStatus(order);
+
+        assertThat(result.submitted()).isTrue();
+        assertThat(result.externalOrderId()).isEqualTo("history-order-1");
+        assertThat(gateway.queryOrderPayload).containsEntry("clOrdId", order.clientOrderId());
+        assertThat(gateway.historyPayload).containsEntry("clOrdId", order.clientOrderId());
+    }
+
+    @Test
+    void disabledLiveTradingNeverCallsOrderGateway() {
+        CapturingGateway gateway = new CapturingGateway();
+        OkxTradeAdapter adapter = new OkxTradeAdapter(
+                gateway,
+                null,
+                instId -> new OkxInstrumentRules(instId, BigDecimal.ONE, "BTC", BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ZERO),
+                () -> OkxPositionMode.LONG_SHORT,
+                new AgentProperties(),
+                new TradingProperties("SEMI_AUTO", true, false, 120, false)
+        );
+
+        assertThatThrownBy(() -> adapter.placeOrder(order()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("实盘交易已禁用");
+        assertThatThrownBy(() -> adapter.closePosition("BTC-USDT-SWAP", "long", "cross"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("实盘交易已禁用");
+        assertThat(gateway.payload).isNull();
+        assertThat(gateway.closePayload).isNull();
+    }
+
     @Test
     void limitOrderSubmitDoesNotSubmitProtectionWhenNoFillIsConfirmed() {
         CapturingGateway gateway = new CapturingGateway();
@@ -70,13 +155,11 @@ class OkxTradeAdapterTest {
         assertThat(gateway.payload).containsEntry("sz", "5");
         assertThat(gateway.payload).containsKey("clOrdId");
         List<?> attached = (List<?>) gateway.payload.get("attachAlgoOrds");
-        assertThat(attached).hasSize(2);
+        assertThat(attached).hasSize(1);
         assertThat(attachedPayload(attached, 0))
-                .containsEntry("slTriggerPx", "98.5")
+                .containsEntry("slTriggerPx", "98")
+                .containsKey("attachAlgoClOrdId")
                 .containsEntry("slOrdPx", "-1");
-        assertThat(attachedPayload(attached, 1))
-                .containsEntry("tpTriggerPx", "104")
-                .containsEntry("tpOrdPx", "-1");
         assertThat(gateway.algoPayloads).isEmpty();
     }
 
@@ -119,9 +202,22 @@ class OkxTradeAdapterTest {
 
         adapter.placeOrder(order);
 
-        assertThat(gateway.payload).containsEntry("sz", "243");
+        assertThat(gateway.payload).containsEntry("sz", "242");
         assertThat(gateway.payload).containsEntry("px", "0.0003853");
         assertThat(gateway.algoPayloads).isEmpty();
+    }
+
+    @Test
+    void rejectsOrderInsteadOfRoundingRiskBudgetUpToMinimumSize() {
+        CapturingGateway gateway = new CapturingGateway();
+        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway, instId -> new OkxInstrumentRules(
+                instId, BigDecimal.ONE, "BTC", BigDecimal.ONE, BigDecimal.ONE, new BigDecimal("0.1")));
+        PendingOrder order = marketOrderWithSize(new BigDecimal("0.4"));
+
+        assertThatThrownBy(() -> adapter.placeOrder(order))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("低于OKX最小下单量");
+        assertThat(gateway.payload).isNull();
     }
 
     @Test
@@ -170,7 +266,7 @@ class OkxTradeAdapterTest {
     @Test
     void rejectsWhenOkxOrderDataHasFailureCode() {
         RejectingGateway gateway = new RejectingGateway();
-        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
+        OkxTradeAdapter adapter = testAdapter(gateway);
 
         assertThatThrownBy(() -> adapter.placeOrder(order()))
                 .isInstanceOf(IllegalStateException.class)
@@ -178,19 +274,22 @@ class OkxTradeAdapterTest {
     }
 
     @Test
-    void marketOrderUsesAttachedTakeProfitAndStopLoss() {
+    void marketOrderAckRemainsSubmittedUntilOkxConfirmsFill() {
         CapturingGateway gateway = new CapturingGateway();
-        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
+        OkxTradeAdapter adapter = testAdapter(gateway);
 
         OrderExecutionResult result = adapter.placeOrder(marketOrder());
 
         assertThat(result.executed()).isTrue();
-        assertThat(result.filled()).isTrue();
+        assertThat(result.submitted()).isTrue();
+        assertThat(result.filled()).isFalse();
+        assertThat(result.message()).contains("等待成交确认");
         assertThat(result.externalOrderId()).isEqualTo("123456");
         List<?> attached = (List<?>) gateway.payload.get("attachAlgoOrds");
-        assertThat(attached).hasSize(2);
-        assertThat(attachedPayload(attached, 0)).containsEntry("slTriggerPx", "98.5");
-        assertThat(attachedPayload(attached, 1)).containsEntry("tpTriggerPx", "106");
+        assertThat(attached).hasSize(1);
+        assertThat(attachedPayload(attached, 0))
+                .containsEntry("slTriggerPx", "98")
+                .containsKey("attachAlgoClOrdId");
         assertThat(gateway.algoPayloads).isEmpty();
         assertThat(gateway.closePayload).isNull();
     }
@@ -198,7 +297,7 @@ class OkxTradeAdapterTest {
     @Test
     void automaticOrderUsesStableClientOrderIdFromPendingOrder() {
         CapturingGateway gateway = new CapturingGateway();
-        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
+        OkxTradeAdapter adapter = testAdapter(gateway);
         PendingOrder order = order();
         order.applyBudgetReservation(new BigDecimal("22.5"), UUID.randomUUID(), "{}", "AUTO_plan1234_order5678");
 
@@ -210,7 +309,7 @@ class OkxTradeAdapterTest {
     @Test
     void submitTimeoutQueriesOkxByClientOrderIdAndRecoversExistingOrder() {
         TimeoutThenFoundGateway gateway = new TimeoutThenFoundGateway();
-        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
+        OkxTradeAdapter adapter = testAdapter(gateway);
         PendingOrder order = order();
         order.applyBudgetReservation(new BigDecimal("22.5"), UUID.randomUUID(), "{}", "AUTOrecover123456");
 
@@ -227,14 +326,20 @@ class OkxTradeAdapterTest {
     @Test
     void submitTimeoutKeepsStatusUnknownWhenClientOrderIdIsNotYetFound() {
         TimeoutThenMissingGateway gateway = new TimeoutThenMissingGateway();
-        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway);
+        OkxTradeAdapter adapter = testAdapter(gateway);
         PendingOrder order = order();
         order.applyBudgetReservation(new BigDecimal("22.5"), UUID.randomUUID(), "{}", "AUTOmissing123456");
 
         assertThatThrownBy(() -> adapter.placeOrder(order))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(com.example.quant.order.OrderSubmitStatusUnknownException.class)
                 .hasMessageContaining("OKX request timed out");
         assertThat(gateway.queryOrderPayload).containsEntry("clOrdId", "AUTOmissing123456");
+    }
+
+    private static OkxTradeAdapter testAdapter(OkxOrderGateway gateway) {
+        return new OkxTradeAdapter(gateway, instId -> new OkxInstrumentRules(
+                instId, BigDecimal.ONE, "BTC", new BigDecimal("0.01"),
+                new BigDecimal("0.01"), new BigDecimal("0.1")));
     }
 
     private static PendingOrder order() {
@@ -401,6 +506,40 @@ class OkxTradeAdapterTest {
         public JsonNode queryOrder(Map<String, String> payload) {
             this.queryOrderPayload = payload;
             return new ObjectMapper().createObjectNode().putArray("data");
+        }
+    }
+
+    private static class LeverageTimeoutGateway extends CapturingGateway {
+        @Override
+        public JsonNode setLeverage(Map<String, String> payload) {
+            throw new IllegalStateException("OKX request failed: request timed out");
+        }
+    }
+
+    private static class HistoryRecoveryGateway extends CapturingGateway {
+        private Map<String, String> historyPayload;
+
+        @Override
+        public JsonNode queryOrder(Map<String, String> payload) {
+            this.queryOrderPayload = payload;
+            throw new IllegalStateException("OKX code=51603, msg=Order does not exist");
+        }
+
+        @Override
+        public JsonNode currentOrders(Map<String, String> payload) {
+            return new ObjectMapper().createObjectNode().putArray("data");
+        }
+
+        @Override
+        public JsonNode queryOrderHistory(Map<String, String> payload) {
+            this.historyPayload = payload;
+            ObjectNode root = new ObjectMapper().createObjectNode();
+            root.putArray("data").addObject()
+                    .put("ordId", "history-order-1")
+                    .put("clOrdId", payload.get("clOrdId"))
+                    .put("state", "filled")
+                    .put("accFillSz", "5");
+            return root;
         }
     }
 }

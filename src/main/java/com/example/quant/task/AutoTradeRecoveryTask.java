@@ -121,7 +121,7 @@ public class AutoTradeRecoveryTask {
 
     public RecoveryResult runOnce() {
         if (!agentProperties.recovery().enabled()) {
-            return new RecoveryResult(0, 0, 0, 0);
+            return new RecoveryResult(0, 0, 0, 0, false);
         }
         Instant now = Instant.now();
         if (systemControlService != null) {
@@ -129,7 +129,7 @@ public class AutoTradeRecoveryTask {
             if (!hasText(ownerUsername)) {
                 log.warn("AutoTrade recovery skipped: autoTradeOwnerUsername missing");
                 recordRecoveryFailed(null, null, "AUTO_TRADE_OWNER_MISSING", "autoTradeOwnerUsername missing");
-                return new RecoveryResult(0, 0, 1, 0);
+                return new RecoveryResult(0, 0, 1, 0, false);
             }
             try {
                 return AuthUserContext.callAs(ownerUsername, () -> runOnceAsOwner(now));
@@ -137,10 +137,49 @@ public class AutoTradeRecoveryTask {
                 log.warn("AutoTrade recovery skipped for owner={} because recovery context failed: {}",
                         ownerUsername, ex.getMessage(), ex);
                 recordRecoveryFailed(ownerUsername, null, "RECOVERY_CONTEXT_FAILED", ex.getMessage());
-                return new RecoveryResult(0, 0, 1, 0);
+                return new RecoveryResult(0, 0, 1, 0, false);
             }
         }
         return runOnceAsOwner(now);
+    }
+
+    public RecoveryResult runOnceForOwner(String ownerUsername) {
+        if (!agentProperties.recovery().enabled()) {
+            return new RecoveryResult(0, 0, 0, 0, false);
+        }
+        if (!hasText(ownerUsername)) {
+            return new RecoveryResult(0, 0, 1, 0, false);
+        }
+        return AuthUserContext.callAs(ownerUsername, () -> runOnceAsOwner(Instant.now()));
+    }
+
+    /** Active pre-canonical lifecycles are not reconstructed from legacy fields. */
+    public int legacyActiveLifecycleCount() {
+        return pendingOrderService.allOrders().stream()
+                .filter(order -> order.submittedAt() != null)
+                .filter(order -> order.status() == OrderStatus.SUBMITTED
+                        || order.status() == OrderStatus.PROTECTION_SUBMITTED
+                        || order.status() == OrderStatus.ACTIVE
+                        || order.status() == OrderStatus.ACTIVE_WITH_TP_WARNING
+                        || order.status() == OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED)
+                .filter(order -> order.canonicalExecutablePlan() == null)
+                .mapToInt(order -> 1)
+                .sum();
+    }
+
+    /** V34 deployment is only safe at a flat, unresolved-lifecycle boundary. */
+    public int unresolvedPendingOrderCount() {
+        return (int) pendingOrderService.allOrders().stream()
+                .filter(order -> switch (order.status()) {
+                    case CANCELLED, EXPIRED, REJECTED, FAILED, CLOSED -> false;
+                    default -> true;
+                })
+                .count();
+    }
+
+    public int unresolvedCloseIntentCount() {
+        return closePositionRecoveryService == null
+                ? 0 : closePositionRecoveryService.unresolvedCloseIntentCount();
     }
 
     private RecoveryResult runOnceAsOwner(Instant now) {
@@ -148,8 +187,16 @@ public class AutoTradeRecoveryTask {
         int releasedReservations = 0;
         int attentionRequired = 0;
         int recoveredUnknownSubmits = 0;
-        syncCurrentOkxOrders();
+        boolean exchangeSynchronized = syncCurrentOkxOrders();
         for (PendingOrder order : pendingOrderService.allOrders()) {
+            // CONFIRMING is persisted before risk checks and before any exchange call.
+            // A restart in this state can therefore safely resume from the existing reservation.
+            if (order.status() == OrderStatus.CONFIRMING) {
+                order.transition(OrderStatus.CONFIRMING, OrderStatus.BUDGET_RESERVED);
+            }
+            if (order.status() == OrderStatus.CONFIRMED) {
+                order.transition(OrderStatus.CONFIRMED, OrderStatus.BUDGET_RESERVED);
+            }
             if (isReservablePendingStatus(order.status()) && order.isExpired(now)) {
                 order.markExpired();
                 expiredOrders++;
@@ -166,6 +213,10 @@ public class AutoTradeRecoveryTask {
                 releasedReservations += releaseAnyBudget(order, "POSITION_CLOSED");
                 continue;
             }
+            if (order.status() == OrderStatus.SUBMITTING) {
+                order.markUnknownSubmitStatus("APPLICATION_RESTARTED_DURING_SUBMIT; reconcile by clOrdId="
+                        + order.clientOrderId());
+            }
             if (order.status() == OrderStatus.UNKNOWN_SUBMIT_STATUS) {
                 RecoveryDecision decision = recoverUnknownSubmit(order, now);
                 recoveredUnknownSubmits += decision.recovered();
@@ -174,6 +225,8 @@ public class AutoTradeRecoveryTask {
                 continue;
             }
             if (order.status() == OrderStatus.PROTECTION_FAILED
+                    || order.status() == OrderStatus.PROTECTION_REPLAN_REQUIRED
+                    || order.status() == OrderStatus.PROTECTION_RULES_STALE
                     || order.status() == OrderStatus.EMERGENCY_ATTENTION_REQUIRED
             ) {
                 attentionRequired++;
@@ -185,21 +238,28 @@ public class AutoTradeRecoveryTask {
         if (closePositionRecoveryService != null) {
             closePositionRecoveryService.runOnce(now);
         }
-        return new RecoveryResult(expiredOrders, releasedReservations, attentionRequired, recoveredUnknownSubmits);
+        return new RecoveryResult(expiredOrders, releasedReservations, attentionRequired, recoveredUnknownSubmits,
+                exchangeSynchronized);
     }
 
-    private void syncCurrentOkxOrders() {
+    private boolean syncCurrentOkxOrders() {
         if (currentOrderSyncService == null) {
-            return;
+            return true;
         }
         OkxCurrentOrderSyncService.SyncResult result = currentOrderSyncService.syncOnce();
-        if (result != null && result.failed()) {
-            log.warn("AutoTrade recovery current OKX order sync failed: {}", result.errorMessage());
-            recordRecoveryFailed(null, null, "CURRENT_OKX_ORDER_SYNC_FAILED", result.errorMessage());
+        if (result == null || result.failed() || result.errorMessage() != null) {
+            String message = result == null ? "NULL_SYNC_RESULT" : result.errorMessage();
+            log.warn("AutoTrade recovery current OKX order sync failed: {}", message);
+            recordRecoveryFailed(null, null, "CURRENT_OKX_ORDER_SYNC_FAILED", message);
+            return false;
         }
+        return true;
     }
 
     private RecoveryDecision recoverUnknownSubmit(PendingOrder order, Instant now) {
+        if (order.requiresLegacyAccountingReconciliation()) {
+            return new RecoveryDecision(0, 0, 1);
+        }
         if (okxTradeAdapter == null || order.clientOrderId() == null || order.clientOrderId().isBlank()) {
             return new RecoveryDecision(0, 0, 1);
         }
@@ -221,8 +281,9 @@ public class AutoTradeRecoveryTask {
                 if (!unknownSubmitSafeWaitElapsed(order, now)) {
                     return new RecoveryDecision(0, 0, 1);
                 }
-                order.markRejected(result.message());
-                return new RecoveryDecision(0, releaseAnyBudget(order, "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT"), 0);
+                order.markUnknownSubmitStatus(result.message()
+                        + "; 自动释放已禁止，请人工核对OKX订单、成交和仓位后处理");
+                return new RecoveryDecision(0, 0, 1);
             }
             return new RecoveryDecision(0, 0, 1);
         } catch (RuntimeException ex) {
@@ -339,6 +400,6 @@ public class AutoTradeRecoveryTask {
     }
 
     public record RecoveryResult(int expiredOrders, int releasedReservations, int attentionRequired,
-                                 int recoveredUnknownSubmits) {
+                                 int recoveredUnknownSubmits, boolean exchangeSynchronized) {
     }
 }

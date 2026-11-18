@@ -77,7 +77,7 @@ public class ContractRiskService implements RiskService {
             riskLevel = max(riskLevel, RiskLevel.MEDIUM);
             warnings.add("funding rate near limit");
         }
-        if (stopDistance.compareTo(BigDecimal.valueOf(0.05)) >= 0) {
+        if (stopDistance.compareTo(BigDecimal.valueOf(0.05)) > 0) {
             dynamicLeverageCap = Math.min(dynamicLeverageCap, 1);
             riskLevel = max(riskLevel, RiskLevel.HIGH);
             warnings.add("wide stop distance, cap leverage to 1x");
@@ -105,6 +105,14 @@ public class ContractRiskService implements RiskService {
                 .multiply(request.maxSingleLossRate())
                 .multiply(lossMultiplier(riskLevel))
                 .setScale(8, RoundingMode.HALF_UP);
+        BigDecimal estimatedStopLoss = request.suggestedMargin()
+                .multiply(BigDecimal.valueOf(request.leverage()))
+                .multiply(stopDistance)
+                .setScale(8, RoundingMode.HALF_UP);
+        if (estimatedStopLoss.compareTo(maxLoss) > 0) {
+            return RiskCheckResult.rejected("MAX_LOSS_EXCEEDED",
+                    "Estimated stop loss exceeds configured single-trade loss budget");
+        }
         return new RiskCheckResult(true, riskLevel, null, null, warnings, null, dynamicLeverageCap, maxLoss, Instant.now());
     }
 

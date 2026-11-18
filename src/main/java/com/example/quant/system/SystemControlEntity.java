@@ -29,6 +29,12 @@ public class SystemControlEntity {
     @Column(name = "auto_trade_margin_usdt", precision = 30, scale = 12)
     private BigDecimal autoTradeMarginUsdt;
 
+    @Column(name = "auto_trade_budget_mode", nullable = false, length = 32)
+    private String autoTradeBudgetMode;
+
+    @Column(name = "auto_trade_margin_pct", precision = 8, scale = 4)
+    private BigDecimal autoTradeMarginPct;
+
     @Column(name = "no_risk_min_score", nullable = false)
     private int noRiskMinScore;
 
@@ -84,6 +90,22 @@ public class SystemControlEntity {
 
     public void setAutoTradeMarginUsdt(BigDecimal autoTradeMarginUsdt) {
         this.autoTradeMarginUsdt = autoTradeMarginUsdt;
+    }
+
+    public String getAutoTradeBudgetMode() {
+        return autoTradeBudgetMode;
+    }
+
+    public void setAutoTradeBudgetMode(String autoTradeBudgetMode) {
+        this.autoTradeBudgetMode = autoTradeBudgetMode;
+    }
+
+    public BigDecimal getAutoTradeMarginPct() {
+        return autoTradeMarginPct;
+    }
+
+    public void setAutoTradeMarginPct(BigDecimal autoTradeMarginPct) {
+        this.autoTradeMarginPct = autoTradeMarginPct;
     }
 
     public int getNoRiskMinScore() {

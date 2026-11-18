@@ -2,7 +2,7 @@ spring:
   application:
     name: quant-assistant
   datasource:
-    url: ${MYSQL_URL:jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:33066}/${MYSQL_DATABASE:OKX}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true}
+    url: ${MYSQL_URL:jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:33066}/${MYSQL_DATABASE:OKX}?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&createDatabaseIfNotExist=true}
     username: ${MYSQL_USERNAME:root}
     password: ${MYSQL_PASSWORD:}
   jpa:
@@ -17,12 +17,21 @@ quant:
     fx-rate:
       base: USD
       quote: CNY
-      rate: ${QUANT_SYSTEM_FX_USD_CNY_RATE:7.2}
-      source: ${QUANT_SYSTEM_FX_USD_CNY_SOURCE:CONFIGURED}
+      rate: ${QUANT_SYSTEM_FX_USD_CNY_RATE:7.0}
+      source: ${QUANT_SYSTEM_FX_USD_CNY_SOURCE:FALLBACK}
+      enabled: ${QUANT_SYSTEM_FX_ENABLED:true}
+      url: ${QUANT_SYSTEM_FX_URL:https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml}
+      fallback-url: ${QUANT_SYSTEM_FX_FALLBACK_URL:https://api.frankfurter.app/latest?from=USD&to=CNY}
+      connect-timeout-seconds: ${QUANT_SYSTEM_FX_CONNECT_TIMEOUT_SECONDS:3}
+      read-timeout-seconds: ${QUANT_SYSTEM_FX_READ_TIMEOUT_SECONDS:5}
+      refresh-cron: ${QUANT_SYSTEM_FX_REFRESH_CRON:0 5 0 * * *}
+      zone: ${QUANT_SYSTEM_FX_ZONE:Asia/Shanghai}
   auth:
     username: ${QUANT_AUTH_USERNAME:admin}
-    password: ${QUANT_AUTH_PASSWORD:admin123}
+    password: ${QUANT_AUTH_PASSWORD:}
     session-ttl-minutes: ${QUANT_AUTH_SESSION_TTL_MINUTES:480}
+  security:
+    credential-master-key: ${QUANT_CREDENTIAL_MASTER_KEY:}
   stock:
     enabled: true
     data-source: AKSHARE
@@ -43,7 +52,7 @@ quant:
     change-5m-threshold: 1.5
     volume-spike-ratio: 1.8
     max-abs-funding-rate: 0.001
-    max-leverage: 3
+    max-leverage: ${QUANT_CONTRACT_MAX_LEVERAGE:10}
     default-td-mode: cross
     max-single-margin-rate: 0.05
     max-single-loss-rate: 0.01
@@ -56,9 +65,61 @@ quant:
     scan-interval-seconds: 300
     risk-block-scan-interval-seconds: 1800
     top-candidate-limit: 10
+    ai-selection:
+      enabled: ${QUANT_AGENT_AI_SELECTION_ENABLED:true}
+      candidate-limit: ${QUANT_AGENT_AI_SELECTION_CANDIDATE_LIMIT:12}
+      policy: ${QUANT_AGENT_AI_SELECTION_POLICY:RULE_FIRST_AI_RANK}
+    evaluation:
+      outcome-reconciliation-interval-ms: ${QUANT_AGENT_EVALUATION_OUTCOME_INTERVAL_MS:120000}
+      outcome-reconciliation-batch-size: ${QUANT_AGENT_EVALUATION_OUTCOME_BATCH_SIZE:100}
+      outcome-reconciliation-retry-delay-ms: ${QUANT_AGENT_EVALUATION_OUTCOME_RETRY_DELAY_MS:300000}
+      outcome-reconciliation-stuck-threshold-ms: ${QUANT_AGENT_EVALUATION_OUTCOME_STUCK_THRESHOLD_MS:21600000}
+    # V2: Universe Hard Filter + Provider TTL 配置
+    selection:
+      deep-analysis-limit: ${QUANT_AGENT_DEEP_ANALYSIS_LIMIT:}
+      deep-analysis-concurrency: ${QUANT_AGENT_DEEP_ANALYSIS_CONCURRENCY:4}
+      # deep-analysis-limit 中划给轮换覆盖的名额（不新增分析量，只改变分配）。设 0 = 纯成交额截断。
+      deep-analysis-rotation-quota: ${QUANT_AGENT_DEEP_ANALYSIS_ROTATION_QUOTA:6}
+      universe:
+        market-cap-enabled: true
+        circulation-enabled: true
+        volume-mcap-enabled: true
+        min-market-cap-usd: ${QUANT_SELECTION_MIN_MARKET_CAP_USD:20000000}
+        min-circulation-ratio: ${QUANT_SELECTION_MIN_CIRCULATION_RATIO:0.50}
+        min-volume-mcap-ratio: ${QUANT_SELECTION_MIN_VOLUME_MCAP_RATIO:0.20}
+      providers:
+        market-cap-enabled: true
+        market-cap-fresh-ttl-seconds: ${QUANT_PROVIDER_MCAP_FRESH_TTL:600}
+        market-cap-stale-ttl-seconds: ${QUANT_PROVIDER_MCAP_STALE_TTL:600}
+        relative-strength-enabled: ${QUANT_PROVIDER_RELATIVE_STRENGTH_ENABLED:true}
+        relative-strength-fresh-ttl-seconds: ${QUANT_PROVIDER_RELATIVE_STRENGTH_FRESH_TTL:60}
+        relative-strength-stale-ttl-seconds: ${QUANT_PROVIDER_RELATIVE_STRENGTH_STALE_TTL:600}
+        ath-breakout-enabled: ${QUANT_PROVIDER_ATH_BREAKOUT_ENABLED:true}
+        ath-breakout-fresh-ttl-seconds: ${QUANT_PROVIDER_ATH_BREAKOUT_FRESH_TTL:600}
+        ath-breakout-stale-ttl-seconds: ${QUANT_PROVIDER_ATH_BREAKOUT_STALE_TTL:3600}
+        ath-breakout-max-pages: ${QUANT_PROVIDER_ATH_BREAKOUT_MAX_PAGES:50}
+      breakout:
+        at-ath-pct: ${QUANT_SELECTION_BREAKOUT_AT_ATH_PCT:-2}
+        near-ath-pct: ${QUANT_SELECTION_BREAKOUT_NEAR_ATH_PCT:-10}
+        mid-range-pct: ${QUANT_SELECTION_BREAKOUT_MID_RANGE_PCT:-40}
+        # Phase C/D: CoinGecko real market cap provider
+        coingecko:
+          enabled: ${QUANT_PROVIDER_COINGECKO_ENABLED:true}
+          api-key: ${COINGECKO_API_KEY:}
+          api-mode: ${COINGECKO_API_MODE:DEMO}
+          rate-limit-per-minute: ${QUANT_PROVIDER_COINGECKO_RPM:20}
+        # Wave 2: Derivatives providers (OI History + Funding History)
+        derivatives:
+          open-interest-enabled: ${QUANT_PROVIDER_OI_ENABLED:true}
+          funding-enabled: ${QUANT_PROVIDER_FUNDING_ENABLED:true}
+          open-interest-fresh-ttl-seconds: ${QUANT_PROVIDER_OI_FRESH_TTL:60}
+          open-interest-stale-ttl-seconds: ${QUANT_PROVIDER_OI_STALE_TTL:600}
+          funding-fresh-ttl-seconds: ${QUANT_PROVIDER_FUNDING_FRESH_TTL:300}
+          funding-stale-ttl-seconds: ${QUANT_PROVIDER_FUNDING_STALE_TTL:3600}
+          extreme-funding-rate: ${QUANT_PROVIDER_EXTREME_FUNDING_RATE:0.0030}
     auto-trade:
       enabled: ${QUANT_AGENT_AUTO_TRADE_ENABLED:true}
-      min-score: 80
+      min-score: ${QUANT_AGENT_AUTO_TRADE_MIN_SCORE:65}
       no-risk-min-score: ${QUANT_AGENT_AUTO_TRADE_NO_RISK_MIN_SCORE:70}
       min-risk-reward: 2
       require-backtest-pass: ${QUANT_AGENT_REQUIRE_BACKTEST_PASS:false}
@@ -66,15 +127,18 @@ quant:
       min-open-positions: ${QUANT_AGENT_MIN_OPEN_POSITIONS:3}
       in-flight-order-hold-seconds: ${QUANT_AGENT_IN_FLIGHT_ORDER_HOLD_SECONDS:120}
     score:
-      min-total-score: 75
-      min-trend-score: 18
-      min-volume-score: 17
+      min-total-score: ${QUANT_AGENT_MIN_TOTAL_SCORE:65}
+      min-trend-score: 15
+      min-volume-score: 15
       min-liquidity-score: 10
-      min-news-risk-score: 7
+      # Raw news safety score on the 0-100 scale. The weighted contribution remains 5%.
+      min-news-risk-raw-score: ${QUANT_AGENT_MIN_NEWS_RISK_RAW_SCORE:70}
+    news-risk:
+      missing-data-score: ${QUANT_AGENT_NEWS_RISK_MISSING_DATA_SCORE:70}
     market:
-      min-volume-24h-usdt: 50000000
+      min-volume-24h-usdt: 2000000
       max-spread-bps: 8
-      min-depth-usdt: 100000
+      min-depth-usdt: 20000
       max-depth-usage-rate: 0.20
       max-funding-abs: 0.0015
       max-wick-ratio: 0.55
@@ -108,21 +172,21 @@ quant:
     ranking:
       max-auto-trade-fallback-rank: 5
       min-risk-reward: 1.5
-      min-final-rank-score: 70
+      min-final-rank-score: ${QUANT_AGENT_MIN_FINAL_RANK_SCORE:65}
     budget:
       enabled: true
       input-margin-means-total-budget: true
-      allocation-mode: TARGET_UTILIZATION
-      target-utilization-pct: 90
-      min-target-utilization-pct: 80
+      allocation-mode: EQUAL_SPLIT
+      target-utilization-pct: 100
+      min-target-utilization-pct: 100
       max-utilization-pct: 100
       min-order-margin-usdt: 5
       preferred-min-order-margin-usdt: 10
-      max-single-position-budget-pct: 50
+      max-single-position-budget-pct: 33.333334
       slot-weights:
-        1: 0.45
-        2: 0.30
-        3: 0.25
+        1: 0.33333334
+        2: 0.33333333
+        3: 0.33333333
       score-margin-factor:
         score-90-plus: 1.00
         score-85-90: 0.90
@@ -145,18 +209,18 @@ quant:
     position-quality:
       enabled: true
       min-score-by-open-positions:
-        0: 80
-        1: 84
-        2: 88
+        0: ${QUANT_AGENT_POSITION_MIN_SCORE_0:65}
+        1: ${QUANT_AGENT_POSITION_MIN_SCORE_1:65}
+        2: ${QUANT_AGENT_POSITION_MIN_SCORE_2:65}
       min-final-rank-score-by-open-positions:
-        0: 80
-        1: 84
-        2: 88
+        0: ${QUANT_AGENT_POSITION_MIN_FINAL_RANK_0:65}
+        1: ${QUANT_AGENT_POSITION_MIN_FINAL_RANK_1:65}
+        2: ${QUANT_AGENT_POSITION_MIN_FINAL_RANK_2:65}
       max-positions-by-market-regime:
-        BULLISH: 3
-        BEARISH: 3
-        CHOPPY: 1
-        HIGH_VOLATILITY: 1
+        BULLISH: ${QUANT_AGENT_MAX_POSITIONS_BULLISH:3}
+        BEARISH: ${QUANT_AGENT_MAX_POSITIONS_BEARISH:3}
+        CHOPPY: ${QUANT_AGENT_MAX_POSITIONS_CHOPPY:2}
+        HIGH_VOLATILITY: ${QUANT_AGENT_MAX_POSITIONS_HIGH_VOLATILITY:1}
         RISK_OFF: 0
     exposure:
       enabled: true
@@ -216,31 +280,49 @@ quant:
       final-tp-use-remaining-size: true
     risk:
       single-trade-risk-percent: 1
-      max-single-loss-percent: 5
+      max-single-margin-percent: 33.333334
       max-daily-loss-percent: 30
       max-daily-trades: 5
       max-consecutive-losses: 3
       cooldown-minutes-after-loss: 30
-      max-leverage: 5
+      max-leverage: ${QUANT_AGENT_MAX_LEVERAGE:10}
     monitor:
       interval-seconds: 10
       max-hold-minutes: 120
     lifecycle:
-      entry-timeout-minutes: 10
+      entry-timeout-minutes: 15
       sideways-position-hours: 3
       sideways-pnl-range-pct: 1
       sideways-exit-profit-pct: 0.3
-      loss-close-minutes: 30
-      max-hold-minutes: 60
-      max-hold-hours: 1
+      loss-close-minutes: 60
+      max-hold-minutes: 180
+      max-hold-hours: 3
       max-hold-action: CLOSE_POSITION
       sideways-action: TIGHTEN_TAKE_PROFIT
       move-stop-to-breakeven: false
+    # Dynamic profit protection. BASELINE values only - none of these has been
+    # fitted to historical data. Calibrate with the counterfactual_exit table
+    # after this has produced a live sample.
+    profit-protection:
+      enabled: true
+      break-even-activation-r: 0.75
+      profit-lock-activation-r: 1.5
+      trailing-activation-r: 3.0
+      giveback-ratio-pct: 35
+      max-giveback-r: 3.0
+      round-trip-fee-pct: 0.12
+      estimated-slippage-pct: 0.05
+      stop-buffer-from-mark-pct: 0.10
+      min-stop-improvement-bps: 5
+      min-stop-amend-interval-seconds: 60
+      max-stop-amends-per-hour: 20
+      # Reserved capability only. The cancellation path is not implemented yet:
+      # removing TP protection needs demo evidence before it is enabled.
+      trailing-cancel-remaining-tp: false
 
 trading:
-  mode: SEMI_AUTO
+  mode: ${TRADING_MODE:DISABLED}
   require-user-confirm: true
-  okx-live-enabled: true
   order-expire-seconds: 120
   emergency-stop: false
 
@@ -259,6 +341,7 @@ okx:
 
 news:
   enabled: true
+  provider: ${QUANT_NEWS_PROVIDER:OKX}
   max-results-per-symbol: 10
   lookback-hours-stock: 72
   lookback-hours-crypto: 24
@@ -269,9 +352,23 @@ akshare:
 
 ai:
   enabled: true
-  provider: OPENAI_COMPATIBLE
+  provider: ${AI_PROVIDER:OPENAI_COMPATIBLE}
   model: ${AI_MODEL:kimi-k2.6}
   api-key: ${AI_API_KEY:}
   base-url: ${AI_BASE_URL:https://api.moonshot.cn/v1}
   request-timeout-seconds: ${AI_REQUEST_TIMEOUT_SECONDS:20}
   max-retries: ${AI_MAX_RETRIES:0}
+  # 填写 Jev 时将 AI_PROVIDER 改为 TYPESAFE；默认仍使用现有 OpenAI-compatible 链路。
+  typesafe-api-key: ${TYPESAFE_API_KEY:}
+  typesafe-base-url: ${TYPESAFE_BASE_URL:https://api.typesafe.ai}
+  typesafe-model: ${TYPESAFE_MODEL:jev-latest}
+
+notification:
+  enabled: ${NOTIFICATION_ENABLED:false}
+  dispatch-interval-ms: 10000
+  telegram:
+    enabled: ${TELEGRAM_ENABLED:false}
+    bot-token: ${TELEGRAM_BOT_TOKEN:}
+    chat-id: ${TELEGRAM_CHAT_ID:}
+    send-timeout-seconds: ${TELEGRAM_SEND_TIMEOUT_SECONDS:8}
+    max-attempts: ${TELEGRAM_MAX_ATTEMPTS:5}

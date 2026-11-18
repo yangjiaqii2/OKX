@@ -20,6 +20,8 @@ public record AutoTradeLifecycleSnapshot(
         String protectionOrderStatus,
         String lifecycleStatus,
         String nextAction,
+        Duration configuredSidewaysAfter,
+        Duration effectiveSidewaysAfter,
         EntryOrderFact entryOrder,
         List<ProtectionOrderFact> protectionOrders,
         PositionLifecycleFact positionLifecycle,

@@ -20,6 +20,8 @@ class PendingOrderViewTest {
         assertThat(json).contains("\"id\"");
         assertThat(json).contains("\"instId\":\"BTC-USDT-SWAP\"");
         assertThat(json).contains("\"status\":\"PENDING_CONFIRM\"");
+        assertThat(json).contains("\"plannedTakeProfitPrice\"");
+        assertThat(json).contains("\"executableTakeProfitLegs\"");
         assertThat(json).doesNotContain("confirmToken");
     }
 }

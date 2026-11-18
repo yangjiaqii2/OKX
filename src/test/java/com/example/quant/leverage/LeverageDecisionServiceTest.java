@@ -51,6 +51,33 @@ class LeverageDecisionServiceTest {
     }
 
     @Test
+    void clampsConfiguredLeverageToSystemMaximumTen() {
+        LeverageDecisionService service = new LeverageDecisionService();
+
+        LeverageDecisionResult result = service.decide(new LeverageDecisionRequest(
+                "BTC-USDT-SWAP", 95, new BigDecimal("0.01"), new BigDecimal("0.0001"),
+                new BigDecimal("0.05"), new BigDecimal("0.01"), new BigDecimal("10000"),
+                20, RiskLevel.LOW, new BigDecimal("0.90")
+        ));
+
+        assertThat(result.suggestedLeverage()).isEqualTo(10);
+        assertThat(result.maxAllowedLeverage()).isEqualTo(10);
+    }
+
+    @Test
+    void nonMajorContractCanUseTenWhenHardRiskAllowsIt() {
+        LeverageDecisionService service = new LeverageDecisionService();
+
+        LeverageDecisionResult result = service.decide(new LeverageDecisionRequest(
+                "XAU-USDT-SWAP", 95, new BigDecimal("0.01"), new BigDecimal("0.0001"),
+                new BigDecimal("0.05"), new BigDecimal("0.01"), new BigDecimal("10000"),
+                10, RiskLevel.LOW, new BigDecimal("0.90")
+        ));
+
+        assertThat(result.suggestedLeverage()).isEqualTo(10);
+    }
+
+    @Test
     void blockedRiskProducesNoLeverage() {
         LeverageDecisionService service = new LeverageDecisionService();
 

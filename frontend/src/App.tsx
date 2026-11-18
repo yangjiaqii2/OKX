@@ -1,26 +1,31 @@
+import { Box, CircularProgress } from '@mui/material';
+import { lazy, Suspense } from 'react';
 import { Admin, CustomRoutes, Resource } from 'react-admin';
 import { Route } from 'react-router-dom';
 import { quantDataProvider } from './api/quantDataProvider';
 import { authProvider } from './api/authProvider';
 import { AppLayout, appIcons } from './layout';
-import { AccountBindingPage } from './pages/AccountBindingPage';
-import { AccountRiskPage } from './pages/AccountRiskPage';
-import { AutoTradeLifecycleList } from './pages/AutoTradeLifecycleList';
-import { AutoTradeRecordList } from './pages/AutoTradeRecordList';
-import { ClosePositionRecordList } from './pages/ClosePositionRecordList';
-import { ContractCandidateList } from './pages/ContractCandidateList';
-import { CurrentOkxOrderList } from './pages/CurrentOkxOrderList';
 import { Dashboard } from './pages/Dashboard';
 import { LoginPage } from './pages/LoginPage';
-import { PendingOrderList } from './pages/PendingOrderList';
-import { SecurityPage } from './pages/SecurityPage';
-import { SystemControlPage } from './pages/SystemControlPage';
 import { theme } from './theme';
+
+const AccountBindingPage = lazy(() => import('./pages/AccountBindingPage').then((module) => ({ default: module.AccountBindingPage })));
+const AccountRiskPage = lazy(() => import('./pages/AccountRiskPage').then((module) => ({ default: module.AccountRiskPage })));
+const AutoTradeLifecycleList = lazy(() => import('./pages/AutoTradeLifecycleList').then((module) => ({ default: module.AutoTradeLifecycleList })));
+const AutoTradeRecordList = lazy(() => import('./pages/AutoTradeRecordList').then((module) => ({ default: module.AutoTradeRecordList })));
+const ClosePositionRecordList = lazy(() => import('./pages/ClosePositionRecordList').then((module) => ({ default: module.ClosePositionRecordList })));
+const ContractCandidateList = lazy(() => import('./pages/ContractCandidateList').then((module) => ({ default: module.ContractCandidateList })));
+const CurrentOkxOrderList = lazy(() => import('./pages/CurrentOkxOrderList').then((module) => ({ default: module.CurrentOkxOrderList })));
+const PendingOrderList = lazy(() => import('./pages/PendingOrderList').then((module) => ({ default: module.PendingOrderList })));
+const SecurityPage = lazy(() => import('./pages/SecurityPage').then((module) => ({ default: module.SecurityPage })));
+const SystemControlPage = lazy(() => import('./pages/SystemControlPage').then((module) => ({ default: module.SystemControlPage })));
+const PositionsPage = lazy(() => import('./pages/PositionsPage').then((module) => ({ default: module.PositionsPage })));
 
 export default function App() {
   return (
+    <Suspense fallback={<Box display="grid" minHeight="100vh" sx={{ placeItems: 'center' }}><CircularProgress size={28} /></Box>}>
     <Admin
-      title="量化实盘控制台"
+      title="量化交易终端"
       dataProvider={quantDataProvider}
       authProvider={authProvider}
       dashboard={Dashboard}
@@ -70,7 +75,9 @@ export default function App() {
         <Route path="/account-risk" element={<AccountRiskPage />} />
         <Route path="/security" element={<SecurityPage />} />
         <Route path="/system-control" element={<SystemControlPage />} />
+        <Route path="/positions" element={<PositionsPage />} />
       </CustomRoutes>
     </Admin>
+    </Suspense>
   );
 }

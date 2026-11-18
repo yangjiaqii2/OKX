@@ -35,6 +35,11 @@ public record AutoTradeRecordView(
         String reasonCode,
         String reasonMessage,
         Boolean fallbackAllowed,
+        String decisionSource,
+        BigDecimal aiConfidence,
+        String aiDirection,
+        String aiEntryMode,
+        String selectionReason,
         Instant createdAt,
         Instant updatedAt
 ) {
@@ -71,6 +76,11 @@ public record AutoTradeRecordView(
                 entity.getReasonCode(),
                 entity.getReasonMessage(),
                 entity.getFallbackAllowed(),
+                entity.getDecisionSource(),
+                entity.getAiConfidence(),
+                entity.getAiDirection(),
+                entity.getAiEntryMode(),
+                entity.getSelectionReason(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt()
         );

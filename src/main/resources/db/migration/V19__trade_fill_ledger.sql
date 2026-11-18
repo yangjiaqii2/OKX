@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS trade_fill (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_name VARCHAR(128) NOT NULL,
+    trade_plan_id VARCHAR(36),
+    pending_order_id VARCHAR(36),
+    inst_id VARCHAR(64) NOT NULL,
+    ord_id VARCHAR(128) NOT NULL,
+    cl_ord_id VARCHAR(64),
+    trade_id VARCHAR(128) NOT NULL,
+    side VARCHAR(16),
+    pos_side VARCHAR(16),
+    fill_px DECIMAL(30, 12),
+    fill_sz DECIMAL(30, 12),
+    fee DECIMAL(30, 12),
+    fee_ccy VARCHAR(32),
+    fill_pnl DECIMAL(30, 12),
+    fill_time TIMESTAMP NOT NULL,
+    UNIQUE KEY uk_trade_fill_owner_trade (user_name, inst_id, trade_id),
+    INDEX idx_trade_fill_order (user_name, ord_id),
+    INDEX idx_trade_fill_time (user_name, fill_time)
+);

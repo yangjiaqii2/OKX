@@ -6,7 +6,7 @@ import { quantApi } from '../api/quantApi';
 import { glassCard } from '../components/glass';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { StatusChip } from '../components/StatusChip';
-import { formatPrice, formatSide, formatUSDT } from '../formatters';
+import { formatAutoTradeReason, formatPrice, formatSide, formatUSDT } from '../formatters';
 
 type LifecycleRow = Record<string, unknown>;
 
@@ -165,5 +165,5 @@ function formatBudgetFact(value: unknown) {
 function formatRecentEvent(value: unknown) {
   if (!Array.isArray(value) || value.length === 0) return '-';
   const event = value[0] as Record<string, unknown>;
-  return `${String(event.eventType ?? '-')} ${String(event.reasonCode ?? '')}`.trim();
+  return `${formatAutoTradeReason(event.eventType)} ${formatAutoTradeReason(event.reasonCode)}`.trim();
 }

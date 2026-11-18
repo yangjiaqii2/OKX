@@ -11,10 +11,15 @@ import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AiAnalysisService {
+    private static final Logger log = LoggerFactory.getLogger(AiAnalysisService.class);
+
     private final AiProperties aiProperties;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
@@ -50,10 +55,13 @@ public class AiAnalysisService {
         if (!hasText(aiProperties.baseUrl())) {
             throw new IllegalStateException("AI_BASE_URL 未配置");
         }
+        String requestId = UUID.randomUUID().toString();
+        URI endpoint = URI.create(chatCompletionsUrl(aiProperties.baseUrl()));
+        long startedAt = System.nanoTime();
         try {
             Map<String, Object> payload = Map.of(
                     "model", hasText(aiProperties.model()) ? aiProperties.model() : "moonshot-v1-8k",
-                    "temperature", 1,
+                    "temperature", 0.1,
                     "response_format", Map.of("type", "json_object"),
                     "messages", List.of(
                             Map.of("role", "system", "content", systemPrompt),
@@ -61,25 +69,104 @@ public class AiAnalysisService {
                     )
             );
             String body = objectMapper.writeValueAsString(payload);
-            HttpResponse<String> response = sendWithRetry(body);
-            return parseAiJson(response);
+            log.info("AI request started requestId={} endpoint={} model={} payloadChars={}",
+                    requestId, endpoint, hasText(aiProperties.model()) ? aiProperties.model() : "moonshot-v1-8k",
+                    body.length());
+            HttpResponse<String> response = sendWithRetry(body, endpoint, aiProperties.apiKey());
+            log.info("AI response received requestId={} httpStatus={} responseChars={} elapsedMs={}",
+                    requestId, response.statusCode(), response.body() == null ? 0 : response.body().length(),
+                    elapsedMs(startedAt));
+            JsonNode result = parseAiJson(response);
+            log.info("AI request completed requestId={} httpStatus={} elapsedMs={}",
+                    requestId, response.statusCode(), elapsedMs(startedAt));
+            return result;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
+            log.warn("AI request failed requestId={} stage=HTTP reason=INTERRUPTED elapsedMs={}",
+                    requestId, elapsedMs(startedAt));
             throw new IllegalStateException("AI request interrupted", ex);
         } catch (IllegalStateException ex) {
+            log.warn("AI request failed requestId={} stage=HTTP_OR_PARSE reason={} elapsedMs={}",
+                    requestId, compact(ex.getMessage()), elapsedMs(startedAt));
             throw ex;
         } catch (Exception ex) {
+            log.warn("AI request failed requestId={} stage=SERIALIZE_OR_HTTP reason={} elapsedMs={}",
+                    requestId, compact(ex.getMessage()), elapsedMs(startedAt));
             throw new IllegalStateException("AI request failed: " + ex.getMessage(), ex);
         }
     }
 
-    private HttpResponse<String> sendWithRetry(String body) throws Exception {
+    /**
+     * Calls TypeSafe System One with typed Choice/Score/Noul questions.
+     * The raw structured response is returned so the caller can apply its own
+     * deterministic validation and trading gates.
+     */
+    public JsonNode completeTyped(Object state, Map<String, Object> questions) {
+        if (!aiProperties.enabled()) {
+            throw new IllegalStateException("AI分析未启用，请开启 ai.enabled");
+        }
+        if (!aiProperties.isTypeSafe()) {
+            throw new IllegalStateException("当前 AI_PROVIDER 不是 TYPESAFE");
+        }
+        if (!hasText(aiProperties.effectiveTypeSafeApiKey())) {
+            throw new IllegalStateException("TYPESAFE_API_KEY 未配置，无法调用 Jev");
+        }
+        if (questions == null || questions.isEmpty()) {
+            throw new IllegalArgumentException("TypeSafe questions 不能为空");
+        }
+        String requestId = UUID.randomUUID().toString();
+        URI endpoint = URI.create(typeSafeSystemOneUrl(aiProperties.effectiveTypeSafeBaseUrl()));
+        long startedAt = System.nanoTime();
+        try {
+            Map<String, Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("state", state);
+            payload.put("model", aiProperties.effectiveTypeSafeModel());
+            payload.put("questions", questions);
+            String body = objectMapper.writeValueAsString(payload);
+            log.info("TypeSafe request started requestId={} endpoint={} model={} questionCount={} payloadChars={}",
+                    requestId, endpoint, aiProperties.effectiveTypeSafeModel(), questions.size(), body.length());
+            HttpResponse<String> response = sendWithRetry(body, endpoint, aiProperties.effectiveTypeSafeApiKey());
+            log.info("TypeSafe response received requestId={} httpStatus={} responseChars={} elapsedMs={}",
+                    requestId, response.statusCode(), response.body() == null ? 0 : response.body().length(),
+                    elapsedMs(startedAt));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IllegalStateException("TypeSafe request failed HTTP " + response.statusCode()
+                        + ": " + compact(response.body()));
+            }
+            JsonNode result = objectMapper.readTree(response.body());
+            if (result == null || !result.isObject() || !result.has("answers")) {
+                throw new IllegalStateException("TypeSafe响应缺少 answers");
+            }
+            log.info("TypeSafe request completed requestId={} httpStatus={} elapsedMs={}",
+                    requestId, response.statusCode(), elapsedMs(startedAt));
+            return result;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            log.warn("TypeSafe request failed requestId={} stage=HTTP reason=INTERRUPTED elapsedMs={}",
+                    requestId, elapsedMs(startedAt));
+            throw new IllegalStateException("TypeSafe request interrupted", ex);
+        } catch (IllegalStateException ex) {
+            log.warn("TypeSafe request failed requestId={} stage=HTTP_OR_PARSE reason={} elapsedMs={}",
+                    requestId, compact(ex.getMessage()), elapsedMs(startedAt));
+            throw ex;
+        } catch (Exception ex) {
+            log.warn("TypeSafe request failed requestId={} stage=SERIALIZE_OR_HTTP reason={} elapsedMs={}",
+                    requestId, compact(ex.getMessage()), elapsedMs(startedAt));
+            throw new IllegalStateException("TypeSafe request failed: " + ex.getMessage(), ex);
+        }
+    }
+
+    public boolean isTypeSafeProvider() {
+        return aiProperties.isTypeSafe();
+    }
+
+    private HttpResponse<String> sendWithRetry(String body, URI endpoint, String apiKey) throws Exception {
         int maxAttempts = aiProperties.effectiveMaxRetries() + 1;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            HttpRequest request = HttpRequest.newBuilder(URI.create(chatCompletionsUrl(aiProperties.baseUrl())))
+            HttpRequest request = HttpRequest.newBuilder(endpoint)
                     .timeout(Duration.ofSeconds(aiProperties.effectiveRequestTimeoutSeconds()))
                     .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + aiProperties.apiKey())
+                    .header("Authorization", "Bearer " + apiKey)
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
             try {
@@ -93,6 +180,10 @@ public class AiAnalysisService {
             }
         }
         throw new IllegalStateException("AI request failed before sending");
+    }
+
+    private static long elapsedMs(long startedAt) {
+        return Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
     }
 
     private JsonNode parseAiJson(HttpResponse<String> response) throws Exception {
@@ -135,6 +226,20 @@ public class AiAnalysisService {
             return normalized + "/chat/completions";
         }
         return normalized + "/v1/chat/completions";
+    }
+
+    private static String typeSafeSystemOneUrl(String baseUrl) {
+        String normalized = baseUrl.trim();
+        if (normalized.endsWith("/v1/systemone")) {
+            return normalized;
+        }
+        if (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        if (normalized.endsWith("/v1")) {
+            return normalized + "/systemone";
+        }
+        return normalized + "/v1/systemone";
     }
 
     private static boolean hasText(String value) {

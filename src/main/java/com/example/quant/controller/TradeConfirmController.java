@@ -31,4 +31,10 @@ public class TradeConfirmController {
         }
         return result;
     }
+
+    @PostMapping("/recover-unknown")
+    public Object recoverUnknown(@RequestParam UUID id) {
+        log.warn("HTTP explicit unknown-submit recovery id={}", id);
+        return orderConfirmService.resolveUnknownSubmit(id);
+    }
 }

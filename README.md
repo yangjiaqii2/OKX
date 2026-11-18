@@ -1,13 +1,13 @@
 # Quant Assistant
 
-OKX USDT 永续合约量化实盘控制台。当前系统主流程聚焦 OKX 合约扫描、AI 计划、人工确认、自动交易、账户风控和实盘执行。
+OKX USDT 永续合约量化交易终端。当前系统主流程聚焦 OKX 合约扫描、AI 计划、人工确认、自动交易、账户风控和按 `DISABLED/DEMO/LIVE` 隔离执行。
 
 ## 当前能力
 
 - OKX 合约机会池：读取 OKX 行情、K 线、资金费率、成交量、持仓量、订单簿、BTC/ETH 环境和新闻风险，生成候选合约与评分。
-- AI 交易计划：基于候选合约生成开仓方向、入场价、止损、止盈、杠杆、置信度和风险说明。
-- 待确认订单：手动计划先进入人工审核台，填写保证金并复核后才提交 OKX 实盘。
-- 自动交易：可在系统控制页开启总预算、严格风控/无风控模式、最低分数和最低杠杆。
+- AI 主选币：硬规则先形成合格候选池，AI 决定优先合约、方向和入场模式；止损、止盈、杠杆、仓位与最终风控仍由确定性规则负责。
+- 待确认订单：手动计划先进入人工审核台，填写保证金并复核后才按当前 TradingMode 提交 OKX。
+- 自动交易：`STRICT` 才能进入自动下单；数据库兼容枚举 `NO_RISK` 现在是只读 Shadow 观察，不创建 PendingOrder，也不发送 OKX 写请求。
 - 风控与账户：查看 OKX 总权益、可用余额、持仓快照、风险等级、拒绝原因、建议杠杆和自动交易收益概览。
 - 持仓操作：支持从控制台提交 OKX 平仓请求。
 - 账号绑定：每个登录用户独立绑定 OKX API Key、Secret、Passphrase 到数据库，支持验证、解绑和脱敏回显。
@@ -18,24 +18,32 @@ OKX USDT 永续合约量化实盘控制台。当前系统主流程聚焦 OKX 合
 
 - 后端：Java 17、Spring Boot 3、Spring MVC、Spring Data JPA、Flyway、MySQL。
 - 前端：React 18、React Admin 5、MUI 6、Vite、TypeScript。
-- 交易所：OKX REST / WebSocket。
+- 交易所：OKX REST 是恢复与最终确认权威；Private WebSocket 已接入 `orders/positions/account` 实时事件，Public WebSocket 仍显示 `NOT_IMPLEMENTED`。
 - AI：OpenAI-compatible 接口，默认模型配置为 `kimi-k2.6`。
 - 兼容组件：仓库内仍保留少量历史兼容服务；当前 README 和前端主入口按 OKX 合约实盘控制台维护。
 
 ## 重要风险
 
-当前默认按实盘交易实现：
+当前默认禁止向 OKX 提交交易。只有显式设置环境变量后才允许下单和平仓：
 
 ```yaml
 trading:
-  mode: SEMI_AUTO
-  okx-live-enabled: true
+  mode: ${TRADING_MODE:DISABLED}
   require-user-confirm: true
 ```
 
-确认订单、自动交易和平仓都会调用 OKX 实盘接口。不要绑定带提现权限的 OKX API；建议只开启读取和交易权限，并在 OKX 后台配置 IP 白名单。第一次使用建议先用小额预算、严格风控模式、单仓验证完整链路。
+`TRADING_MODE` 只允许 `DISABLED/DEMO/LIVE`：DISABLED 在最终交易网关阻断写请求；DEMO 为所有 OKX 私有 REST 请求统一添加 `x-simulated-trading: 1`；LIVE 不添加模拟标记并会操作真实资金。不要绑定带提现权限的 API；建议只开启读取和交易权限，并配置 IP 白名单。
 
 ## 环境要求
+
+生产一键部署只需要：
+
+- Linux 服务器
+- Docker Engine 24+
+- Docker Compose v2
+- 能访问所选镜像仓库和 OKX/AI API 的网络
+
+从源码本地开发还需要：
 
 - JDK 17
 - Maven 3.9+
@@ -45,7 +53,7 @@ trading:
 
 ## 配置
 
-后端配置入口在 `src/main/resources/application.yml`，本地覆盖可使用环境变量：
+后端默认配置入口在 `src/main/resources/application.yml`；密钥和部署参数只写仓库根目录 `.env`，不要在 `src/main/resources` 下创建 `.env`，否则可能被打入 JAR 或镜像。Compose 不会读取资源目录中的 `.env`。
 
 ```text
 MYSQL_HOST=127.0.0.1
@@ -55,20 +63,111 @@ MYSQL_USERNAME=root
 MYSQL_PASSWORD=<password>
 
 QUANT_AUTH_USERNAME=admin
-QUANT_AUTH_PASSWORD=admin123
+QUANT_AUTH_PASSWORD=<首次管理员强密码，必填>
+QUANT_CREDENTIAL_MASTER_KEY=<Base64编码的32字节随机密钥，必填>
+TRADING_MODE=DISABLED
+QUANT_AGENT_AUTO_TRADE_ENABLED=false
+QUANT_AGENT_AI_SELECTION_ENABLED=true
+QUANT_AGENT_AUTO_TRADE_MIN_SCORE=65
+QUANT_AGENT_MIN_TOTAL_SCORE=65
+QUANT_AGENT_MIN_FINAL_RANK_SCORE=65
+QUANT_AGENT_NEWS_RISK_MISSING_DATA_SCORE=70
+QUANT_AGENT_MIN_NEWS_RISK_RAW_SCORE=70
+
+# 新闻源：接入 OKX 官方下架公告；可改为 NOOP 关闭真实公告源。
+QUANT_NEWS_PROVIDER=OKX
 
 OKX_API_KEY=<optional>
 OKX_API_SECRET=<optional>
 OKX_API_PASSPHRASE=<optional>
 
+# 默认使用 OpenAI-compatible；切换 Jev 时设置 AI_PROVIDER=TYPESAFE。
+AI_PROVIDER=OPENAI_COMPATIBLE
 AI_API_KEY=<optional>
 AI_BASE_URL=https://api.moonshot.cn/v1
 AI_MODEL=kimi-k2.6
+TYPESAFE_API_KEY=<optional>
+TYPESAFE_BASE_URL=https://api.typesafe.ai
+TYPESAFE_MODEL=jev-latest
 ```
+
+自动交易同时受两层开关约束：页面中的运行时开关和 `QUANT_AGENT_AUTO_TRADE_ENABLED` 必须都开启。任意一层关闭时，状态栏会显示 `AUTO_DISABLED_BY_CONFIG` 或 `MONITORING_ONLY`，不会提交自动订单。DEMO 验证可使用 `TRADING_MODE=DEMO`；不要因此改成 LIVE。
 
 也可以在前端“OKX账号绑定”页面录入 OKX API 信息。绑定后数据会按当前登录用户写入 `quant_okx_credential`，接口只返回脱敏 API Key，不回显 Secret 和 Passphrase。谁开启自动交易，后续定时自动交易执行就使用谁绑定的 OKX API。
 
 ## 启动
+
+### Docker 一键部署（推荐）
+
+应用镜像包含后端 JAR 和前端生产静态文件，Compose 只启动应用与 MySQL。MySQL 不开放宿主机端口，数据保存在 `mysql-data` 命名卷；Spring Boot 启动时由 Flyway 自动创建或升级表结构。
+
+第一次准备镜像：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少替换所有必填密码、主密钥和 OKX_APP_IMAGE
+./scripts/build-image.sh --push
+```
+
+`--push` 需要事先执行对应仓库的 `docker login`。不推送时去掉 `--push`，镜像只保存在当前机器。
+
+目标服务器放置以下文件即可：
+
+```text
+.env
+docker-compose.yml
+deploy.sh
+```
+
+首次部署或升级都执行：
+
+```bash
+chmod +x deploy.sh
+./deploy.sh --check
+./deploy.sh
+```
+
+部署脚本只拉取 `.env` 中的 `OKX_APP_IMAGE`，不会在服务器临时编译源码。启动成功后访问：
+
+```text
+http://<服务器IP>:<APP_PORT>
+```
+
+默认必须保持：
+
+```text
+TRADING_MODE=DISABLED
+QUANT_AGENT_AUTO_TRADE_ENABLED=false
+```
+
+`DEMO` 需要真实 OKX 模拟盘凭据。`LIVE` 除 `TRADING_MODE=LIVE` 外，还必须人工设置 `LIVE_DEPLOY_CONFIRM=I_UNDERSTAND_LIVE_TRADING`；部署脚本不会自行打开 LIVE。
+
+常用运维命令：
+
+```bash
+docker compose --env-file .env ps
+docker compose --env-file .env logs -f --tail=200 app
+docker compose --env-file .env restart app
+docker compose --env-file .env down
+```
+
+AI 选币采用“AI 主选、规则保底”：规则先完成行情有效性、流动性和硬风险准入，AI 再决定合约、方向与入场模式，最终价格、止损、止盈、杠杆和仓位仍由规则与 Risk Engine 计算。合法 `WAIT` 不会触发保底下单；AI 超时、无效 JSON 或越界选币才进入规则保底。手机端使用“总览 / 机会 / 订单 / 持仓 / 更多”底部导航。
+
+Telegram 单向通知配置见 [docs/TELEGRAM_NOTIFICATION_GUIDE.md](docs/TELEGRAM_NOTIFICATION_GUIDE.md)。机器人只发送订单与风险状态，不接受远程交易命令。
+
+普通 `down` 不删除数据库。不要运行 `docker compose down -v`，除非明确要永久删除 MySQL 数据卷。升级或回滚只需修改 `.env` 的不可变镜像 tag，再运行 `./deploy.sh`。
+
+数据库备份示例：
+
+```bash
+docker compose --env-file .env exec -T mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' > okx-backup.sql
+```
+
+详细设计和部署校验见：
+
+- `docs/superpowers/specs/2026-08-11-one-click-docker-deployment-design.md`
+- `scripts/test-deployment.sh`
+- `docs/TRADING_RISK_REMEDIATION_PLAN_2026-08-11.md`
 
 ### Windows 一键启动
 
@@ -95,13 +194,13 @@ cd D:\code\View
 http://<this-machine-ip>:5173
 ```
 
-默认登录账号：
+首次管理员账号由环境变量初始化：
 
 ```text
-admin / admin123
+QUANT_AUTH_USERNAME / QUANT_AUTH_PASSWORD
 ```
 
-首次启动会用 `QUANT_AUTH_USERNAME` 和 `QUANT_AUTH_PASSWORD` 初始化管理员账号；初始化后登录校验走数据库用户表 `quant_auth_user`，修改密码不会再依赖环境变量。
+首次启动必须显式配置 `QUANT_AUTH_PASSWORD`，系统会用 `QUANT_AUTH_USERNAME` 和 `QUANT_AUTH_PASSWORD` 初始化管理员账号；初始化后登录校验走数据库用户表 `quant_auth_user`。OKX 凭据使用 `QUANT_CREDENTIAL_MASTER_KEY` 进行 AES-256-GCM 加密，该密钥必须稳定保存，丢失后已绑定凭据无法恢复。Git 历史检查确认曾出现非占位数据库密码和疑似真实的 AI 服务 API Key；部署前必须轮换对应凭据，仅删除当前文件内容不能清除历史泄漏。
 
 ### 手动启动
 
@@ -153,8 +252,8 @@ http://<this-machine-ip>:8080/api/quant
 
 ### 首次使用
 
-1. 启动后端和前端，打开 `http://<this-machine-ip>:5173`。
-2. 用默认账号 `admin / admin123` 登录。
+1. Docker 部署打开 `http://<服务器IP>:<APP_PORT>`；本地 Vite 开发打开 `http://<this-machine-ip>:5173`。
+2. 用 `QUANT_AUTH_USERNAME / QUANT_AUTH_PASSWORD` 配置的管理员账号登录。
 3. 进入“账号安全”，修改管理员密码；需要多人登录时由管理员创建新用户。
 4. 进入“OKX账号绑定”，填写 `API Key`、`Secret`、`Passphrase`。
 5. 点击“验证接口”，确认当前登录用户绑定的 OKX API 返回可用余额和账户模式。
@@ -167,7 +266,7 @@ http://<this-machine-ip>:8080/api/quant
 ### 日常使用
 
 - 先看“量化实盘控制台”：确认账户模式不是 `OKX_UNBOUND` 或 `OKX_ERROR`。
-- 控制台顶部会展示自动交易收益概览；当前版本收益为估算口径：已实现收益暂按 0，未实现收益来自 OKX 当前持仓浮盈，完整净收益后续需接成交、手续费和资金费流水。
+- 控制台顶部会展示自动交易收益概览；OKX 当前持仓 `upl` 单独标为交易所未实现盈亏。本地已实现收益、手续费、资金费尚未完成 fills/bills 对账时显示 `-`，不会用 `0` 冒充真实结果。
 - 再看“OKX合约”：优先看高分、`AUTO_TRADE_ALLOWED`、低风险标签、盈亏比足够的候选。
 - 手动交易走“生成 AI 计划 -> 待确认订单 -> 填保证金 -> 实盘确认”。
 - 自动交易前先进入“系统控制”：设置总预算，选择严格风控，确认紧急停止未开启。
@@ -273,15 +372,17 @@ http://<this-machine-ip>:8080/api/quant
 - 盈亏比不低于 `1.5`。
 - 止损距离不超过 `5%`。
 - 信号必须是 `STRONG_LONG`、`PULLBACK_LONG`、`TREND_SHORT` 或 `REVERSAL_SHORT`。
-- 新闻风险不能是 `HIGH` 或 `CRITICAL`；`UNKNOWN` 只能进入人工确认。
+- 新闻风险不能是 `HIGH` 或 `CRITICAL`；`UNKNOWN` 会保留风险标签并降低可信度，但不会单独绕过或阻断其他硬风控。
 - 实时价差默认不高于 `8 bps`。
 - 市场环境风险不能达到高风险以上。
 
 不满足硬性条件时，系统可能只输出观察计划，不进入实盘提交；不满足提示条件时，计划仍会带上对应风险说明，后续自动交易门控可能继续跳过。
 
-## AI 计划怎么生成
+## AI 选择与计划怎么生成
 
-AI 只分析当前候选，不允许推荐其他合约。输入内容包括：
+自动交易每轮最多向 AI 发送一次已通过硬规则准入的候选池，AI 只能从池内排序并选择合约、方向和入场模式，不允许推荐池外合约。合法 `WAIT` 会结束本轮；只有超时、无效 JSON、池外 symbol 等技术失败才进入纯规则保底，保底路径不会再次调用 AI。
+
+手动生成单合约计划时，AI 仍只分析当前候选并补充解释或降级为观察；其返回的价格、杠杆和仓位不会覆盖确定性规则。输入内容包括：
 
 - 合约、最新价、24h 涨跌幅、24h 成交额。
 - 趋势方向、综合分、七项因子分、最终排序分。
@@ -307,7 +408,7 @@ AI 必须返回严格 JSON：
 }
 ```
 
-如果 AI 不可用、返回无效 JSON、建议 `WAIT` 或盈亏比不足，系统会使用本地规则兜底。兜底计划仍会继承系统分析的方向、入场价、止损、止盈、杠杆上限和风险标签。
+自动选币时，AI 不可用或输出非法才使用本地规则保底；AI 明确返回 `WAIT` 时不会下单。手动计划复核中的 `WAIT` 会生成观察计划。所有可执行计划仍使用规则计算的入场、止损、止盈、杠杆上限、风险仓位和风险标签。
 
 ## 手动交易怎么走
 
@@ -331,8 +432,8 @@ AI 必须返回严格 JSON：
 2. 填写“自动交易总预算”，例如 `100 USDT`。
 3. 选择风险模式：
    - `严格风控`：完整执行质量、相关性、门控、预确认刷新、流动性和规则风控。
-   - `无风控`：按最低分数强制生成计划，并跳过部分预确认和规则风控，风险显著更高。
-4. 设置无风控最低分，范围 `60` 到 `100`，默认 `70`。
+   - `Shadow 观察`：记录达到最低分的确定性策略输出，不创建或提交订单。
+4. 设置 Shadow 最低观察分，范围 `60` 到 `100`，默认 `70`。
 5. 设置自动交易最低杠杆，范围 `1` 到 `20`，默认 `1`。
 6. 点击开启自动交易。
 
@@ -343,16 +444,16 @@ AI 必须返回严格 JSON：
 1. 检查配置开关 `quant.agent.auto-trade.enabled`。
 2. 检查运行时开关是否已开启，且没有紧急停止。
 3. 加全局自动交易锁，避免同一时间重复执行。
-4. 读取当前 OKX 持仓和进行中的订单，避免同一合约重复开仓。
-5. 计算当前市场状态和最大可持仓数。
-6. 从候选中按排序分、综合分、成交额取前 `5` 个作为尝试池。
-7. 严格风控模式下执行仓位质量、相关性、候选门控。
-8. 为候选生成交易计划；如果计划是观察或无入场，则跳过。
-9. 严格风控模式下做预确认刷新：价格偏离、价差、5m 反转、BTC/ETH 反转、新闻风险、资金费率。
-10. 按总预算、仓位槽位、候选评分、风险上限、账户可用余额计算本单保证金。
+4. 如果是 `NO_RISK`，按展示分和新闻门槛生成不可执行 Shadow 记录并结束本轮；不会继续读取交易容量或创建订单。
+5. 以下仅属于 `STRICT`：读取当前 OKX 持仓和进行中的订单，避免同一合约重复开仓。
+6. 计算当前市场状态和最大可持仓数。
+7. 从候选中按排序分、综合分、成交额取前 `5` 个作为尝试池，并执行仓位质量、相关性和候选门控。
+8. 为候选生成确定性交易计划；如果计划是观察或无入场，则跳过。
+9. 执行完整预确认刷新；市场规则、新闻/资金费率不可用或最终风险检查失败均停止提交。
+10. 按总预算、仓位槽位、候选评分、计划风险上限和账户可用余额计算本单保证金。
 11. 预占预算，生成自动待确认订单。
-12. 调用自动确认，提交 OKX 实盘订单。
-13. 成功提交后按当前自动交易所属用户记录到“自动交易记录”；跳过和失败主要写后端日志。
+12. 调用自动确认；再次通过每日硬风控和 TradingMode Guard 后提交 OKX 订单。
+13. 成功提交后按当前自动交易所属用户记录到“自动交易记录”；跳过、Shadow 和失败同样持久化事实记录。
 
 ### 仓位数量和质量
 
@@ -422,17 +523,17 @@ AI 必须返回严格 JSON：
 
 任一不满足会跳过当前候选，继续尝试下一个候选。
 
-### 无风控模式说明
+### Shadow 观察说明
 
-无风控模式会：
+内部兼容枚举仍名为 `NO_RISK`，当前语义是只读 Shadow。该模式会：
 
-- 使用展示综合分判断是否达到最低分。
-- 忽略 `AUTO_TRADE_ALLOWED` 和智能入场等待门控，直接生成可提交计划。
-- 跳过预确认刷新。
-- 自动确认时绕过实时流动性和规则风控检查。
-- 仍受紧急停止、总预算、同合约去重、最小保证金和 OKX 接口结果约束。
+- 使用展示综合分判断是否达到最低观察分。
+- 保存策略版本、信号池、候选资格、数据时间、确定性计划参数和 AI 解释来源。
+- 返回 `WATCH / NO_ENTRY`，不会预占预算、创建 PendingOrder 或调用订单确认。
+- `OrderConfirmService` 仍有最终 Shadow Guard，历史待确认自动订单也不能在该模式发送到 OKX。
+- 新闻不可用或重大新闻候选不会进入 Shadow 合格记录，并保留排除原因。
 
-这个模式只适合你明确接受更高风险时使用。实盘不建议作为默认模式。
+它用于积累观察样本，不代表回测、Demo 成交或实盘结果；MFE/MAE 和 `+1R/-1R` 后验结果仍未实现。
 
 ## 杠杆、止损和仓位
 
@@ -493,6 +594,7 @@ POST /api/quant/account/unbind
 
 GET  /api/quant/risk/status
 GET  /api/quant/system/status
+GET  /api/quant/system/runtime-status
 POST /api/quant/system/emergency-stop
 POST /api/quant/system/resume
 POST /api/quant/system/auto-trade/enable
@@ -533,18 +635,33 @@ npm run build
 - 如果返回 401，优先检查 API 三件套、交易权限和 IP 白名单。
 - 如果账户或持仓为空，先在“OKX账号绑定”页面点击“验证接口”，再检查 OKX 账户模式和资金账户余额。
 
+## 当前明确边界
+
+- Private WebSocket 已实现登录、orders/positions/account 三频道订阅、心跳、stale 检测、退避重连和重连后 REST 对账；Public WebSocket 尚未实现。Private WS 已在真实 OKX Demo 中完成认证、订阅和一次真实 `1006` 断线恢复验证，OKX REST 继续作为恢复与最终确认权威。
+- 真实 fills 按 `owner + instId + tradeId` 去重，近期 bills/funding 已同步并区分毛收益、交易费、资金费和净收益；只统计可追溯系统订单及其管理合约，且仅覆盖最近同步窗口，不代表完整账户历史。
+- 已收盘 K 线使用持久化唯一键保证单策略单 K 线最多领取一次决策；崩溃遗留决策进入 `RECONCILING`，不会自动重放。
+- 普通订单支持详情、历史和 fills 终态对账及部分成交后撤单；Algo 订单使用专用 details 接口映射终态，未知和部分失败继续保持 `RECONCILING`。
+- 启动 REST 恢复后，DEMO/LIVE 仍保持 `DEGRADED`，直到 Private WS 登录、订阅和初始 REST 对账完成；未决订单、账本失败或 `UNMANAGED` 仓位会阻止最终 OKX 写网关。
+- 交易所仓位按 owner 持久化为 `MANAGED/UNMANAGED`；无法由策略决策、订单和 fills 链证明归属的外部仓位不会自动绑定策略。当前归属证明仍是本地可追溯链与交易所净仓位比较，不是交易所原生策略标签。
+- 调度锁和 symbol 锁只在单 JVM 内生效；当前不支持多个后端实例同时执行交易任务。
+- 自动交易开关是系统级单 owner 状态，多用户不能并行运行各自的自动策略。
+- 仓库没有独立回测引擎，不能把当前信号测试当作含手续费、滑点和资金费的真实回测。
+- OKX Demo 请求隔离已接入，并已完成最小真实订单、成交、保护、平仓、fills/bills 和通知 E2E；系统不会自动从 DISABLED 切换到 DEMO 或 LIVE，真实凭据仍由部署环境提供。
+- `quant.contract.enabled=false` 会同时阻止调度扫描和页面首次扫描；启用时并发首次候选请求在单 JVM 内共享一次扫描，但这不是跨实例全局限流器。
+- 2026-08-12 验证基线为后端 346 个测试、前端 TypeScript/Vite 构建和 npm 高危依赖审计通过；真实 Demo 基础设施 E2E 已执行。AI 的带合约 `WAIT_PULLBACK / WAIT_RETEST` 已持久化，并在后续新收盘 K 线满足条件时复用原稳定 `clOrdId` 重新走完整硬风控；自动分配与最终确认使用相同的账户权益单笔保证金上限。未满足等待条件时不会追价，因此状态仍是 `READY FOR DEMO`，不是 Live 就绪声明。
+
 ## 变更日志
 
 ### 2026-06-18 - 用户维度 OKX Key 与自动交易收益概览
 
 - 变更摘要：OKX API 绑定改为按当前登录用户隔离，自动交易开启时记录所属用户，定时自动交易会使用该用户绑定的 OKX Key；控制台新增自动交易收益概览卡片，并优化登录页、OKX 绑定页和账号安全页的移动端交互。
 - 影响文件：`src/main/java/com/example/quant/auth/AuthUserContext.java`、`src/main/java/com/example/quant/auth/AuthInterceptor.java`、`src/main/java/com/example/quant/account/*`、`src/main/java/com/example/quant/agent/execution/AutoTradeProfitService.java`、`src/main/java/com/example/quant/agent/execution/AutoTradeRecordEntity.java`、`src/main/java/com/example/quant/controller/AutoTradeRecordController.java`、`src/main/resources/db/migration/V9__user_scoped_okx_credentials.sql`、`src/main/resources/db/migration/V10__user_scoped_auto_trade_records.sql`、`frontend/src/pages/Dashboard.tsx`、`frontend/src/pages/LoginPage.tsx`、`frontend/src/pages/AccountBindingPage.tsx`、`frontend/src/pages/SecurityPage.tsx`、`frontend/src/api/quantApi.ts`、`README.md`
-- 影响：新增 `GET /api/quant/auto-trade/profit/summary`；`quant_okx_credential` 增加用户维度索引；`auto_trade_record` 新增 `user_name` 字段和索引；账号绑定、自动交易记录列表和收益汇总按当前登录用户隔离。收益概览当前为 `ESTIMATED_UNREALIZED_ONLY` 口径，已实现收益暂按 0，未实现收益来自 OKX 当前持仓。
+- 影响：新增 `GET /api/quant/auto-trade/profit/summary`；`quant_okx_credential` 增加用户维度索引；`auto_trade_record` 新增 `user_name` 字段和索引；账号绑定、自动交易记录列表和收益汇总按当前登录用户隔离。当时的实现把未知已实现收益暂按 0；该行为已在 2026-08-09 第二轮审计中修正为 `REALIZED_PNL_UNAVAILABLE`，未对账时前端显示 `-`。
 - 验证：`mvn test` 通过，140 个后端测试 0 失败；`npm run build` 通过，Vite 仅提示 bundle 大小警告。
 
 ### 2026-06-18 - 数据库用户登录和账号安全页
 
-- 变更摘要：登录从配置文件明文账号改为数据库用户，默认 `admin/admin123` 仅用于首次初始化，新增 PBKDF2-SHA256 密码哈希、创建用户、改密码和用户启停能力，并优化登录页。
+- 变更摘要：登录从配置文件明文账号改为数据库用户，历史默认账号仅用于首次初始化，新增 PBKDF2-SHA256 密码哈希、创建用户、改密码和用户启停能力，并优化登录页。
 - 影响文件：`src/main/java/com/example/quant/auth/*`、`src/main/java/com/example/quant/controller/AuthController.java`、`src/main/resources/db/migration/V8__auth_users.sql`、`frontend/src/pages/LoginPage.tsx`、`frontend/src/pages/SecurityPage.tsx`、`frontend/src/api/auth.ts`、`README.md`
 - 影响：新增 `quant_auth_user` 表；`POST /api/quant/auth/login` 仍保持不变；新增 `/api/quant/auth/users`、`/api/quant/auth/password/change`、`/api/quant/auth/users/{username}/password`、`/api/quant/auth/users/{username}/enabled`；`/api/quant/auth/users/**` 需要有效登录 token。
 - 验证：`mvn test` 通过，135 个后端测试 0 失败；`npm run build` 通过，前端产物已生成到 `frontend/dist`。

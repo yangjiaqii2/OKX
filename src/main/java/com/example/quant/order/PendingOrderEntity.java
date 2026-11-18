@@ -20,6 +20,9 @@ public class PendingOrderEntity {
     @Column(name = "market_type", nullable = false, length = 32)
     private String marketType;
 
+    @Column(name = "user_name", nullable = false, length = 128)
+    private String userName;
+
     @Column(name = "inst_id", nullable = false, length = 64)
     private String instId;
 
@@ -55,6 +58,15 @@ public class PendingOrderEntity {
 
     @Column(name = "max_loss_amount", precision = 30, scale = 12)
     private BigDecimal maxLossAmount;
+
+    @Column(name = "executable_contract_quantity", precision = 30, scale = 12)
+    private BigDecimal executableContractQuantity;
+
+    @Column(name = "executable_stop_loss_amount", precision = 30, scale = 12)
+    private BigDecimal executableStopLossAmount;
+
+    @Column(name = "canonical_plan_json", columnDefinition = "TEXT")
+    private String canonicalPlanJson;
 
     @Column(name = "margin_amount", precision = 30, scale = 12)
     private BigDecimal marginAmount;
@@ -120,8 +132,13 @@ public class PendingOrderEntity {
     private Instant updatedAt;
 
     public static PendingOrderEntity from(PendingOrder order) {
+        return from(order, "local-admin");
+    }
+
+    public static PendingOrderEntity from(PendingOrder order, String userName) {
         PendingOrderEntity entity = new PendingOrderEntity();
         entity.id = order.id().toString();
+        entity.userName = userName;
         entity.marketType = order.marketType().name();
         entity.instId = order.instId();
         entity.action = order.action().name();
@@ -135,6 +152,9 @@ public class PendingOrderEntity {
         entity.stopLossPrice = order.stopLossPrice();
         entity.takeProfitPrice = order.takeProfitPrice();
         entity.maxLossAmount = order.maxLossAmount();
+        entity.executableContractQuantity = order.executableContractQuantity();
+        entity.executableStopLossAmount = order.executableStopLossAmount();
+        entity.canonicalPlanJson = order.canonicalPlanJson();
         entity.marginAmount = order.marginAmount();
         entity.budgetReservationId = order.budgetReservationId() == null ? null : order.budgetReservationId().toString();
         entity.budgetAllocationJson = order.budgetAllocationJson();
@@ -200,6 +220,8 @@ public class PendingOrderEntity {
                 externalOrderId,
                 rejectReason
         );
+        order.restoreExecutableRiskFacts(executableContractQuantity, executableStopLossAmount);
+        order.restoreCanonicalPlanJson(canonicalPlanJson);
         return order;
     }
 
@@ -209,6 +231,10 @@ public class PendingOrderEntity {
 
     public String getId() {
         return id;
+    }
+
+    public String getUserName() {
+        return userName;
     }
 
     public String getBudgetReservationId() {

@@ -1,11 +1,15 @@
 package com.example.quant.agent.execution;
 
 import com.example.quant.agent.audit.AgentAuditLogger;
+import com.example.quant.account.OkxCredentialStore;
+import com.example.quant.auth.AuthUserContext;
 import com.example.quant.order.PendingOrder;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -24,8 +28,39 @@ public class TradeOrderRecordService {
         this.auditLogger = auditLogger;
     }
 
-    public boolean hasActiveEntryOrder() {
-        return repository.existsByReduceOnlyFalseAndStatusIn(ACTIVE_ENTRY_STATUSES);
+    public Set<String> activeEntryInstIds() {
+        return activeEntryExposures().stream()
+                .map(com.example.quant.account.dto.PositionSummary::instId)
+                .filter(instId -> instId != null && !instId.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * 未终结入场单（含已提交未成交）的方向敞口，供跨轮敞口累计。
+     */
+    public List<com.example.quant.account.dto.PositionSummary> activeEntryExposures() {
+        String owner = currentUsername();
+        return ACTIVE_ENTRY_STATUSES.stream().flatMap(status -> repository.findByStatus(status).stream())
+                .filter(row -> owner.equals(row.getUserName()) && !row.isReduceOnly())
+                .filter(row -> row.getInstId() != null && !row.getInstId().isBlank())
+                .map(row -> new com.example.quant.account.dto.PositionSummary(
+                        row.getInstId(),
+                        normalizePosSide(row.getPosSide(), row.getSide()),
+                        "1",
+                        row.getPrice() == null ? BigDecimal.ZERO : row.getPrice(),
+                        BigDecimal.ZERO,
+                        "LOCAL_ACTIVE_ENTRY"))
+                .toList();
+    }
+
+    private static String normalizePosSide(String posSide, String side) {
+        if (posSide != null && !posSide.isBlank() && !"net".equalsIgnoreCase(posSide)) {
+            return posSide.toLowerCase();
+        }
+        if (side != null && "sell".equalsIgnoreCase(side.trim())) {
+            return "short";
+        }
+        return "long";
     }
 
     @Transactional
@@ -68,6 +103,7 @@ public class TradeOrderRecordService {
                                         String status, String errorMessage) {
         Instant now = Instant.now();
         TradeOrderEntity entity = new TradeOrderEntity();
+        entity.setUserName(currentUsername());
         entity.setTradePlanId(order.tradePlanId() == null ? null : order.tradePlanId().toString());
         entity.setPendingOrderId(order.id().toString());
         entity.setOrderRole(payload.orderRole());
@@ -87,6 +123,10 @@ public class TradeOrderRecordService {
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         return entity;
+    }
+
+    private static String currentUsername() {
+        return AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
     }
 
     private static String value(String value) {

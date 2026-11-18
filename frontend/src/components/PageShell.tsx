@@ -21,7 +21,7 @@ type PageHeaderProps = {
 
 export function PageShell({ title, children, maxWidth = '1540px' }: PageShellProps) {
   return (
-    <Box sx={{ px: { xs: 1.5, md: 2.5 }, py: { xs: 1.5, md: 2 }, minHeight: '100%' }}>
+    <Box sx={{ px: { xs: 1.5, md: 2.5 }, pt: { xs: 1.5, md: 2 }, pb: { xs: 'calc(76px + env(safe-area-inset-bottom))', md: 2 }, minHeight: '100%' }}>
       <Title title={title} />
       <Box sx={{ width: 1, maxWidth, mx: 'auto' }}>{children}</Box>
     </Box>

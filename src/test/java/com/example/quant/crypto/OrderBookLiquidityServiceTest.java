@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.example.quant.agent.market.OrderBookLiquidityService;
 import com.example.quant.agent.market.OrderBookLiquiditySnapshot;
 import com.example.quant.config.AgentProperties;
+import com.example.quant.okxtrade.OkxInstrumentRules;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
@@ -14,12 +15,29 @@ class OrderBookLiquidityServiceTest {
 
     @Test
     void convertsOkxSwapContractSizeToUsdtDepthWithContractValue() {
-        OrderBookLiquiditySnapshot snapshot = new OrderBookLiquidityService(new FakeOkxRestClient(), new AgentProperties())
+        OrderBookLiquiditySnapshot snapshot = new OrderBookLiquidityService(
+                new FakeOkxRestClient(),
+                new AgentProperties(),
+                instId -> new OkxInstrumentRules(instId, new BigDecimal("0.01"), "BTC",
+                        BigDecimal.ONE, BigDecimal.ONE, new BigDecimal("0.1")))
                 .snapshot("BTC-USDT-SWAP");
 
         assertThat(snapshot.bidDepthUsdt()).isGreaterThan(BigDecimal.valueOf(100_000));
         assertThat(snapshot.askDepthUsdt()).isGreaterThan(BigDecimal.valueOf(100_000));
         assertThat(snapshot.tradable()).isTrue();
+    }
+
+    @Test
+    void unavailableInstrumentRulesFailClosedInsteadOfAssumingOneCoinPerContract() {
+        OrderBookLiquiditySnapshot snapshot = new OrderBookLiquidityService(
+                new FakeOkxRestClient(),
+                new AgentProperties(),
+                instId -> { throw new IllegalStateException("instrument unavailable"); })
+                .snapshot("BTC-USDT-SWAP");
+
+        assertThat(snapshot.tradable()).isFalse();
+        assertThat(snapshot.denyReason()).contains("合约规则");
+        assertThat(snapshot.availableDepthUsdt()).isZero();
     }
 
     private static final class FakeOkxRestClient extends OkxRestClient {

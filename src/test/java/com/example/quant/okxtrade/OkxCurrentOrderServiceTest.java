@@ -47,6 +47,17 @@ class OkxCurrentOrderServiceTest {
         assertThat(order.status()).isEqualTo("live");
     }
 
+    @Test
+    void keepsAlgoIdSeparateFromTriggeredChildOrderIds() {
+        OkxCurrentOrderService service = new OkxCurrentOrderService(new TriggeredAlgoGateway());
+
+        OkxCurrentOrderService.AlgoOrderDetail detail = service.algoOrderDetail("algo-parent", "SLstable");
+
+        assertThat(detail.algoId()).isEqualTo("algo-parent");
+        assertThat(detail.childOrderIds()).containsExactly("child-1", "child-2");
+        assertThat(detail.childOrderIds()).doesNotContain(detail.algoId());
+    }
+
     private static class CurrentOrderGateway implements OkxOrderGateway {
         @Override
         public JsonNode placeOrder(Map<String, Object> payload) {
@@ -85,6 +96,22 @@ class OkxCurrentOrderServiceTest {
             item.put("slTriggerPx", "98");
             item.put("state", "live");
             item.put("cTime", "1780000000000");
+            return root;
+        }
+    }
+
+    private static final class TriggeredAlgoGateway extends CurrentOrderGateway {
+        @Override
+        public JsonNode queryAlgoOrder(Map<String, String> payload) {
+            ObjectNode root = new ObjectMapper().createObjectNode();
+            ObjectNode item = root.putArray("data").addObject();
+            item.put("algoId", "algo-parent");
+            item.put("algoClOrdId", "SLstable");
+            item.put("state", "effective");
+            item.put("sz", "717");
+            item.put("actualSz", "717");
+            item.putArray("ordIdList").addObject().put("ordId", "child-1");
+            item.withArray("ordIdList").add("child-2");
             return root;
         }
     }

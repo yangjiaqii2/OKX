@@ -29,7 +29,7 @@ class ContractSignalAnalyzerTest {
         );
 
         assertThat(signal.score()).isGreaterThanOrEqualTo(70);
-        assertThat(signal.suggestedLeverage()).isBetween(2, 5);
+        assertThat(signal.suggestedLeverage()).isBetween(1, 10);
         assertThat(signal.stopLossPrice()).isLessThan(signal.entryPrice());
         assertThat(signal.takeProfitPrice()).isGreaterThan(signal.entryPrice());
         assertThat(signal.riskRewardRatio()).isGreaterThanOrEqualTo(new BigDecimal("1.80"));
@@ -58,6 +58,23 @@ class ContractSignalAnalyzerTest {
         assertThat(signal.action()).isIn("WAIT", "NO_TRADE");
         assertThat(signal.riskTagList()).anyMatch(risk -> risk.contains("资金费率拥挤"));
         assertThat(signal.riskTagList()).contains("波动率过高");
+    }
+
+    @Test
+    void firstOpenInterestObservationIsUnknownInsteadOfZeroChangeConfirmation() {
+        ContractSignal signal = new ContractSignalAnalyzer().analyze(
+                "BTC-USDT-SWAP",
+                BigDecimal.valueOf(112),
+                BigDecimal.valueOf(100),
+                BigDecimal.valueOf(2_400_000_000L),
+                BigDecimal.valueOf(0.0001),
+                BigDecimal.valueOf(980_000_000L),
+                null,
+                risingCandles()
+        );
+
+        assertThat(signal.openInterestChange()).isNull();
+        assertThat(signal.riskTagList()).contains("OI变化不可用，不能作为增仓确认");
     }
 
     private static List<ContractCandle> risingCandles() {

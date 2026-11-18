@@ -2,6 +2,12 @@ package com.example.quant.agent.plan;
 
 import com.example.quant.agent.audit.AgentAuditLogger;
 import com.example.quant.tradeplan.TradePlan;
+import com.example.quant.tradeplan.CanonicalExecutablePlan;
+import com.example.quant.tradeplan.CanonicalPlanJsonCodec;
+import com.example.quant.tradeplan.TradeIntent;
+import com.example.quant.config.MarketDataContext;
+import com.example.quant.config.AgentProperties;
+import com.example.quant.config.TradingMode;
 import com.example.quant.tradeplan.TradePlanStatus;
 import com.example.quant.tradeplan.TradePlanType;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -13,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -26,6 +33,7 @@ public class TradePlanRecordService {
     private final TradeTakeProfitPlanRepository takeProfitPlanRepository;
     private final AgentAuditLogger auditLogger;
     private final ObjectMapper objectMapper;
+    private AgentProperties agentProperties = new AgentProperties();
 
     public TradePlanRecordService(
             TradePlanRepository tradePlanRepository,
@@ -37,6 +45,13 @@ public class TradePlanRecordService {
         this.takeProfitPlanRepository = takeProfitPlanRepository;
         this.auditLogger = auditLogger;
         this.objectMapper = objectMapper;
+    }
+
+    @Autowired(required = false)
+    void configureAgentProperties(AgentProperties agentProperties) {
+        if (agentProperties != null) {
+            this.agentProperties = agentProperties;
+        }
     }
 
     @Transactional
@@ -58,7 +73,9 @@ public class TradePlanRecordService {
         entity.setRiskRewardRatio(plan.riskRewardRatio());
         entity.setMaxLossUsdt(plan.maxLossAmount());
         entity.setMaxLossPercent(null);
-        entity.setAllowTrade(status != TradePlanStatus.REJECTED);
+        entity.setAllowTrade(status != TradePlanStatus.REJECTED
+                && plan.action() != TradePlanType.WATCH
+                && !"NO_ENTRY".equals(plan.orderType()));
         entity.setDenyReason(denyReason);
         entity.setPlanJson(json(planPayload(plan, status, denyReason, aiPayload)));
         entity.setStatus(status.name());
@@ -67,7 +84,9 @@ public class TradePlanRecordService {
         tradePlanRepository.save(entity);
 
         takeProfitPlanRepository.deleteByTradePlanId(plan.id().toString());
-        takeProfitPlanRepository.saveAll(takeProfitRows(plan));
+        if (plan.action() != TradePlanType.WATCH) {
+            takeProfitPlanRepository.saveAll(takeProfitRows(plan));
+        }
         auditLogger.info(
                 "TRADE_PLAN_RECORDED",
                 "trade_plan",
@@ -107,14 +126,44 @@ public class TradePlanRecordService {
         });
     }
 
+    @Transactional
+    public void recordCanonicalPlan(UUID tradePlanId, CanonicalExecutablePlan canonicalPlan) {
+        recordCanonicalPlan(tradePlanId, canonicalPlan, CanonicalPlanJsonCodec.write(canonicalPlan));
+    }
+
+    /** Persist the exact snapshot already bound to PendingOrder. */
+    @Transactional
+    public void recordCanonicalPlan(UUID tradePlanId, CanonicalExecutablePlan canonicalPlan,
+                                    String canonicalPlanJson) {
+        if (tradePlanId == null || canonicalPlan == null) {
+            throw new IllegalArgumentException("canonical executable plan 不能为空");
+        }
+        if (canonicalPlanJson == null || canonicalPlanJson.isBlank()) {
+            throw new IllegalArgumentException("canonical plan snapshot JSON 不能为空");
+        }
+        tradePlanRepository.findById(tradePlanId.toString()).ifPresent(entity -> {
+            entity.setCanonicalPlanJson(canonicalPlanJson);
+            tradePlanRepository.save(entity);
+            auditLogger.info(
+                    "CANONICAL_PLAN_COMPILED",
+                    "trade_plan",
+                    tradePlanId.toString(),
+                    "Persisted canonical executable plan compilerVersion=" + canonicalPlan.compilerVersion(),
+                    Map.of("instId", canonicalPlan.instId(), "status", canonicalPlan.status().name())
+            );
+        });
+    }
+
     private List<TradeTakeProfitPlanEntity> takeProfitRows(TradePlan plan) {
-        BigDecimal riskDistance = plan.entryPrice().subtract(plan.stopLossPrice()).abs();
-        BigDecimal direction = plan.action() == TradePlanType.OPEN_SHORT ? BigDecimal.valueOf(-1) : BigDecimal.ONE;
-        return List.of(
-                takeProfit(plan, 1, plan.entryPrice().add(riskDistance.multiply(direction)), new BigDecimal("30"), "TP1: 1R，平30%，止损移动到接近保本"),
-                takeProfit(plan, 2, plan.entryPrice().add(riskDistance.multiply(BigDecimal.valueOf(2)).multiply(direction)), new BigDecimal("40"), "TP2: 2R，平40%"),
-                takeProfit(plan, 3, plan.takeProfitPrice(), new BigDecimal("30"), "TP3: 3R或关键结构位，平30%")
-        );
+        var intent = TradeIntent.fromPlan(plan,
+                agentProperties.takeProfit().tp1Ratio(),
+                agentProperties.takeProfit().tp2Ratio(),
+                agentProperties.takeProfit().tp3Ratio(),
+                "trade-plan-v1");
+        return intent.exitLegs().stream()
+                .map(exit -> takeProfit(plan, Integer.parseInt(exit.semanticId().substring(2)),
+                        exit.intendedTargetPrice(), exit.intendedFraction().movePointRight(2), exit.reason()))
+                .toList();
     }
 
     private TradeTakeProfitPlanEntity takeProfit(TradePlan plan, int level, BigDecimal price,
@@ -154,6 +203,14 @@ public class TradePlanRecordService {
         payload.put("suggestedSize", plan.suggestedSize());
         payload.put("suggestedMargin", plan.suggestedMargin());
         payload.put("maxLossAmount", plan.maxLossAmount());
+        payload.put("riskBudget", plan.riskBudgetAmount());
+        payload.put("estimatedStopLoss", plan.estimatedStopLossAmount());
+        String configuredMode = System.getProperty("MARKET_DATA_MODE", System.getenv().getOrDefault("MARKET_DATA_MODE", "PUBLIC"));
+        String trading = System.getProperty("TRADING_MODE", System.getenv().getOrDefault("TRADING_MODE", "UNKNOWN"));
+        TradingMode executionMode;
+        try { executionMode = TradingMode.valueOf(trading.toUpperCase()); }
+        catch (IllegalArgumentException ex) { executionMode = TradingMode.DISABLED; }
+        payload.put("marketDataContext", MarketDataContext.resolve(executionMode, configuredMode).asMap());
         payload.put("riskRewardRatio", plan.riskRewardRatio());
         payload.put("signalScore", plan.signalScore());
         payload.put("reasonList", plan.reasonList());

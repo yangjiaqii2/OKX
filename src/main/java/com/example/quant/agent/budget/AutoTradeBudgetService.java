@@ -47,7 +47,10 @@ public class AutoTradeBudgetService {
         BigDecimal qualityAdjusted = slotBudget.multiply(scoreFactor).setScale(8, RoundingMode.HALF_UP);
         BigDecimal riskBasedMax = positiveOrMax(request.riskBasedMaxMarginUsdt());
         BigDecimal maxSingle = pctAmount(totalBudget, config.maxSinglePositionBudgetPct());
-        BigDecimal finalMargin = min(slotBudget, riskBasedMax, remaining, maxSingle);
+        BigDecimal allocationBudget = "EQUAL_SPLIT".equalsIgnoreCase(config.allocationMode())
+                ? slotBudget
+                : qualityAdjusted;
+        BigDecimal finalMargin = min(allocationBudget, riskBasedMax, remaining, maxSingle);
         if (scoreFactor.signum() <= 0) {
             finalMargin = BigDecimal.ZERO;
         }

@@ -2,6 +2,13 @@ package com.example.quant.order;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.example.quant.agent.market.OrderBookLiquidityService;
 import com.example.quant.agent.market.OrderBookLiquiditySnapshot;
@@ -11,15 +18,18 @@ import com.example.quant.agent.budget.BudgetReservation;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.market.MarketType;
 import com.example.quant.okxtrade.OkxOrderGateway;
+import com.example.quant.okxtrade.OkxInstrumentRules;
 import com.example.quant.okxtrade.OkxTradeAdapter;
 import com.example.quant.risk.ContractRiskRequest;
 import com.example.quant.risk.RiskCheckResult;
 import com.example.quant.risk.RiskLevel;
 import com.example.quant.risk.RiskService;
 import com.example.quant.risk.ContractRiskService;
+import com.example.quant.risk.DailyRiskService;
 import com.example.quant.config.TradingProperties;
 import com.example.quant.system.AutoTradeRiskMode;
 import com.example.quant.system.SystemControlService;
+import com.example.quant.tradeplan.TradePlan;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -35,6 +45,28 @@ import org.junit.jupiter.api.Test;
 class OrderConfirmServiceTest {
 
     @Test
+    void dailyRiskGateBlocksEntryBeforeExchangeWrite() {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
+        PendingOrder order = pendingOrderService.createPendingOrder(
+                MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
+        OkxTradeAdapter adapter = mock(OkxTradeAdapter.class);
+        DailyRiskService dailyRisk = mock(DailyRiskService.class);
+        when(dailyRisk.claimEntry(anyString(), eq(order.id().toString()), any(BigDecimal.class), eq(clock.instant())))
+                .thenReturn(new DailyRiskService.Decision(false, "MAX_DAILY_TRADES_REACHED"));
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrderService, new ContractRiskService(), adapter, clock);
+        confirmService.configureDailyRisk(dailyRisk);
+
+        OrderExecutionResult result = confirmService.confirm(
+                order.id(), BigDecimal.TEN, ContractRiskRequest.safeDefaults());
+
+        assertThat(result.executed()).isFalse();
+        assertThat(result.message()).isEqualTo("MAX_DAILY_TRADES_REACHED");
+        verifyNoInteractions(adapter);
+    }
+
+    @Test
     void expiredPendingOrderCannotBeConfirmed() {
         Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
         PendingOrderService pendingOrderService = new PendingOrderService(1, clock);
@@ -43,7 +75,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 new ContractRiskService(),
-                new OkxTradeAdapter(new SuccessfulGateway()),
+                testAdapter(new SuccessfulGateway()),
                 later
         );
 
@@ -62,7 +94,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 new ContractRiskService(),
-                new OkxTradeAdapter(new SuccessfulGateway()),
+                testAdapter(new SuccessfulGateway()),
                 clock
         );
 
@@ -85,7 +117,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 riskService,
-                new OkxTradeAdapter(new SuccessfulGateway()),
+                testAdapter(new SuccessfulGateway()),
                 clock
         );
 
@@ -105,6 +137,27 @@ class OrderConfirmServiceTest {
     }
 
     @Test
+    void confirmationUsesMeasuredOrderBookFreshness() {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:05Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
+        PendingOrder order = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
+        CapturingRiskService riskService = new CapturingRiskService();
+        OrderBookLiquiditySnapshot liquidity = new OrderBookLiquiditySnapshot(
+                order.instId(), BigDecimal.valueOf(99.99), BigDecimal.valueOf(100.01), BigDecimal.valueOf(100),
+                BigDecimal.valueOf(2), BigDecimal.valueOf(500), BigDecimal.valueOf(500), BigDecimal.ONE,
+                true, "", clock.instant().minusSeconds(2));
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrderService, riskService, testAdapter(new SuccessfulGateway()),
+                new FixedLiquidityService(liquidity), clock);
+
+        OrderExecutionResult result = confirmService.confirm(order.id(), BigDecimal.TEN);
+
+        assertThat(result.executed()).isTrue();
+        assertThat(riskService.captured.websocketConnected()).isTrue();
+        assertThat(riskService.captured.marketDelayMs()).isEqualTo(2000);
+    }
+
+    @Test
     void autoConfirmationLowersLeverageWhenDynamicRiskCapRejects() {
         Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
         PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
@@ -113,7 +166,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 riskService,
-                new OkxTradeAdapter(new SuccessfulGateway()),
+                testAdapter(new SuccessfulGateway()),
                 clock
         );
 
@@ -135,7 +188,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 new ContractRiskService(),
-                new OkxTradeAdapter(new SuccessfulGateway()),
+                testAdapter(new SuccessfulGateway()),
                 new FixedLiquidityService(depth(BigDecimal.valueOf(500))),
                 clock
         );
@@ -147,38 +200,79 @@ class OrderConfirmServiceTest {
     }
 
     @Test
-    void autoConfirmationKeepsConfiguredMarginWhenDepthIsThin() {
+    void autoConfirmationRejectsConfiguredMarginWhenDepthIsTooThin() {
         Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
         PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
         PendingOrder order = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 new ContractRiskService(),
-                new OkxTradeAdapter(new SuccessfulGateway()),
+                testAdapter(new SuccessfulGateway()),
                 new FixedLiquidityService(depth(BigDecimal.valueOf(50))),
                 clock
         );
 
         OrderExecutionResult result = confirmService.confirmAuto(order.id(), BigDecimal.valueOf(20));
 
-        assertThat(result.executed()).isTrue();
-        assertThat(pendingOrderService.get(order.id()).status()).isEqualTo(OrderStatus.SUBMITTED);
+        assertThat(result.executed()).isFalse();
+        assertThat(result.message()).contains("depth_usage_above");
+        assertThat(pendingOrderService.get(order.id()).status()).isEqualTo(OrderStatus.REJECTED);
         assertThat(pendingOrderService.get(order.id()).marginAmount()).isEqualByComparingTo("20.0000");
     }
 
     @Test
-    void noRiskAutoConfirmationStillRejectsExtremeSpreadButBypassesRuleRisk() {
+    void autoMarketConfirmationRejectsPlannedPriceDriftAgainstLiveMid() {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
+        PendingOrder order = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, marketPlan());
+        CountingGateway gateway = new CountingGateway();
+        OrderBookLiquiditySnapshot liquidity = new OrderBookLiquiditySnapshot(
+                order.instId(), new BigDecimal("100.99"), new BigDecimal("101.01"), new BigDecimal("101"),
+                new BigDecimal("2"), new BigDecimal("500"), new BigDecimal("500"), BigDecimal.ONE,
+                true, "", clock.instant());
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrderService, new ContractRiskService(), testAdapter(gateway),
+                new FixedLiquidityService(liquidity), new AgentProperties(), null, null, null, clock);
+
+        OrderExecutionResult result = confirmService.confirmAuto(order.id(), BigDecimal.valueOf(20));
+
+        assertThat(result.executed()).isFalse();
+        assertThat(result.message()).contains("market_price_deviation_above_0.25");
+        assertThat(gateway.placeOrderCalls).isZero();
+    }
+
+    @Test
+    void autoConfirmationTreatsRuleScoreAsSoftAfterAutoPipelineGate() {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
+        PendingOrder order = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, planWithScore(60));
+        CountingGateway gateway = new CountingGateway();
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrderService, new ContractRiskService(), testAdapter(gateway),
+                new FixedLiquidityService(depth(BigDecimal.valueOf(500))), new AgentProperties(),
+                null, null, null, clock);
+
+        OrderExecutionResult result = confirmService.confirmAuto(order.id(), BigDecimal.valueOf(20));
+
+        assertThat(result.executed()).isTrue();
+        assertThat(order.leverage()).isEqualTo(1);
+        assertThat(gateway.placeOrderCalls).isEqualTo(1);
+    }
+
+    @Test
+    void shadowAutoModeIsRejectedBeforeRiskOrExchangeSubmission() {
         Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
         PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
         PendingOrder order = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(20), AutoTradeRiskMode.NO_RISK, 70);
         RejectingRiskService riskService = new RejectingRiskService();
+        CountingGateway gateway = new CountingGateway();
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 riskService,
-                new OkxTradeAdapter(new SuccessfulGateway()),
-                new FixedLiquidityService(spread(BigDecimal.valueOf(200))),
+                testAdapter(gateway),
+                new FixedLiquidityService(spread(BigDecimal.valueOf(2))),
                 new AgentProperties(),
                 null,
                 systemControlService,
@@ -190,23 +284,53 @@ class OrderConfirmServiceTest {
         OrderExecutionResult result = confirmService.confirmAuto(order.id(), BigDecimal.valueOf(20));
 
         assertThat(result.executed()).isFalse();
-        assertThat(result.message()).contains("spread_bps_above");
+        assertThat(result.message()).contains("Shadow");
         assertThat(riskService.calls).isZero();
+        assertThat(gateway.placeOrderCalls).isZero();
         assertThat(pendingOrderService.get(order.id()).status()).isEqualTo(OrderStatus.REJECTED);
     }
 
     @Test
-    void autoConfirmationRaisesAiPlanLeverageToUserMinimumBeforeSubmit() {
+    void stoppingAutoTradeBeforeConfirmationBlocksTheFinalSubmit() {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
+        PendingOrder order = pendingOrderService.createPendingOrder(
+                MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        CountingGateway gateway = new CountingGateway();
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrderService,
+                new ContractRiskService(),
+                testAdapter(gateway),
+                new FixedLiquidityService(spread(BigDecimal.valueOf(2))),
+                new AgentProperties(),
+                null,
+                systemControlService,
+                null,
+                null,
+                clock
+        );
+
+        OrderExecutionResult result = confirmService.confirmAuto(order.id(), BigDecimal.valueOf(20));
+
+        assertThat(result.executed()).isFalse();
+        assertThat(result.message()).contains("自动交易已停止");
+        assertThat(gateway.placeOrderCalls).isZero();
+        assertThat(order.status()).isEqualTo(OrderStatus.REJECTED);
+    }
+
+    @Test
+    void autoConfirmationNeverRaisesAiPlanLeverageToUserMinimum() {
         Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
         PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
         PendingOrder order = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
-        systemControlService.enableAutoTrade(BigDecimal.valueOf(20), AutoTradeRiskMode.NO_RISK, 70, 5);
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20), AutoTradeRiskMode.STRICT, 70, 5);
         LeverageCapturingGateway gateway = new LeverageCapturingGateway();
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
-                new RejectingRiskService(),
-                new OkxTradeAdapter(gateway),
+                new CapturingRiskService(),
+                testAdapter(gateway),
                 new FixedLiquidityService(spread(BigDecimal.valueOf(2))),
                 new AgentProperties(),
                 null,
@@ -219,9 +343,9 @@ class OrderConfirmServiceTest {
         OrderExecutionResult result = confirmService.confirmAuto(order.id(), BigDecimal.valueOf(20));
 
         assertThat(result.executed()).isTrue();
-        assertThat(order.leverage()).isEqualTo(5);
-        assertThat(order.size()).isEqualByComparingTo("1.00000000");
-        assertThat(gateway.leveragePayload).containsEntry("lever", "5");
+        assertThat(order.leverage()).isEqualTo(2);
+        assertThat(order.size()).isEqualByComparingTo("0.40000000");
+        assertThat(gateway.leveragePayload).containsEntry("lever", "2");
     }
 
     @Test
@@ -236,7 +360,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 new RejectingRiskService(),
-                new OkxTradeAdapter(gateway),
+                testAdapter(gateway),
                 new FixedLiquidityService(spread(BigDecimal.valueOf(200))),
                 new AgentProperties(),
                 null,
@@ -264,7 +388,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 riskService,
-                new OkxTradeAdapter(gateway),
+                testAdapter(gateway),
                 new FixedLiquidityService(depth(BigDecimal.valueOf(500))),
                 clock
         );
@@ -305,7 +429,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 riskService,
-                new OkxTradeAdapter(new SuccessfulGateway()),
+                testAdapter(new SuccessfulGateway()),
                 null,
                 new AgentProperties(),
                 null,
@@ -319,6 +443,11 @@ class OrderConfirmServiceTest {
 
         assertThat(result.executed()).isTrue();
         assertThat(riskService.captured.suggestedMargin()).isEqualByComparingTo("22.5000");
+        assertThat(riskService.captured.maxSingleMarginRate()).isEqualByComparingTo("0.33333334");
+        assertThat(riskService.captured.maxAbsFundingRate())
+                .isEqualByComparingTo(new AgentProperties().market().maxFundingAbs());
+        assertThat(riskService.captured.minVolume24h())
+                .isEqualByComparingTo("2000000");
         assertThat(order.marginAmount()).isEqualByComparingTo("22.5000");
         assertThat(result.submitted()).isTrue();
         assertThat(result.filled()).isFalse();
@@ -352,7 +481,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 new ContractRiskService(),
-                new OkxTradeAdapter(new TimeoutAndQueryFailGateway()),
+                testAdapter(new TimeoutAndQueryFailGateway()),
                 null,
                 new AgentProperties(),
                 null,
@@ -369,6 +498,51 @@ class OrderConfirmServiceTest {
         assertThat(order.status()).isEqualTo(OrderStatus.UNKNOWN_SUBMIT_STATUS);
         assertThat(budgetService.reservation(reservation.reservationId()).orElseThrow().status())
                 .isEqualTo(com.example.quant.agent.budget.BudgetReservationStatus.RESERVED);
+    }
+
+    @Test
+    void leverageTimeoutRejectsBecauseTradeOrderRequestWasNotSent() {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
+        PendingOrder order = pendingOrderService.createPendingOrder(
+                MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrderService,
+                new ContractRiskService(),
+                testAdapter(new LeverageTimeoutGateway()),
+                clock
+        );
+
+        assertThatThrownBy(() -> confirmService.confirm(
+                order.id(), BigDecimal.TEN, ContractRiskRequest.safeDefaults()))
+                .isInstanceOf(com.example.quant.okxtrade.OrderNotSubmittedException.class)
+                .hasMessageContaining("PRE_ORDER_SETUP_FAILED");
+
+        assertThat(order.status()).isEqualTo(OrderStatus.REJECTED);
+        assertThat(order.rejectReason()).contains("PRE_ORDER_SETUP_FAILED");
+    }
+
+    @Test
+    void explicitUnknownResolutionReleasesDailyRiskOnlyAfterExchangeNotFound() {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:03:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
+        PendingOrder order = pendingOrderService.createPendingOrder(
+                MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
+        order.markUnknownSubmitStatus("request timed out");
+        OkxTradeAdapter adapter = mock(OkxTradeAdapter.class);
+        when(adapter.recoverUnknownSubmitStatus(order)).thenReturn(new OrderExecutionResult(
+                false, true, null, "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId(),
+                false, false, false, false));
+        DailyRiskService dailyRisk = mock(DailyRiskService.class);
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrderService, new ContractRiskService(), adapter, clock);
+        confirmService.configureDailyRisk(dailyRisk);
+
+        OrderExecutionResult result = confirmService.resolveUnknownSubmit(order.id());
+
+        assertThat(result.executed()).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.REJECTED);
+        verify(dailyRisk).releaseDefinitiveFailure(anyString(), eq(order.id().toString()), eq(clock.instant()));
     }
 
     @Test
@@ -397,7 +571,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 new ContractRiskService(),
-                new OkxTradeAdapter(gateway),
+                testAdapter(gateway),
                 null,
                 new AgentProperties(),
                 null,
@@ -424,7 +598,7 @@ class OrderConfirmServiceTest {
         OrderConfirmService confirmService = new OrderConfirmService(
                 pendingOrderService,
                 new ContractRiskService(),
-                new OkxTradeAdapter(new SuccessfulGateway()),
+                testAdapter(new SuccessfulGateway()),
                 new FixedLiquidityService(depth(BigDecimal.valueOf(500))),
                 clock
         );
@@ -450,6 +624,26 @@ class OrderConfirmServiceTest {
                 "",
                 Instant.now()
         );
+    }
+
+    private static TradePlan marketPlan() {
+        TradePlan plan = PendingOrderServiceTest.samplePlan();
+        return new TradePlan(
+                plan.id(), plan.instId(), plan.action(), "MARKET", plan.directionBias(), plan.confidence(),
+                plan.entryPrice(), plan.stopLossPrice(), plan.takeProfitPrice(), plan.suggestedLeverage(),
+                plan.suggestedSize(), plan.suggestedMargin(), plan.maxLossAmount(), plan.riskRewardRatio(),
+                plan.signalScore(), plan.fundingRate(), plan.volatility(), plan.volume24h(), plan.tdMode(),
+                plan.reasonList(), plan.riskList(), plan.invalidCondition(), plan.needUserConfirm(), plan.expireTime());
+    }
+
+    private static TradePlan planWithScore(int score) {
+        TradePlan plan = PendingOrderServiceTest.samplePlan();
+        return new TradePlan(
+                plan.id(), plan.instId(), plan.action(), plan.orderType(), plan.directionBias(), plan.confidence(),
+                plan.entryPrice(), plan.stopLossPrice(), plan.takeProfitPrice(), plan.suggestedLeverage(),
+                plan.suggestedSize(), plan.suggestedMargin(), plan.maxLossAmount(), plan.riskRewardRatio(),
+                score, plan.fundingRate(), plan.volatility(), plan.volume24h(), plan.tdMode(), plan.reasonList(),
+                plan.riskList(), plan.invalidCondition(), plan.needUserConfirm(), plan.expireTime());
     }
 
     private static OrderBookLiquiditySnapshot spread(BigDecimal spreadBps) {
@@ -511,6 +705,19 @@ class OrderConfirmServiceTest {
         public JsonNode queryOrder(Map<String, String> payload) {
             throw new IllegalStateException("OKX query unavailable");
         }
+    }
+
+    private static class LeverageTimeoutGateway extends SuccessfulGateway {
+        @Override
+        public JsonNode setLeverage(Map<String, String> payload) {
+            throw new IllegalStateException("OKX request failed: request timed out");
+        }
+    }
+
+    private static OkxTradeAdapter testAdapter(OkxOrderGateway gateway) {
+        return new OkxTradeAdapter(gateway, instId -> new OkxInstrumentRules(
+                instId, BigDecimal.ONE, "BTC", new BigDecimal("0.01"),
+                new BigDecimal("0.01"), new BigDecimal("0.1")));
     }
 
     private static BudgetAllocation allocation(String finalMargin) {

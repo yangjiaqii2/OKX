@@ -7,6 +7,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -15,6 +16,11 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class AuthInterceptorTest {
+    @AfterEach
+    void clearUserContext() {
+        AuthUserContext.clear();
+    }
+
     @Test
     void allowsLoginAndSessionWithoutToken() {
         AuthInterceptor interceptor = new AuthInterceptor(sessionService());
@@ -38,7 +44,7 @@ class AuthInterceptorTest {
     void allowsUserManagementWithValidToken() {
         AuthSessionService sessionService = sessionService();
         AuthInterceptor interceptor = new AuthInterceptor(sessionService);
-        String token = sessionService.login(new AuthLoginRequest("admin", "admin123")).token();
+        String token = sessionService.login(new AuthLoginRequest("admin", "test-auth-fixture-password")).token();
 
         assertThat(preHandle(interceptor, "GET", "/api/quant/auth/users", token)).isTrue();
     }
@@ -47,7 +53,7 @@ class AuthInterceptorTest {
     void exposesCurrentUsernameDuringAuthenticatedRequestAndClearsItAfterCompletion() {
         AuthSessionService sessionService = sessionService();
         AuthInterceptor interceptor = new AuthInterceptor(sessionService);
-        String token = sessionService.login(new AuthLoginRequest("admin", "admin123")).token();
+        String token = sessionService.login(new AuthLoginRequest("admin", "test-auth-fixture-password")).token();
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/quant/account/binding-status");
         request.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token);
 
@@ -78,7 +84,7 @@ class AuthInterceptorTest {
     }
 
     private static AuthSessionService sessionService() {
-        AuthProperties properties = new AuthProperties("admin", "admin123", 480);
+        AuthProperties properties = new AuthProperties("admin", "test-auth-fixture-password", 480);
         AuthUserService userService = new AuthUserService(
                 new InMemoryAuthUserRepository(),
                 new Pbkdf2PasswordHasher(),

@@ -12,6 +12,6 @@ spring:
     database-platform: org.hibernate.dialect.H2Dialect
 
 trading:
-  okx-live-enabled: true
+  mode: ${TRADING_MODE:DISABLED}
   require-user-confirm: true
   emergency-stop: false

@@ -17,6 +17,15 @@ public record AutoTradeProfitSummary(
         int executedOrderCount,
         Instant lastSyncAt,
         String dataQuality,
-        String message
+        String message,
+        BigDecimal grossRealizedPnlUsdt,
+        BigDecimal tradingFeesUsdt,
+        BigDecimal fundingUsdt,
+        String fundingCompleteness,
+        int submittedTradeCount,
+        int entryFilledTradeCount,
+        int closedTradeCount,
+        int pnlCompleteTradeCount,
+        int pnlIncompleteTradeCount
 ) {
 }

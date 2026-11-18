@@ -117,7 +117,7 @@ export function AccountRiskPage() {
             label="风控"
             value={<StatusChip value={risk.passed as boolean | undefined} />}
             helper={String(risk.rejectReason ?? formatStatus(risk.riskLevel) ?? '无拦截')}
-            accent={risk.passed === false ? 'error' : 'success'}
+            accent={risk.passed === false ? 'error' : risk.passed === true ? 'success' : 'warning'}
           />
         </Box>
 

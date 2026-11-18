@@ -32,10 +32,10 @@ public class PreConfirmRefreshService {
         if (spreadPct.compareTo(config.maxSpreadPct()) > 0) {
             reasons.add("SPREAD_TOO_WIDE_" + spreadPct + "%");
         }
-        if (config.rejectIf5mReverse() && directionReversed(candidate)) {
+        if (config.rejectIf5mReverse() && directionReversed(candidate, plan.directionBias())) {
             reasons.add("FIVE_MINUTE_REVERSE");
         }
-        if (config.rejectIfBtcReverse() && btcEthReversed(candidate)) {
+        if (config.rejectIfBtcReverse() && btcEthReversed(candidate, plan.directionBias())) {
             reasons.add("BTC_ETH_REVERSE");
         }
         if (candidate.fundingRate() != null
@@ -48,22 +48,22 @@ public class PreConfirmRefreshService {
         return PreConfirmRefreshResult.rejected(reasons);
     }
 
-    private static boolean directionReversed(ContractCandidate candidate) {
+    private static boolean directionReversed(ContractCandidate candidate, DirectionBias intendedDirection) {
         String timing = candidate.klineAnalysis().entryTiming5m();
-        if (candidate.trendDirection() == DirectionBias.BULLISH) {
+        if (intendedDirection == DirectionBias.BULLISH) {
             return "SHORT_REVERSE".equals(timing);
         }
-        if (candidate.trendDirection() == DirectionBias.BEARISH) {
+        if (intendedDirection == DirectionBias.BEARISH) {
             return "LONG_REVERSE".equals(timing);
         }
         return false;
     }
 
-    private static boolean btcEthReversed(ContractCandidate candidate) {
-        if (candidate.trendDirection() == DirectionBias.BULLISH) {
+    private static boolean btcEthReversed(ContractCandidate candidate, DirectionBias intendedDirection) {
+        if (intendedDirection == DirectionBias.BULLISH) {
             return candidate.btcTrend() == DirectionBias.BEARISH && candidate.ethTrend() == DirectionBias.BEARISH;
         }
-        if (candidate.trendDirection() == DirectionBias.BEARISH) {
+        if (intendedDirection == DirectionBias.BEARISH) {
             return candidate.btcTrend() == DirectionBias.BULLISH && candidate.ethTrend() == DirectionBias.BULLISH;
         }
         return false;

@@ -19,11 +19,12 @@ type PendingOrderReviewDialogProps = {
   open: boolean;
   record: Record<string, unknown>;
   submitting?: boolean;
+  tradingMode: string;
   onClose: () => void;
   onConfirm: (marginAmount: string) => void;
 };
 
-export function PendingOrderReviewDialog({ open, record, submitting, onClose, onConfirm }: PendingOrderReviewDialogProps) {
+export function PendingOrderReviewDialog({ open, record, submitting, tradingMode, onClose, onConfirm }: PendingOrderReviewDialogProps) {
   const [marginAmount, setMarginAmount] = useState('');
   const amountValid = Number(marginAmount) > 0;
   const notional = amountValid ? Number(marginAmount) * Number(record.leverage ?? 1) : 0;
@@ -33,7 +34,7 @@ export function PendingOrderReviewDialog({ open, record, submitting, onClose, on
       <DialogTitle>
         <Stack direction="row" spacing={1} alignItems="center">
           <WarningAmberIcon color="warning" />
-          <span>确认提交 OKX 实盘订单</span>
+          <span>{tradingMode === 'LIVE' ? '确认提交 OKX LIVE 真实资金订单' : '确认提交 OKX DEMO 模拟订单'}</span>
         </Stack>
       </DialogTitle>
       <DialogContent>
@@ -75,8 +76,8 @@ export function PendingOrderReviewDialog({ open, record, submitting, onClose, on
         <Button onClick={onClose} disabled={submitting}>
           返回
         </Button>
-        <Button variant="contained" color="warning" onClick={() => onConfirm(marginAmount)} disabled={submitting || !amountValid}>
-          确认实盘提交
+        <Button variant="contained" color={tradingMode === 'LIVE' ? 'error' : 'info'} onClick={() => onConfirm(marginAmount)} disabled={submitting || !amountValid || tradingMode === 'DISABLED'}>
+          {tradingMode === 'LIVE' ? '确认 LIVE 真实资金提交' : '确认 DEMO 模拟提交'}
         </Button>
       </DialogActions>
     </Dialog>

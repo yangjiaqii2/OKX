@@ -28,6 +28,10 @@ export function StatusChip({ value }: StatusChipProps) {
     'HIGH': 'error',
     'CONFIRMED': 'info',
     'SUBMITTED': 'info',
+    'WAITING_ENTRY': 'warning',
+    'CLOSE_SUBMITTING': 'warning',
+    'CLOSE_SUBMIT_UNKNOWN': 'error',
+    'CLOSE_SUBMITTED': 'info',
     'EXECUTED': 'success',
     'SKIPPED': 'default',
   };

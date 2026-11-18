@@ -6,15 +6,25 @@ import com.example.quant.account.AccountSnapshotService;
 import com.example.quant.account.PositionSnapshotService;
 import com.example.quant.account.dto.AccountSummary;
 import com.example.quant.account.dto.PositionSummary;
+import com.example.quant.agent.entry.WaitingEntryIntentService;
+import com.example.quant.agent.entry.WaitingEntryIntentStatus;
+import com.example.quant.agent.gate.ContractTradeGate;
+import com.example.quant.agent.selection.AiContractSelectionService;
+import com.example.quant.agent.selection.ContractSelectionDecision;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.config.TradingProperties;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.crypto.dto.ContractFactorScore;
+import com.example.quant.crypto.dto.ContractKlineAnalysis;
 import com.example.quant.crypto.dto.ContractNewsRiskAnalysis;
+import com.example.quant.crypto.selection.V2ScoreDimension;
+import com.example.quant.crypto.selection.V2SelectionScoreResult;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
 import com.example.quant.order.OrderExecutionResult;
 import com.example.quant.order.OrderSubmitStatusUnknownException;
+import com.example.quant.order.OrderStatus;
+import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
 import com.example.quant.okxtrade.OkxCurrentOrderSyncService;
 import com.example.quant.risk.RiskLevel;
@@ -26,15 +36,294 @@ import com.example.quant.tradeplan.TradePlanType;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.Mockito;
+import org.mockito.ArgumentCaptor;
 
 class AutoTradeServiceTest {
+
+    @Test
+    void preservesScannerCandidateOrderWhenPassingEligibleCandidatesToAi() {
+        AgentProperties properties = new AgentProperties();
+        properties.score().setMinTrendScore(0);
+        properties.score().setMinVolumeScore(0);
+        properties.score().setMinLiquidityScore(0);
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                properties, controls, new FakeTradeOrderRecordService(false), new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(), new PendingOrderService(120), new CapturingOrderConfirmService(),
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)), new FixedPositionSnapshotService(List.of()));
+        AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
+        ContractCandidate v2FirstButLowerV1 = candidate("ETH-USDT-SWAP", 70);
+        ContractCandidate v2SecondButHigherV1 = candidate("BTC-USDT-SWAP", 95);
+        Map<String, V2SelectionScoreResult> v2Scores = Map.of(
+                v2FirstButLowerV1.instId(), selectionScore("92"),
+                v2SecondButHigherV1.instId(), selectionScore("71"));
+        Mockito.when(selector.select(Mockito.anyList(), Mockito.eq(v2Scores)))
+                .thenReturn(new ContractSelectionDecision(
+                        ContractSelectionDecision.DecisionSource.RULE_FALLBACK,
+                        ContractSelectionDecision.SelectionAction.WAIT,
+                        "", null, "WAIT", BigDecimal.ZERO, List.of(), List.of(), List.of(), "test-only"));
+        service.configureAiContractSelection(selector);
+        service.evaluateAndExecute(List.of(v2SecondButHigherV1, v2FirstButLowerV1), Map.of(), v2Scores);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ContractCandidate>> pool = ArgumentCaptor.forClass(List.class);
+        Mockito.verify(selector).select(pool.capture(), Mockito.eq(v2Scores));
+        assertThat(pool.getValue()).extracting(ContractCandidate::instId)
+                .containsExactly("ETH-USDT-SWAP", "BTC-USDT-SWAP");
+    }
+
+    private static V2SelectionScoreResult selectionScore(String rankingScore) {
+        BigDecimal score = new BigDecimal(rankingScore);
+        return new V2SelectionScoreResult(score, score, new BigDecimal("100"), BigDecimal.ONE,
+                Map.of(V2ScoreDimension.CAPITAL_FLOW, score), List.of());
+    }
+
+    @Test
+    void fallsBackFromHypeToBtcWithoutCrossCandidateAuditMetadata() {
+        AgentProperties properties = new AgentProperties();
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(20));
+        CapturingOrderConfirmService confirm = new CapturingOrderConfirmService();
+        MetadataTradePlanService plans = new MetadataTradePlanService();
+        CapturingSelectionRecordService records = new CapturingSelectionRecordService();
+        AutoTradeService service = new AutoTradeService(properties, controls, new FakeTradeOrderRecordService(false), records,
+                plans, new PendingOrderService(120), confirm, new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of()));
+        AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
+        ContractSelectionDecision selection = new ContractSelectionDecision(
+                ContractSelectionDecision.DecisionSource.AI_PRIMARY, ContractSelectionDecision.SelectionAction.TRADE,
+                "HYPE-USDT-SWAP", DirectionBias.BULLISH, "MARKET",
+                new BigDecimal("0.90"), List.of(
+                new ContractSelectionDecision.RankedCandidate("HYPE-USDT-SWAP", 1, DirectionBias.BULLISH, "MARKET", new BigDecimal("0.90"),
+                        List.of("HYPE三周期上涨", "RSI 65.41", "OI +3.17%"), List.of("HYPE波动风险")),
+                new ContractSelectionDecision.RankedCandidate("BTC-USDT-SWAP", 2, DirectionBias.BEARISH, "MARKET", new BigDecimal("0.82"),
+                        List.of("BTC下行"), List.of("BTC超卖"))), List.of("全局理由"), List.of("全局风险"), "");
+        Mockito.when(selector.select(Mockito.anyList())).thenReturn(selection);
+        service.configureAiContractSelection(selector);
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
+                List.of(candidateWithAction("HYPE-USDT-SWAP", 95, "WATCH_ONLY"),
+                        candidate("BTC-USDT-SWAP", 90, RiskLevel.LOW, DirectionBias.BEARISH, DirectionBias.BEARISH)), Map.of());
+
+        assertThat(plans.capturedPlan.instId()).isEqualTo("BTC-USDT-SWAP");
+        assertThat(plans.capturedPlan.reasonList()).containsExactly("BTC下行");
+        assertThat(plans.capturedPlan.riskList()).containsExactly("BTC超卖");
+    }
+
+    @Test
+    void selectedAiWaitPersistsIntentWithoutBudgetOrOrderSubmission() {
+        AgentProperties properties = new AgentProperties();
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(20));
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        AutoTradeService service = new AutoTradeService(
+                properties, controls, new FakeTradeOrderRecordService(false), new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(), new PendingOrderService(120), confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)), new FixedPositionSnapshotService(List.of()));
+        ContractCandidate candidate = candidateWithClosedCandle("ETH-USDT-SWAP", Instant.parse("2026-08-12T08:00:00Z"),
+                "WAIT_PULLBACK", "100");
+        ContractSelectionDecision wait = selectedDecision(
+                ContractSelectionDecision.DecisionSource.AI_WAIT, candidate.instId(), DirectionBias.BULLISH,
+                "WAIT_PULLBACK");
+        AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
+        Mockito.when(selector.select(Mockito.anyList())).thenReturn(wait);
+        WaitingEntryIntentService intents = Mockito.mock(WaitingEntryIntentService.class);
+        Mockito.when(intents.evaluate(Mockito.anyString(), Mockito.anyList(), Mockito.any()))
+                .thenReturn(Optional.empty());
+        Mockito.when(intents.createOrGet(Mockito.anyString(), Mockito.anyString(), Mockito.eq(candidate),
+                        Mockito.eq(wait), Mockito.eq("qd-wait"), Mockito.any()))
+                .thenReturn(new WaitingEntryIntentService.Intent(
+                        "intent-1", candidate.instId(), WaitingEntryIntentStatus.WAITING, "qd-wait", true));
+        service.configureAiContractSelection(selector);
+        service.configureWaitingEntryIntent(intents);
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
+                List.of(candidate), Map.of(candidate.instId(), "qd-wait"));
+
+        assertThat(result.status()).isEqualTo("WAITING_ENTRY");
+        assertThat(result.instId()).isEqualTo(candidate.instId());
+        assertThat(result.message()).isEqualTo("AI_WAITING_ENTRY");
+        assertThat(confirmService.confirmCount).isZero();
+        Mockito.verify(intents).createOrGet(Mockito.anyString(), Mockito.eq("AUTO_CONTRACT_V1"),
+                Mockito.eq(candidate), Mockito.eq(wait), Mockito.eq("qd-wait"), Mockito.any());
+    }
+
+    @Test
+    void triggeredWaitUsesOriginalClientOrderIdAndExistingHardGuardedExecution() {
+        AgentProperties properties = new AgentProperties();
+        properties.aiSelection().setPolicy("CURRENT_AI_OVERRIDE");
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(20));
+        CapturingPendingOrderService pendingOrders = new CapturingPendingOrderService();
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        AutoTradeService service = new AutoTradeService(
+                properties, controls, new FakeTradeOrderRecordService(false), new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(), pendingOrders, confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)), new FixedPositionSnapshotService(List.of()));
+        ContractCandidate candidate = candidateWithClosedCandle("ETH-USDT-SWAP", Instant.parse("2026-08-12T08:05:00Z"),
+                "READY", "99.8");
+        AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
+        WaitingEntryIntentService intents = Mockito.mock(WaitingEntryIntentService.class);
+        Mockito.when(intents.evaluate(Mockito.anyString(), Mockito.anyList(), Mockito.any()))
+                .thenReturn(Optional.of(new WaitingEntryIntentService.TriggeredIntent(
+                        "intent-1", candidate.instId(), DirectionBias.BULLISH, "qd-original", candidate)));
+        service.configureAiContractSelection(selector);
+        service.configureWaitingEntryIntent(intents);
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
+                List.of(candidate), Map.of(candidate.instId(), "qd-current"));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(pendingOrders.capturedClientOrderId).isEqualTo("qd-original");
+        Mockito.verify(selector, Mockito.never()).select(Mockito.anyList());
+        Mockito.verify(intents).complete("intent-1", WaitingEntryIntentStatus.SUBMITTED,
+                result.pendingOrderId(), result.okxOrderId(), result.message(), result.createdAt());
+    }
+
+    @Test
+    void ruleFirstTriggeredWaitCannotBypassCurrentRuleEligibility() {
+        AgentProperties properties = new AgentProperties();
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(20));
+        CapturingPendingOrderService pendingOrders = new CapturingPendingOrderService();
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        AutoTradeService service = new AutoTradeService(
+                properties, controls, new FakeTradeOrderRecordService(false), new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(), pendingOrders, confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)), new FixedPositionSnapshotService(List.of()));
+        ContractCandidate denied = candidateWithAction("ETH-USDT-SWAP", 60, "WAIT_CONFIRM");
+        WaitingEntryIntentService intents = Mockito.mock(WaitingEntryIntentService.class);
+        Mockito.when(intents.evaluate(Mockito.anyString(), Mockito.anyList(), Mockito.any()))
+                .thenReturn(Optional.of(new WaitingEntryIntentService.TriggeredIntent(
+                        "intent-2", denied.instId(), DirectionBias.BULLISH, "qd-original", denied)));
+        service.configureWaitingEntryIntent(intents);
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(denied));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).startsWith("WAITING_ENTRY_RULE_INELIGIBLE:");
+        assertThat(confirmService.confirmCount).isZero();
+        assertThat(pendingOrders.capturedClientOrderId).isNull();
+        Mockito.verify(intents).complete(Mockito.eq("intent-2"), Mockito.eq(WaitingEntryIntentStatus.FAILED_SAFE),
+                Mockito.isNull(), Mockito.isNull(), Mockito.contains("WAITING_ENTRY_RULE_INELIGIBLE"), Mockito.any());
+    }
+
+    @Test
+    void executesAiSelectedCandidateInsteadOfRuleFirstCandidate() {
+        AgentProperties properties = new AgentProperties();
+        properties.autoTrade().setMinOpenPositions(1);
+        properties.autoTrade().setMaxOpenPositions(1);
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        CapturingSelectionRecordService recordService = new CapturingSelectionRecordService();
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                properties, controls, new FakeTradeOrderRecordService(false), recordService,
+                new CandidateTradePlanService(), new PendingOrderService(120), confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)), new FixedPositionSnapshotService(List.of())
+        );
+        AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
+        Mockito.when(selector.select(Mockito.anyList())).thenReturn(new ContractSelectionDecision(
+                ContractSelectionDecision.DecisionSource.AI_PRIMARY,
+                ContractSelectionDecision.SelectionAction.TRADE,
+                "ETH-USDT-SWAP", DirectionBias.BEARISH, "MARKET", new BigDecimal("0.8"),
+                List.of(new ContractSelectionDecision.RankedCandidate(
+                        "ETH-USDT-SWAP", 1, DirectionBias.BEARISH, "MARKET", new BigDecimal("0.8"))),
+                List.of(), List.of(), ""));
+        service.configureAiContractSelection(selector);
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(
+                candidate("BTC-USDT-SWAP", 95), candidate("ETH-USDT-SWAP", 85)));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(result.instId()).isEqualTo("ETH-USDT-SWAP");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+        assertThat(recordService.selection.source())
+                .isEqualTo(ContractSelectionDecision.DecisionSource.AI_PRIMARY);
+    }
+
+    @Test
+    void recordsAiSelectedCandidateAndWaitReasonWhenPlanDoesNotEnter() {
+        AgentProperties properties = new AgentProperties();
+        properties.autoTrade().setMinOpenPositions(1);
+        properties.autoTrade().setMaxOpenPositions(1);
+        CapturingSelectionRecordService recordService = new CapturingSelectionRecordService();
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                properties, controls, new FakeTradeOrderRecordService(false), recordService,
+                new WatchSelectedTradePlanService(), new PendingOrderService(120),
+                new CapturingOrderConfirmService(), new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+        AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
+        Mockito.when(selector.select(Mockito.anyList())).thenReturn(new ContractSelectionDecision(
+                ContractSelectionDecision.DecisionSource.AI_PRIMARY,
+                ContractSelectionDecision.SelectionAction.TRADE,
+                "ETH-USDT-SWAP", DirectionBias.BEARISH, "WAIT_RETEST", new BigDecimal("0.8"),
+                List.of(new ContractSelectionDecision.RankedCandidate(
+                        "ETH-USDT-SWAP", 1, DirectionBias.BEARISH, "WAIT_RETEST", new BigDecimal("0.8"))),
+                List.of("等待回踩确认"), List.of(), ""));
+        service.configureAiContractSelection(selector);
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(
+                candidate("BTC-USDT-SWAP", 95), candidate("ETH-USDT-SWAP", 79)));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).startsWith("no_order_submitted:");
+        assertThat(recordService.candidate.instId()).isEqualTo("ETH-USDT-SWAP");
+    }
+
+    @Test
+    void preservesHardConfirmRejectionWhenLaterAiCandidatesOnlyProduceWatchPlans() {
+        AgentProperties properties = new AgentProperties();
+        properties.autoTrade().setMinOpenPositions(1);
+        properties.autoTrade().setMaxOpenPositions(1);
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(20));
+        SequencedOrderConfirmService confirmService = new SequencedOrderConfirmService(List.of(
+                OrderExecutionResult.rejected("LOSS_COOLDOWN_ACTIVE")
+        ));
+        AutoTradeService service = new AutoTradeService(
+                properties, controls, new FakeTradeOrderRecordService(false), new FakeAutoTradeRecordService(),
+                new FirstExecutableThenWatchTradePlanService(), new PendingOrderService(120), confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)), new FixedPositionSnapshotService(List.of())
+        );
+        AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
+        Mockito.when(selector.select(Mockito.anyList())).thenReturn(new ContractSelectionDecision(
+                ContractSelectionDecision.DecisionSource.AI_PRIMARY,
+                ContractSelectionDecision.SelectionAction.TRADE,
+                "BTC-USDT-SWAP", DirectionBias.BULLISH, "MARKET", new BigDecimal("0.8"),
+                List.of(
+                        new ContractSelectionDecision.RankedCandidate(
+                                "BTC-USDT-SWAP", 1, DirectionBias.BULLISH, "MARKET", new BigDecimal("0.8")),
+                        new ContractSelectionDecision.RankedCandidate(
+                                "ETH-USDT-SWAP", 2, DirectionBias.BULLISH, "MARKET", new BigDecimal("0.75"))
+                ), List.of(), List.of(), ""));
+        service.configureAiContractSelection(selector);
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(
+                candidate("BTC-USDT-SWAP", 90), candidate("ETH-USDT-SWAP", 89)));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("LOSS_COOLDOWN_ACTIVE");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+    }
 
     @Test
     void skipsWhenRuntimeSwitchIsOff() {
@@ -97,6 +386,184 @@ class AutoTradeServiceTest {
     }
 
     @Test
+    void capsAllocatedMarginAtOneThirdOfAccountEquity() {
+        AgentProperties properties = new AgentProperties();
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(new BigDecimal("60000"));
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        TradePlan base = samplePlan();
+        TradePlan largeRiskPlan = new TradePlan(
+                base.id(), base.instId(), base.action(), base.orderType(), base.directionBias(), base.confidence(),
+                base.entryPrice(), base.stopLossPrice(), base.takeProfitPrice(), base.suggestedLeverage(),
+                base.suggestedSize(), new BigDecimal("40000"), base.maxLossAmount(), base.riskRewardRatio(),
+                base.signalScore(), base.fundingRate(), base.volatility(), base.volume24h(), base.tdMode(),
+                base.reasonList(), base.riskList(), base.invalidCondition(), base.needUserConfirm(), base.expireTime());
+        AutoTradeService service = new AutoTradeService(
+                properties, controls, new FakeTradeOrderRecordService(false), new FakeAutoTradeRecordService(),
+                new FixedTradePlanService(largeRiskPlan), new PendingOrderService(120), confirmService,
+                new FixedAccountSnapshotService(new BigDecimal("60000"), new BigDecimal("60000")),
+                new FixedPositionSnapshotService(List.of()));
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate()));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(confirmService.capturedMargin).isEqualByComparingTo("20000.0004");
+    }
+
+    @Test
+    void accountSnapshotFailureBlocksNewAutomatedEntry() {
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(50));
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(), systemControlService, new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(), new FixedTradePlanService(samplePlan()),
+                new PendingOrderService(120), confirmService, new FailingAccountSnapshotService(),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate()));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("account_available_balance_unavailable");
+        assertThat(confirmService.confirmCount).isZero();
+    }
+
+    @Test
+    void positionSnapshotFailureBlocksNewAutomatedEntry() {
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(50));
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(), systemControlService, new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(), new FixedTradePlanService(samplePlan()),
+                new PendingOrderService(120), confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FailingPositionSnapshotService()
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate()));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("position_snapshot_unavailable");
+        assertThat(confirmService.confirmCount).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "invalid"})
+    void malformedPositionQuantityBlocksBeforeItCanDisappearFromRiskChecks(String size) {
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(50));
+        CapturingOrderConfirmService confirm = new CapturingOrderConfirmService();
+        PositionSummary malformed = new PositionSummary("SOL-USDT-SWAP", "net", size,
+                new BigDecimal("100"), BigDecimal.ZERO, "OKX_REAL");
+        AutoTradeService service = new AutoTradeService(new AgentProperties(), controls,
+                new FakeTradeOrderRecordService(false), new FakeAutoTradeRecordService(),
+                new FixedTradePlanService(samplePlan()), new PendingOrderService(120), confirm,
+                new FixedAccountSnapshotService(new BigDecimal("1000")),
+                new FixedPositionSnapshotService(List.of(malformed)));
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate()));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("position_snapshot_unavailable", "POSITION_SIZE_UNAVAILABLE");
+        assertThat(confirm.confirmCount).isZero();
+    }
+
+    @Test
+    void blocksThirdSameDirectionAltOpenedInSameRound() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(50));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(
+                candidate("DOGE-USDT-SWAP", 95),
+                candidate("PEPE-USDT-SWAP", 94),
+                candidate("SHIB-USDT-SWAP", 93)
+        ));
+
+        assertThat(confirmService.confirmCount).isEqualTo(2);
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(result.message()).contains("auto_refill_submitted=2");
+    }
+
+    @Test
+    void blocksThirdSameDirectionAltFromPreviousRoundPendingOrders() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(50));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(List.of(
+                        new PositionSummary("DOGE-USDT-SWAP", "long", "1", BigDecimal.ONE, BigDecimal.ZERO, "LOCAL_ACTIVE_ENTRY"),
+                        new PositionSummary("PEPE-USDT-SWAP", "long", "1", BigDecimal.ONE, BigDecimal.ZERO, "LOCAL_ACTIVE_ENTRY")
+                )),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(
+                candidate("SHIB-USDT-SWAP", 95),
+                candidate("BTC-USDT-SWAP", 94)
+        ));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(result.instId()).isEqualTo("BTC-USDT-SWAP");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+    }
+
+    @Test
+    void blocksThirdSameDirectionAltFromPreviousRoundOkxCurrentOrders() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(50));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of()),
+                new com.example.quant.agent.budget.AutoTradeBudgetService(new AgentProperties()),
+                new FixedCurrentOrderSyncService(new OkxCurrentOrderSyncService.SyncResult(
+                        2, 0, 2, false, null,
+                        List.of("DOGE-USDT-SWAP", "PEPE-USDT-SWAP"),
+                        List.of(
+                                new PositionSummary("DOGE-USDT-SWAP", "long", "1", BigDecimal.ONE, BigDecimal.ZERO, "OKX_CURRENT_ENTRY"),
+                                new PositionSummary("PEPE-USDT-SWAP", "long", "1", BigDecimal.ONE, BigDecimal.ZERO, "OKX_CURRENT_ENTRY")
+                        )))
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(
+                candidate("SHIB-USDT-SWAP", 95),
+                candidate("BTC-USDT-SWAP", 94)
+        ));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(result.instId()).isEqualTo("BTC-USDT-SWAP");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+    }
+
+    @Test
     void treatsConfiguredAutoTradeMarginAsTotalBudgetNotPerOrderMargin() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
 
@@ -104,7 +571,7 @@ class AutoTradeServiceTest {
                 .evaluateAndExecute(List.of(candidate()));
 
         assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(confirmService.capturedMargin).isEqualByComparingTo("22.5");
+        assertThat(confirmService.capturedMargin).isEqualByComparingTo("16.666667");
     }
 
     @Test
@@ -123,7 +590,7 @@ class AutoTradeServiceTest {
                 .evaluateAndExecute(List.of(candidate()));
 
         assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(confirmService.capturedMargin).isEqualByComparingTo("5.0");
+        assertThat(confirmService.capturedMargin).isEqualByComparingTo("6.6666666");
     }
 
     @Test
@@ -158,12 +625,12 @@ class AutoTradeServiceTest {
         assertThat(result.message()).contains("auto_refill_submitted=2");
         assertThat(confirmService.confirmCount).isEqualTo(2);
         assertThat(confirmService.capturedMargins).hasSize(2);
-        assertThat(confirmService.capturedMargins.get(0)).isEqualByComparingTo("6.0");
-        assertThat(confirmService.capturedMargins.get(1)).isEqualByComparingTo("5.0");
+        assertThat(confirmService.capturedMargins.get(0)).isEqualByComparingTo("6.6666666");
+        assertThat(confirmService.capturedMargins.get(1)).isEqualByComparingTo("6.6666666");
     }
 
     @Test
-    void allocatesThreePositionsFromOneTotalBudgetBySlotAndScore() {
+    void allocatesThreePositionsByEqualThirdsFromOneTotalBudget() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(50));
@@ -188,9 +655,9 @@ class AutoTradeServiceTest {
         assertThat(result.status()).isEqualTo("EXECUTED");
         assertThat(confirmService.confirmCount).isEqualTo(3);
         assertThat(confirmService.capturedMargins).hasSize(3);
-        assertThat(confirmService.capturedMargins.get(0)).isEqualByComparingTo("22.5");
-        assertThat(confirmService.capturedMargins.get(1)).isEqualByComparingTo("15.0");
-        assertThat(confirmService.capturedMargins.get(2)).isEqualByComparingTo("12.5");
+        assertThat(confirmService.capturedMargins.get(0)).isEqualByComparingTo("16.666667");
+        assertThat(confirmService.capturedMargins.get(1)).isEqualByComparingTo("16.6666665");
+        assertThat(confirmService.capturedMargins.get(2)).isEqualByComparingTo("16.6666665");
     }
 
     @Test
@@ -230,8 +697,9 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void noRiskModeAllowsScore70CandidateWithoutAutoTradeAllowedAction() {
+    void noRiskModeRecordsShadowWithoutPendingOrderOrSubmission() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(20), AutoTradeRiskMode.NO_RISK);
         AutoTradeService service = new AutoTradeService(
@@ -240,7 +708,7 @@ class AutoTradeServiceTest {
                 new FakeTradeOrderRecordService(false),
                 new FakeAutoTradeRecordService(),
                 new NoRiskCandidateTradePlanService(),
-                new PendingOrderService(120),
+                pendingOrderService,
                 confirmService,
                 new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
                 new FixedPositionSnapshotService(List.of())
@@ -249,9 +717,10 @@ class AutoTradeServiceTest {
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
                 List.of(candidateWithAction("BTC-USDT-SWAP", 70, "WAIT_CONFIRM")));
 
-        assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(confirmService.confirmCount).isEqualTo(1);
-        assertThat(confirmService.capturedMargin).isEqualByComparingTo("9.0");
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("shadow_observation_recorded=1");
+        assertThat(confirmService.confirmCount).isZero();
+        assertThat(pendingOrderService.allOrders()).isEmpty();
     }
 
     @Test
@@ -274,13 +743,13 @@ class AutoTradeServiceTest {
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
                 List.of(candidateWithAction("BTC-USDT-SWAP", 65, "WAIT_CONFIRM")));
 
-        assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(confirmService.confirmCount).isEqualTo(1);
-        assertThat(confirmService.capturedMargin).isGreaterThanOrEqualTo(new BigDecimal("5"));
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("shadow_observation_recorded=1");
+        assertThat(confirmService.confirmCount).isZero();
     }
 
     @Test
-    void noRiskModeDoesNotBlockCandidateWhenNewsRiskIsUnknown() {
+    void noRiskModeRecordsUnknownNewsAsNonQualifiedShadowCandidate() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(20), AutoTradeRiskMode.NO_RISK, 70);
@@ -302,8 +771,9 @@ class AutoTradeServiceTest {
                 ContractNewsRiskAnalysis.unknown("新闻源不可用")
         )));
 
-        assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(confirmService.confirmCount).isEqualTo(1);
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("shadow_no_candidate_qualified: news_data_unavailable");
+        assertThat(confirmService.confirmCount).isZero();
     }
 
     @Test
@@ -335,7 +805,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void strictModeDoesNotBlockUnknownNewsRiskWhenScoreIsQualified() {
+    void strictModeRejectsUnknownNewsBeforeOrderSubmission() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
@@ -357,12 +827,13 @@ class AutoTradeServiceTest {
                 ContractNewsRiskAnalysis.unknown("新闻源不可用", 20)
         )));
 
-        assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(confirmService.confirmCount).isEqualTo(1);
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("news_data_unavailable");
+        assertThat(confirmService.confirmCount).isZero();
     }
 
     @Test
-    void noRiskModeUsesDisplayedScoreInsteadOfFinalRankScoreForMinimumGateAndBudget() {
+    void noRiskModeUsesDisplayedScoreForShadowEligibilityOnly() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(50), AutoTradeRiskMode.NO_RISK);
@@ -381,9 +852,9 @@ class AutoTradeServiceTest {
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
                 List.of(candidateWithActionAndFinalRankScore("PEPE-USDT-SWAP", 84, "WAIT_CONFIRM", BigDecimal.valueOf(60))));
 
-        assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(confirmService.confirmCount).isEqualTo(1);
-        assertThat(confirmService.capturedMargin).isGreaterThanOrEqualTo(new BigDecimal("5"));
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("shadow_observation_recorded=1");
+        assertThat(confirmService.confirmCount).isZero();
     }
 
     @Test
@@ -391,7 +862,7 @@ class AutoTradeServiceTest {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         CapturingPendingOrderService pendingOrderService = new CapturingPendingOrderService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
-        systemControlService.enableAutoTrade(BigDecimal.valueOf(20), AutoTradeRiskMode.NO_RISK, 69);
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20), AutoTradeRiskMode.STRICT, 69);
         AutoTradeService service = new AutoTradeService(
                 new AgentProperties(),
                 systemControlService,
@@ -405,7 +876,7 @@ class AutoTradeServiceTest {
         );
 
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
-                List.of(candidateWithAction("DOGE-USDT-SWAP", 69, "WAIT_CONFIRM")));
+                List.of(candidate("DOGE-USDT-SWAP", 95)));
 
         assertThat(result.status()).isEqualTo("EXECUTED");
         assertThat(pendingOrderService.capturedClientOrderId)
@@ -414,16 +885,16 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void noRiskModeDoesNotShrinkThirdSlotByRiskBasedMarginLimit() {
+    void strictModeKeepsThirdSlotEqualAfterCandidatePassedScoreGate() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
-        systemControlService.enableAutoTrade(BigDecimal.valueOf(50), AutoTradeRiskMode.NO_RISK, 65);
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(50), AutoTradeRiskMode.STRICT, 65);
         AutoTradeService service = new AutoTradeService(
                 new AgentProperties(),
                 systemControlService,
                 new FakeTradeOrderRecordService(false),
                 new FakeAutoTradeRecordService(),
-                new WideStopNoRiskTradePlanService(),
+                new CandidateTradePlanService(),
                 new PendingOrderService(120),
                 confirmService,
                 new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
@@ -434,18 +905,18 @@ class AutoTradeServiceTest {
         );
 
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
-                List.of(candidateWithAction("PIPPIN-USDT-SWAP", 70, "WAIT_CONFIRM")));
+                List.of(candidate("PIPPIN-USDT-SWAP", 95)));
 
         assertThat(result.status()).isEqualTo("EXECUTED");
         assertThat(confirmService.confirmCount).isEqualTo(1);
-        assertThat(confirmService.capturedMargin).isEqualByComparingTo("12.5");
+        assertThat(confirmService.capturedMargin).isEqualByComparingTo("16.6666665");
     }
 
     @Test
-    void noRiskModeKeepsConfiguredBudgetWhenAvailableBalanceDropsAfterTwoPositions() {
+    void strictModeStillUsesQualityAdjustedBudgetWhenAvailableBalanceDrops() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
-        systemControlService.enableAutoTrade(BigDecimal.valueOf(50), AutoTradeRiskMode.NO_RISK, 65);
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(50), AutoTradeRiskMode.STRICT, 65);
         AgentProperties agentProperties = new AgentProperties();
         com.example.quant.agent.budget.AutoTradeBudgetService budgetService =
                 new com.example.quant.agent.budget.AutoTradeBudgetService(agentProperties);
@@ -460,7 +931,7 @@ class AutoTradeServiceTest {
                 systemControlService,
                 new FakeTradeOrderRecordService(false),
                 new FakeAutoTradeRecordService(),
-                new NoRiskCandidateTradePlanService(),
+                new CandidateTradePlanService(),
                 new PendingOrderService(120),
                 confirmService,
                 new FixedAccountSnapshotService(new BigDecimal("12.5")),
@@ -472,7 +943,7 @@ class AutoTradeServiceTest {
         );
 
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
-                List.of(candidateWithAction("BABY-USDT-SWAP", 79, "WAIT_CONFIRM")));
+                List.of(candidate("BABY-USDT-SWAP", 95)));
 
         assertThat(result.status()).isEqualTo("EXECUTED");
         assertThat(confirmService.confirmCount).isEqualTo(1);
@@ -480,20 +951,33 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void rejectsScore81WhenOnePositionIsOpenBecauseQualityThresholdRises() {
+    void allowsScore69WhenOnePositionIsOpenBecausePositionCountDoesNotRaiseThreshold() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+
+        AutoTradeService.AutoTradeResult result = autoTradeWithMargin(
+                        BigDecimal.valueOf(100),
+                        BigDecimal.valueOf(1000),
+                        confirmService,
+                List.of(new PositionSummary("ETH-USDT-SWAP", "long", "1", BigDecimal.valueOf(100), BigDecimal.ZERO, "OKX_REAL"))
+                )
+                .evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 69)));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+    }
+
+    @Test
+    void allowsRelaxedScoreCandidateWhenNoOtherHardRiskBlocksIt() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
 
         AutoTradeService.AutoTradeResult result = autoTradeWithMargin(
                         BigDecimal.valueOf(20),
                         BigDecimal.valueOf(1000),
-                        confirmService,
-                        List.of(new PositionSummary("ETH-USDT-SWAP", "long", "1", BigDecimal.valueOf(100), BigDecimal.ZERO, "OKX_REAL"))
-                )
-                .evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 81)));
+                        confirmService)
+                .evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 72)));
 
-        assertThat(result.status()).isEqualTo("SKIPPED");
-        assertThat(result.message()).contains("position_quality_score_below_84");
-        assertThat(confirmService.confirmCount).isZero();
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
     }
 
     @Test
@@ -517,7 +1001,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void doesNotOpenNewPositionWhenChoppyRegimeAlreadyHasOnePosition() {
+    void allowsSecondQualifiedPositionInChoppyRegimeButKeepsReducedCapacity() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
 
         AutoTradeService.AutoTradeResult result = autoTradeWithMargin(
@@ -529,9 +1013,8 @@ class AutoTradeServiceTest {
                 .evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 95, RiskLevel.LOW,
                         DirectionBias.NEUTRAL, DirectionBias.NEUTRAL)));
 
-        assertThat(result.status()).isEqualTo("SKIPPED");
-        assertThat(result.message()).contains("dynamicMax=1");
-        assertThat(confirmService.confirmCount).isZero();
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
     }
 
     @Test
@@ -573,6 +1056,154 @@ class AutoTradeServiceTest {
         assertThat(result.status()).isEqualTo("EXECUTED");
         assertThat(result.instId()).isEqualTo("ETH-USDT-SWAP");
         assertThat(confirmService.confirmCount).isEqualTo(2);
+    }
+
+    @Test
+    void fallbackAttemptBudgetIsNotConsumedByAlreadyIneligibleHigherRankedCandidates() {
+        // maxAutoTradeFallbackRank=5。5 个 finalRankScore 更高但点差极端（已知不可交易）的候选，
+        // 不得把唯一合法候选挤出尝试名单——那样这一轮根本不会尝试任何可执行候选。
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        List<ContractCandidate> candidates = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            candidates.add(candidate("WIDE" + i + "-USDT-SWAP", 95, RiskLevel.LOW,
+                    DirectionBias.BULLISH, DirectionBias.BULLISH,
+                    BigDecimal.valueOf(30), BigDecimal.ONE));
+        }
+        candidates.add(candidate("GOOD-USDT-SWAP", 80, RiskLevel.LOW,
+                DirectionBias.BULLISH, DirectionBias.BULLISH,
+                BigDecimal.valueOf(2), BigDecimal.ONE));
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(candidates);
+
+        assertThat(result.instId())
+                .as("合法交易候选必须仍然进入尝试名单")
+                .isEqualTo("GOOD-USDT-SWAP");
+        assertThat(result.status()).isEqualTo("EXECUTED");
+    }
+
+    @Test
+    void fallbackPriorityTreatsNewsBlockedCandidatesAsNotReadyEvenWhenTheActionGatePasses() {
+        // autoDenyReasons 只看 action / signalType / 极端点差，完全不看新闻。
+        // 这 5 个候选点差正常、动作合规，但新闻已经硬拒绝——循环走到它们必然 continue。
+        // 只看 autoGate 的优先级判断会把它们当成就绪，耗光全部 5 个尝试名额。
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AgentProperties properties = new AgentProperties();
+        List<ContractCandidate> candidates = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            ContractCandidate newsBlocked = candidateWithNewsRisk(
+                    candidate("NEWSBAD" + i + "-USDT-SWAP", 95, RiskLevel.LOW,
+                            DirectionBias.BULLISH, DirectionBias.BULLISH,
+                            BigDecimal.valueOf(2), BigDecimal.ONE),
+                    ContractNewsRiskAnalysis.critical("退市/暂停交易重大新闻"));
+            assertThat(ContractTradeGate.autoDenyReasons(newsBlocked, properties))
+                    .as("前提：动作门控确实通过，只看 autoGate 会误判为就绪")
+                    .isEmpty();
+            assertThat(ContractTradeGate.newsDenyReasons(newsBlocked, properties))
+                    .as("前提：新闻门控确实必拒")
+                    .isNotEmpty();
+            candidates.add(newsBlocked);
+        }
+        candidates.add(candidate("GOOD-USDT-SWAP", 80, RiskLevel.LOW,
+                DirectionBias.BULLISH, DirectionBias.BULLISH,
+                BigDecimal.valueOf(2), BigDecimal.ONE));
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(candidates);
+
+        assertThat(result.instId())
+                .as("新闻已判定必拒的候选不得占用有限的尝试名额")
+                .isEqualTo("GOOD-USDT-SWAP");
+        assertThat(result.status()).isEqualTo("EXECUTED");
+    }
+
+    @Test
+    void fallbackPriorityDoesNotTreatPlanGateWarningsAsKnownRejection() {
+        // planDenyReasons 在规则回退路径下由 ContractTradePlanBuilder 当作 gateWarnings 处理，
+        // 并不必然阻断下单。把它算进"已知必拒"会误伤真正可成交的候选：
+        // 这个候选 planDenyReasons 非空，但它确实能成交。
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                new PendingOrderService(120),
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        ContractCandidate good = candidate("GOOD-USDT-SWAP", 80, RiskLevel.LOW,
+                DirectionBias.BULLISH, DirectionBias.BULLISH,
+                BigDecimal.valueOf(2), BigDecimal.ONE);
+        assertThat(ContractTradeGate.planDenyReasons(good, new AgentProperties()))
+                .as("前提：该候选的计划门控确实非空")
+                .isNotEmpty();
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(good));
+
+        assertThat(result.status())
+                .as("计划门控非空不等于已知必拒，不得据此把候选踢出尝试名单")
+                .isEqualTo("EXECUTED");
+    }
+
+    @Test
+    void ineligibleCandidatePrioritisationStillLeavesEveryHardGateInPlace() {
+        // 排名只决定优先级。即使唯一候选排在第一位，硬门控不通过就不得产生任何下单。
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        PendingOrderService pendingOrders = new PendingOrderService(120);
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                pendingOrders,
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
+                List.of(candidate("WIDE-USDT-SWAP", 95, RiskLevel.LOW,
+                        DirectionBias.BULLISH, DirectionBias.BULLISH,
+                        BigDecimal.valueOf(30), BigDecimal.ONE)));
+
+        assertThat(result.status()).isNotEqualTo("EXECUTED");
+        assertThat(confirmService.confirmCount).isZero();
+        assertThat(pendingOrders.allOrders()).isEmpty();
     }
 
     @Test
@@ -635,19 +1266,41 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void skipsWhenLocalActiveEntryOrderExists() {
+    void localActiveEntryOnlyBlocksTheSameSymbol() {
+        AgentProperties properties = new AgentProperties();
+        properties.autoTrade().setMinOpenPositions(3);
+        properties.autoTrade().setMaxOpenPositions(3);
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
         AutoTradeService service = new AutoTradeService(
-                new AgentProperties(),
+                properties,
                 systemControlService,
-                new FakeTradeOrderRecordService(true),
+                new FakeTradeOrderRecordService(Set.of("XAU-USDT-SWAP")),
                 new FakeAutoTradeRecordService(),
                 new CandidateTradePlanService(),
                 new PendingOrderService(120),
                 confirmService,
                 new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate("BTC-USDT-SWAP", 95)));
+
+        assertThat(result.status()).isEqualTo("EXECUTED");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
+    }
+
+    @Test
+    void skipsWhenLocalActiveEntryUsesTheSameSymbol() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(), systemControlService,
+                new FakeTradeOrderRecordService(Set.of("BTC-USDT-SWAP")),
+                new FakeAutoTradeRecordService(), new CandidateTradePlanService(), new PendingOrderService(120),
+                confirmService, new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
                 new FixedPositionSnapshotService(List.of())
         );
 
@@ -686,7 +1339,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void currentOrderDoesNotConsumePositionCapacityForDifferentSymbol() {
+    void currentOrderConsumesPositionCapacityForDifferentSymbol() {
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(100));
@@ -710,8 +1363,11 @@ class AutoTradeServiceTest {
 
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate("SOL-USDT-SWAP", 95)));
 
-        assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(confirmService.confirmCount).isEqualTo(1);
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("position_capacity_full");
+        assertThat(result.message()).contains("configuredMax=3");
+        assertThat(result.message()).contains("marketRegime=BULLISH");
+        assertThat(confirmService.confirmCount).isZero();
     }
 
     @Test
@@ -776,6 +1432,34 @@ class AutoTradeServiceTest {
     }
 
     @Test
+    void unresolvedLocalSubmitBlocksNewAutoOrderAfterRestart() {
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        SystemControlService systemControlService = new SystemControlService(tradingProperties());
+        systemControlService.enableAutoTrade(BigDecimal.valueOf(20));
+        PendingOrderService pendingOrderService = new PendingOrderService(120);
+        PendingOrder unresolved = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, samplePlan());
+        unresolved.transition(OrderStatus.PENDING_CONFIRM, OrderStatus.SUBMITTING);
+        AutoTradeService service = new AutoTradeService(
+                new AgentProperties(),
+                systemControlService,
+                new FakeTradeOrderRecordService(false),
+                new FakeAutoTradeRecordService(),
+                new CandidateTradePlanService(),
+                pendingOrderService,
+                confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)),
+                new FixedPositionSnapshotService(List.of())
+        );
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
+                List.of(candidate("BTC-USDT-SWAP", 95)));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("unresolved_local_submit");
+        assertThat(confirmService.confirmCount).isZero();
+    }
+
+    @Test
     void autoTradeDoesNotReleaseBudgetWhenConfirmThrowsAfterUnknownSubmit() {
         UnknownSubmitOrderConfirmService confirmService = new UnknownSubmitOrderConfirmService();
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
@@ -800,7 +1484,7 @@ class AutoTradeServiceTest {
 
         assertThat(result.status()).isEqualTo("UNKNOWN_SUBMIT_STATUS");
         assertThat(confirmService.confirmCount).isEqualTo(1);
-        assertThat(budgetService.reservedBudget()).isEqualByComparingTo("9");
+        assertThat(budgetService.reservedBudget()).isEqualByComparingTo("6.6666668");
         assertThat(budgetService.usedBudget()).isZero();
     }
 
@@ -830,7 +1514,7 @@ class AutoTradeServiceTest {
 
         assertThat(result.status()).isEqualTo("ENTRY_SUBMITTED");
         assertThat(confirmService.confirmCount).isEqualTo(1);
-        assertThat(budgetService.reservedBudget()).isEqualByComparingTo("9");
+        assertThat(budgetService.reservedBudget()).isEqualByComparingTo("6.6666668");
         assertThat(budgetService.usedBudget()).isZero();
         assertThat(recordService.records).extracting(AutoTradeService.AutoTradeResult::status)
                 .containsExactly("ENTRY_SUBMITTED");
@@ -948,6 +1632,41 @@ class AutoTradeServiceTest {
                 List.of(),
                 Instant.now()
         );
+    }
+
+    private static ContractSelectionDecision selectedDecision(
+            ContractSelectionDecision.DecisionSource source, String instId, DirectionBias direction, String entryMode) {
+        return new ContractSelectionDecision(
+                source,
+                source == ContractSelectionDecision.DecisionSource.AI_WAIT
+                        ? ContractSelectionDecision.SelectionAction.WAIT
+                        : ContractSelectionDecision.SelectionAction.TRADE,
+                instId,
+                direction,
+                entryMode,
+                new BigDecimal("0.75"),
+                List.of(new ContractSelectionDecision.RankedCandidate(
+                        instId, 1, direction, entryMode, new BigDecimal("0.75"))),
+                List.of(), List.of(), "");
+    }
+
+    private static ContractCandidate candidateWithClosedCandle(String instId, Instant candle,
+                                                               String entryTiming, String lastPrice) {
+        ContractCandidate base = candidate(instId, 90);
+        ContractKlineAnalysis kline = new ContractKlineAnalysis(
+                "UP", "UP", "UP", "ALIGNED", "CONFIRMED",
+                new BigDecimal("50"), new BigDecimal("25"), "TREND", entryTiming,
+                BigDecimal.ONE, new BigDecimal("2"), BigDecimal.ZERO, true, candle);
+        return new ContractCandidate(
+                base.marketType(), base.instId(), base.baseCurrency(), base.quoteCurrency(),
+                new BigDecimal(lastPrice), base.changePercent24h(), base.changePercent5m(), base.volume24h(),
+                base.volumeSpikeRatio(), base.fundingRate(), base.openInterest(), base.openInterestChange(),
+                base.trendDirection(), base.volatility(), base.score(), base.factorScore(), new BigDecimal(lastPrice),
+                base.stopLossPrice(), base.takeProfitPrice(), base.suggestedLeverage(), base.riskRewardRatio(),
+                base.spreadBps(), base.bidDepthUsdt(), base.askDepthUsdt(), base.estimatedSlippageBps(),
+                base.btcTrend(), base.ethTrend(), base.marketRiskLevel(), base.candidateReasonList(), base.riskTagList(),
+                candle, base.signalType(), base.action(), entryTiming, base.todayChangePct(), base.atrPct20m(),
+                base.stopLossPct(), base.finalRankScore(), base.scoreBreakdown(), kline, base.newsAnalysis());
     }
 
     private static ContractCandidate candidateWithAction(String instId, int score, String action) {
@@ -1089,16 +1808,37 @@ class AutoTradeServiceTest {
     }
 
     private static class FakeTradeOrderRecordService extends TradeOrderRecordService {
-        private final boolean activeEntryOrder;
+        private final Set<String> activeEntryInstIds;
+        private final List<PositionSummary> activeEntryExposures;
 
         FakeTradeOrderRecordService(boolean activeEntryOrder) {
+            this(activeEntryOrder ? Set.of("BTC-USDT-SWAP") : Set.of());
+        }
+
+        FakeTradeOrderRecordService(Set<String> activeEntryInstIds) {
             super(null, null);
-            this.activeEntryOrder = activeEntryOrder;
+            this.activeEntryInstIds = activeEntryInstIds;
+            this.activeEntryExposures = activeEntryInstIds.stream()
+                    .map(instId -> new PositionSummary(instId, "long", "1", BigDecimal.ONE, BigDecimal.ZERO, "LOCAL_ACTIVE_ENTRY"))
+                    .toList();
+        }
+
+        FakeTradeOrderRecordService(List<PositionSummary> activeEntryExposures) {
+            super(null, null);
+            this.activeEntryExposures = activeEntryExposures;
+            this.activeEntryInstIds = activeEntryExposures.stream()
+                    .map(PositionSummary::instId)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         }
 
         @Override
-        public boolean hasActiveEntryOrder() {
-            return activeEntryOrder;
+        public Set<String> activeEntryInstIds() {
+            return activeEntryInstIds;
+        }
+
+        @Override
+        public List<PositionSummary> activeEntryExposures() {
+            return activeEntryExposures;
         }
     }
 
@@ -1124,6 +1864,18 @@ class AutoTradeServiceTest {
         public void record(AutoTradeService.AutoTradeResult result, int candidateCount,
                            com.example.quant.crypto.dto.ContractCandidate candidate) {
             records.add(result);
+        }
+    }
+
+    private static class CapturingSelectionRecordService extends FakeAutoTradeRecordService {
+        private ContractSelectionDecision selection;
+        private ContractCandidate candidate;
+
+        @Override
+        public void record(AutoTradeService.AutoTradeResult result, int candidateCount,
+                           ContractCandidate candidate, ContractSelectionDecision selection) {
+            this.selection = selection;
+            this.candidate = candidate;
         }
     }
 
@@ -1184,6 +1936,58 @@ class AutoTradeServiceTest {
         @Override
         public TradePlan createContractPlan(ContractCandidate candidate) {
             return samplePlan(candidate.instId());
+        }
+
+        @Override
+        public TradePlan createSelectedContractPlan(ContractCandidate candidate, ContractSelectionDecision selection) {
+            return samplePlan(candidate.instId());
+        }
+    }
+
+    private static class MetadataTradePlanService extends CandidateTradePlanService {
+        private TradePlan capturedPlan;
+        @Override
+        public TradePlan createSelectedContractPlan(ContractCandidate candidate, ContractSelectionDecision selection) {
+            if ("HYPE-USDT-SWAP".equals(candidate.instId())) {
+                return new TradePlan(UUID.randomUUID(), candidate.instId(), TradePlanType.WATCH, "NO_ENTRY",
+                        DirectionBias.NEUTRAL, selection.confidence(), BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
+                        1, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, 0, BigDecimal.ZERO,
+                        BigDecimal.ZERO, BigDecimal.ZERO, "cross", selection.reasonList(), selection.riskList(), "reject", false, Instant.now());
+            }
+            capturedPlan = new TradePlan(UUID.randomUUID(), candidate.instId(), TradePlanType.OPEN_SHORT, "MARKET",
+                    DirectionBias.BEARISH, selection.confidence(), BigDecimal.valueOf(100), BigDecimal.valueOf(101), BigDecimal.valueOf(98),
+                    1, BigDecimal.ONE, BigDecimal.TEN, BigDecimal.ONE, BigDecimal.valueOf(2), 90, BigDecimal.ZERO,
+                    BigDecimal.ZERO, BigDecimal.valueOf(1000000), "cross", selection.reasonList(), selection.riskList(), "", false, Instant.now());
+            return capturedPlan;
+        }
+    }
+
+    private static class WatchSelectedTradePlanService extends CandidateTradePlanService {
+        @Override
+        public TradePlan createSelectedContractPlan(ContractCandidate candidate, ContractSelectionDecision selection) {
+            TradePlan base = samplePlan(candidate.instId());
+            return new TradePlan(
+                    base.id(), base.instId(), TradePlanType.WATCH, "NO_ENTRY", base.directionBias(), base.confidence(),
+                    base.entryPrice(), base.stopLossPrice(), base.takeProfitPrice(), base.suggestedLeverage(),
+                    base.suggestedSize(), base.suggestedMargin(), base.maxLossAmount(), base.riskRewardRatio(),
+                    base.signalScore(), base.fundingRate(), base.volatility(), base.volume24h(), base.tdMode(),
+                    base.reasonList(), base.riskList(), base.invalidCondition(), base.needUserConfirm(), base.expireTime());
+        }
+    }
+
+    private static class FirstExecutableThenWatchTradePlanService extends CandidateTradePlanService {
+        @Override
+        public TradePlan createSelectedContractPlan(ContractCandidate candidate, ContractSelectionDecision selection) {
+            if ("BTC-USDT-SWAP".equals(candidate.instId())) {
+                return samplePlan(candidate.instId());
+            }
+            TradePlan base = samplePlan(candidate.instId());
+            return new TradePlan(
+                    base.id(), base.instId(), TradePlanType.WATCH, "NO_ENTRY", base.directionBias(), base.confidence(),
+                    base.entryPrice(), base.stopLossPrice(), base.takeProfitPrice(), base.suggestedLeverage(),
+                    base.suggestedSize(), base.suggestedMargin(), base.maxLossAmount(), base.riskRewardRatio(),
+                    base.signalScore(), base.fundingRate(), base.volatility(), base.volume24h(), base.tdMode(),
+                    base.reasonList(), base.riskList(), base.invalidCondition(), base.needUserConfirm(), base.expireTime());
         }
     }
 
@@ -1323,16 +2127,44 @@ class AutoTradeServiceTest {
     }
 
     private static class FixedAccountSnapshotService extends AccountSnapshotService {
+        private final BigDecimal equity;
         private final BigDecimal availableBalance;
 
         FixedAccountSnapshotService(BigDecimal availableBalance) {
+            this(availableBalance.max(BigDecimal.valueOf(1000)), availableBalance);
+        }
+
+        FixedAccountSnapshotService(BigDecimal equity, BigDecimal availableBalance) {
             super(null);
+            this.equity = equity;
             this.availableBalance = availableBalance;
         }
 
         @Override
         public AccountSummary summary() {
-            return new AccountSummary(availableBalance, availableBalance, "OKX_REAL", "ok");
+            return new AccountSummary(equity, availableBalance, "OKX_REAL", "ok");
+        }
+    }
+
+    private static class FailingAccountSnapshotService extends AccountSnapshotService {
+        FailingAccountSnapshotService() {
+            super(null);
+        }
+
+        @Override
+        public AccountSummary summary() {
+            throw new IllegalStateException("OKX account unavailable");
+        }
+    }
+
+    private static class FailingPositionSnapshotService extends PositionSnapshotService {
+        FailingPositionSnapshotService() {
+            super(null);
+        }
+
+        @Override
+        public List<PositionSummary> positions() {
+            throw new IllegalStateException("OKX positions unavailable");
         }
     }
 

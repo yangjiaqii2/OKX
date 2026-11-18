@@ -25,7 +25,7 @@ import { quantApi } from '../api/quantApi';
 import { glassCard } from '../components/glass';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { StatusChip } from '../components/StatusChip';
-import { formatAction, formatLeverage, formatNumber, formatPrice, formatSide, formatStatus, formatUSDT } from '../formatters';
+import { formatAutoTradeReason, formatDecisionSource, formatEntryMode, formatLeverage, formatNumber, formatOpenDirection, formatPrice, formatSignalType, formatStage, formatStatus, formatUSDT } from '../formatters';
 
 type AutoTradeRecord = Record<string, unknown>;
 
@@ -41,6 +41,7 @@ const statusOptions = [
   { value: '', label: '全部状态' },
   { value: 'EXECUTED', label: '已提交委托' },
   { value: 'ENTRY_SUBMITTED', label: '入场委托已提交' },
+  { value: 'WAITING_ENTRY', label: '等待入场条件' },
   { value: 'SKIPPED', label: '已跳过' },
   { value: 'REJECTED', label: '已拒绝' },
   { value: 'FAILED', label: '失败' },
@@ -111,12 +112,13 @@ export function AutoTradeRecordList() {
   }, []);
 
   const summary = useMemo(() => {
-    const executed = data.items.filter((item) => item.status === 'EXECUTED').length;
+    const executed = data.items.filter((item) => item.status === 'EXECUTED' || item.status === 'ENTRY_SUBMITTED').length;
+    const waiting = data.items.filter((item) => item.status === 'WAITING_ENTRY').length;
     const pnl = data.items.reduce((sum, item) => {
       const position = positionFor(item, positions);
       return sum + Number(position?.unrealizedPnl ?? 0);
     }, 0);
-    return { executed, pnl };
+    return { executed, waiting, pnl };
   }, [data.items, positions]);
 
   const hasNext = (page + 1) * pageSize < data.total;
@@ -126,7 +128,7 @@ export function AutoTradeRecordList() {
       <Stack spacing={2}>
         <PageHeader
           title="自动交易记录"
-          subtitle={`共 ${data.total} 条复盘记录，当前页委托 ${summary.executed} 条，当前持仓浮盈亏 ${formatUSDT(summary.pnl)}`}
+          subtitle={`共 ${data.total} 条复盘记录，当前页等待入场 ${summary.waiting} 条、已提交 ${summary.executed} 条，当前持仓浮盈亏 ${formatUSDT(summary.pnl)}`}
           eyebrow="Auto Trade Audit"
           actions={
             <>
@@ -195,7 +197,10 @@ export function AutoTradeRecordList() {
                     <TableCell>状态</TableCell>
                     <TableCell>合约</TableCell>
                     <TableCell>开仓方向</TableCell>
-                    <TableCell align="right">评分</TableCell>
+                    <TableCell align="right">原始分</TableCell>
+                    <TableCell align="right">最终分</TableCell>
+                    <TableCell>信号</TableCell>
+                    <TableCell>AI 决策</TableCell>
                     <TableCell align="right">保证金</TableCell>
                     <TableCell align="right">杠杆</TableCell>
                     <TableCell align="right">计划入场</TableCell>
@@ -218,23 +223,43 @@ export function AutoTradeRecordList() {
                           <StatusChip value={String(record.status ?? '-')} />
                         </TableCell>
                         <TableCell sx={{ fontWeight: 900 }}>{String(record.instId ?? '-')}</TableCell>
-                        <TableCell>{formatAction(record.action)} / {formatSide(record.posSide)}</TableCell>
+                        <TableCell>
+                          {formatOpenDirection(
+                            record.action,
+                            record.posSide,
+                            record.aiDirection,
+                            record.trendDirection,
+                          )}
+                        </TableCell>
                         <TableCell align="right">{formatNumber(record.candidateScore, 0)}</TableCell>
+                        <TableCell align="right">{formatNumber(record.finalRankScore, 0)}</TableCell>
+                        <TableCell>{formatSignalType(record.signalType)}</TableCell>
+                        <TableCell sx={{ minWidth: 160 }}>
+                          <Stack spacing={0.25}>
+                            <Typography variant="caption" fontWeight={800}>
+                              {formatDecisionSource(record.decisionSource)}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {record.aiConfidence == null ? '-' : `${formatNumber(Number(record.aiConfidence) * 100, 0)}%`}
+                              {' · '}{formatEntryMode(record.aiEntryMode)}
+                            </Typography>
+                          </Stack>
+                        </TableCell>
                         <TableCell align="right">{formatUSDT(record.marginAmount)}</TableCell>
                         <TableCell align="right">{formatLeverage(record.leverage)}</TableCell>
                         <TableCell align="right">{formatPrice(record.entryPrice ?? record.lastPrice)}</TableCell>
                         <TableCell align="right">{formatPrice(position?.avgPrice)}</TableCell>
                         <TableCell align="right">{formatUSDT(position?.unrealizedPnl)}</TableCell>
                         <TableCell align="right">{formatNumber(record.riskRewardRatio, 2)}</TableCell>
-                        <TableCell>{String(record.stage ?? '-')}</TableCell>
+                        <TableCell>{formatStage(record.stage)}</TableCell>
                         <TableCell sx={{ minWidth: 180, maxWidth: 320, overflowWrap: 'anywhere' }}>
-                          {String(record.reasonCode ?? record.reasonMessage ?? '-')}
+                          {formatAutoTradeReason(record.reasonCode ?? record.reasonMessage ?? '-')}
                         </TableCell>
                         <TableCell sx={{ fontFamily: '"JetBrains Mono", monospace', maxWidth: 150, overflowWrap: 'anywhere' }}>
                           {String(record.okxOrderId ?? '-')}
                         </TableCell>
                         <TableCell sx={{ minWidth: 260, maxWidth: 420, overflowWrap: 'anywhere' }}>
-                          {String(record.message ?? '-')}
+                          {formatAutoTradeReason(record.selectionReason ?? record.reasonMessage ?? record.message ?? '-')}
                         </TableCell>
                       </TableRow>
                     );
