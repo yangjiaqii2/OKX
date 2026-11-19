@@ -145,6 +145,18 @@ class ContractCandidateDeliveryRankingTest {
     }
 
     // ------------------------------------------------------------------
+    @Test
+    void noTradeCannotDisplaceWaitingCandidateWithLowerScore() {
+        AgentProperties properties = new AgentProperties();
+        properties.setTopCandidateLimit(1);
+        var blocked = candidate("BLOCKED-USDT-SWAP", ContractSignalType.STRONG_LONG, "NO_TRADE",
+                95, new ContractFactorScore(80, 80, 80, 80, 80, 80, 80), new BigDecimal("2.5"));
+        var waiting = planEligibleButWaitingCandidate("WAIT-USDT-SWAP");
+        var scores = Map.of(blocked.instId(), score("99"), waiting.instId(), score("50"));
+        assertThat(OkxContractScanner.rankForDelivery(List.of(blocked, waiting), scores, properties))
+                .containsExactly(waiting);
+    }
+
     // 三类候选必须真正分开：立即可交易 / 计划合格但动作未就绪 / 不可交易
     // ------------------------------------------------------------------
 

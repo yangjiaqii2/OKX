@@ -33,7 +33,7 @@ class AutoTradeProfitServiceTest {
     );
 
     @Test
-    void summarizesAutoTradeBudgetAndUnrealizedProfitFromRecordedSymbols() {
+    void summarizesAutoTradeBudgetAndUnrealizedProfitFromReconciledFills() {
         AutoTradeRecordRepository repository = mock(AutoTradeRecordRepository.class);
         PositionSnapshotService positionSnapshotService = new FixedPositionSnapshotService(List.of(
                 position("PEPE-USDT-SWAP", "1.20", "22.5"),
@@ -42,10 +42,13 @@ class AutoTradeProfitServiceTest {
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(50));
         when(repository.findAll()).thenReturn(List.of(
-                record("PEPE-USDT-SWAP", "EXECUTED", "22.5", "2026-06-18T01:10:00Z"),
+                recordWithEntry("local-admin", "PEPE-USDT-SWAP"),
+                record("ETH-USDT-SWAP", "REJECTED", "9", "2026-06-18T01:10:00Z"),
+                record("ETH-USDT-SWAP", "UNKNOWN_SUBMIT_STATUS", "8", "2026-06-18T01:10:00Z"),
                 record("DOGE-USDT-SWAP", "EXECUTED", "15", "2026-06-17T01:10:00Z")
         ));
         AutoTradeProfitService service = new AutoTradeProfitService(repository, positionSnapshotService, systemControlService, CLOCK);
+        configureEntryFill(service, "local-admin", "PEPE-USDT-SWAP");
 
         AutoTradeProfitSummary summary = service.summary();
 
@@ -61,6 +64,55 @@ class AutoTradeProfitServiceTest {
     }
 
     @Test
+    void attributesOnlyReconciledStrategyExposureWhenManualPositionSharesInstrument() {
+        AutoTradeRecordRepository records = mock(AutoTradeRecordRepository.class);
+        TradeFillRepository fills = mock(TradeFillRepository.class);
+        TradeOrderRepository orders = mock(TradeOrderRepository.class);
+        when(records.findAll()).thenReturn(List.of(autoRecord("XAU-USDT-SWAP", "EXECUTED", "p1")));
+        TradeFillEntity entry = fill("p1", "entry-1", "t1", "2");
+        entry.setSide("sell");
+        entry.setPosSide("net");
+        when(fills.findByUserName("local-admin")).thenReturn(List.of(entry));
+        when(orders.findByUserNameAndPendingOrderIdOrderByCreatedAtAsc("local-admin", "p1"))
+                .thenReturn(List.of(order("entry-1", false, "2")));
+        AutoTradeProfitService service = new AutoTradeProfitService(records,
+                new FixedPositionSnapshotService(List.of(
+                        scopedPosition("XAU-USDT-SWAP", "net", "-2", "12.50", "MANAGED"),
+                        scopedPosition("XAU-USDT-SWAP", "long", "1", "99", "UNMANAGED"))),
+                new SystemControlService(tradingProperties()), null, CLOCK);
+        service.configureTradeFacts(fills, orders, null);
+
+        AutoTradeProfitSummary summary = service.summary();
+
+        assertThat(summary.unrealizedPnlUsdt()).isEqualByComparingTo("12.50");
+        assertThat(summary.openPositionCount()).isEqualTo(1);
+    }
+
+    @Test
+    void leavesProfitUnknownWhenStrategyFillQuantityCannotExplainPosition() {
+        AutoTradeRecordRepository records = mock(AutoTradeRecordRepository.class);
+        TradeFillRepository fills = mock(TradeFillRepository.class);
+        TradeOrderRepository orders = mock(TradeOrderRepository.class);
+        when(records.findAll()).thenReturn(List.of(autoRecord("XAU-USDT-SWAP", "EXECUTED", "p1")));
+        TradeFillEntity entry = fill("p1", "entry-1", "t1", "1");
+        entry.setSide("buy");
+        entry.setPosSide("long");
+        when(fills.findByUserName("local-admin")).thenReturn(List.of(entry));
+        when(orders.findByUserNameAndPendingOrderIdOrderByCreatedAtAsc("local-admin", "p1"))
+                .thenReturn(List.of(order("entry-1", false, "1")));
+        AutoTradeProfitService service = new AutoTradeProfitService(records,
+                new FixedPositionSnapshotService(List.of(scopedPosition("XAU-USDT-SWAP", "long", "2", "12.50", "MANAGED"))),
+                new SystemControlService(tradingProperties()), null, CLOCK);
+        service.configureTradeFacts(fills, orders, null);
+
+        AutoTradeProfitSummary summary = service.summary();
+
+        assertThat(summary.unrealizedPnlUsdt()).isNull();
+        assertThat(summary.totalNetPnlUsdt()).isNull();
+        assertThat(summary.openPositionCount()).isEqualTo(-1);
+    }
+
+    @Test
     void summarizesOnlyCurrentUsersAutoTradeRecords() {
         AutoTradeRecordRepository repository = mock(AutoTradeRecordRepository.class);
         PositionSnapshotService positionSnapshotService = new FixedPositionSnapshotService(List.of(
@@ -70,10 +122,11 @@ class AutoTradeProfitServiceTest {
         SystemControlService systemControlService = new SystemControlService(tradingProperties());
         systemControlService.enableAutoTrade(BigDecimal.valueOf(50));
         when(repository.findAll()).thenReturn(List.of(
-                record("alice", "PEPE-USDT-SWAP", "EXECUTED", "22.5", "2026-06-18T01:10:00Z"),
+                recordWithEntry("alice", "PEPE-USDT-SWAP"),
                 record("bob", "DOGE-USDT-SWAP", "EXECUTED", "15", "2026-06-18T01:10:00Z")
         ));
         AutoTradeProfitService service = new AutoTradeProfitService(repository, positionSnapshotService, systemControlService, CLOCK);
+        configureEntryFill(service, "alice", "PEPE-USDT-SWAP");
 
         AutoTradeProfitSummary summary = AuthUserContext.callAs("alice", service::summary);
 
@@ -280,6 +333,26 @@ class AutoTradeProfitServiceTest {
         assertThat(summary.realizedPnlUsdt()).isEqualByComparingTo("-35.938873");
     }
 
+    private static AutoTradeRecordEntity recordWithEntry(String owner, String instId) {
+        AutoTradeRecordEntity record = record(owner, instId, "EXECUTED", "22.5", "2026-06-18T01:10:00Z");
+        record.setPendingOrderId("p1");
+        return record;
+    }
+
+    private static void configureEntryFill(AutoTradeProfitService service, String owner, String instId) {
+        TradeFillRepository fills = mock(TradeFillRepository.class);
+        TradeOrderRepository orders = mock(TradeOrderRepository.class);
+        TradeFillEntity entry = fill("p1", "entry-1", "t1", "1");
+        entry.setUserName(owner);
+        entry.setInstId(instId);
+        entry.setPosSide("long");
+        entry.setSide("buy");
+        when(fills.findByUserName(owner)).thenReturn(List.of(entry));
+        when(orders.findByUserNameAndPendingOrderIdOrderByCreatedAtAsc(owner, "p1"))
+                .thenReturn(List.of(order("entry-1", false, "1")));
+        service.configureTradeFacts(fills, orders, null);
+    }
+
     private static AutoTradeRecordEntity autoRecord(String instId, String status, String pendingId) {
         AutoTradeRecordEntity entity = record(instId, status, "10", "2026-06-18T01:10:00Z");
         entity.setPendingOrderId(pendingId);
@@ -332,6 +405,12 @@ class AutoTradeProfitServiceTest {
         return entity;
     }
 
+    private static PositionSummary scopedPosition(String instrument, String side, String size, String pnl, String ownership) {
+        return new PositionSummary(instrument, side, size, BigDecimal.ONE, new BigDecimal(pnl),
+                BigDecimal.TEN, BigDecimal.TEN, "cross", BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, "OKX_REAL", ownership, "TEST_POSITION");
+    }
+
     private static PositionSummary position(String instId, String unrealizedPnl, String margin) {
         return new PositionSummary(
                 instId,
@@ -346,7 +425,7 @@ class AutoTradeProfitServiceTest {
                 BigDecimal.ZERO,
                 BigDecimal.ZERO,
                 BigDecimal.ZERO,
-                "OKX_REAL"
+                "OKX_REAL", "MANAGED", "ACTIVE_LOCAL_FILL_CHAIN_MATCHED"
         );
     }
 

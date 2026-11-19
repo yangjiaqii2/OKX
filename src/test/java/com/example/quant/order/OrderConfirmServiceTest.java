@@ -10,6 +10,9 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.quant.account.AccountSnapshotService;
+import com.example.quant.account.dto.AccountSummary;
+import com.example.quant.agent.exit.NetProfitExitPolicy;
 import com.example.quant.agent.market.OrderBookLiquidityService;
 import com.example.quant.agent.market.OrderBookLiquiditySnapshot;
 import com.example.quant.agent.budget.AutoTradeBudgetService;
@@ -27,9 +30,12 @@ import com.example.quant.risk.RiskService;
 import com.example.quant.risk.ContractRiskService;
 import com.example.quant.risk.DailyRiskService;
 import com.example.quant.config.TradingProperties;
+import com.example.quant.market.DirectionBias;
 import com.example.quant.system.AutoTradeRiskMode;
 import com.example.quant.system.SystemControlService;
+import com.example.quant.tradeplan.CanonicalPlanCompiler;
 import com.example.quant.tradeplan.TradePlan;
+import com.example.quant.tradeplan.TradePlanType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -38,11 +44,148 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.test.util.ReflectionTestUtils;
 
 class OrderConfirmServiceTest {
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {"0", "9.99"})
+    void manualConfirmationChecksFreshAvailableBalanceDespitePositiveEquity(String available) {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrders = new PendingOrderService(120, clock);
+        PendingOrder order = pendingOrders.createPendingOrder(MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
+        CountingGateway gateway = new CountingGateway();
+        AccountSnapshotService snapshots = mock(AccountSnapshotService.class);
+        when(snapshots.summary())
+                .thenReturn(new AccountSummary(new BigDecimal("10000"), available == null ? null : new BigDecimal(available), "OKX_DEMO", ""))
+                .thenReturn(new AccountSummary(new BigDecimal("10000"), BigDecimal.TEN, "OKX_DEMO", ""));
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrders, new ContractRiskService(), testAdapter(gateway), null, null, snapshots, null, null, clock);
+
+        OrderExecutionResult rejected = confirmService.confirm(order.id(), BigDecimal.TEN, ContractRiskRequest.safeDefaults());
+
+        assertThat(rejected.executed()).isFalse();
+        assertThat(rejected.message()).contains("可用余额");
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_CONFIRM);
+        assertThat(gateway.placeOrderCalls).isZero();
+
+        OrderExecutionResult retried = confirmService.confirm(order.id(), BigDecimal.TEN);
+
+        assertThat(retried.executed()).isTrue();
+        assertThat(gateway.placeOrderCalls).isEqualTo(1);
+    }
+
+    @Test
+    void autoConfirmationReleasesReservationWhenFreshBalanceIsInsufficient() {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:00:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrders = new PendingOrderService(120, clock);
+        AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
+        UUID orderId = UUID.randomUUID();
+        TradePlan plan = PendingOrderServiceTest.samplePlan();
+        BigDecimal margin = new BigDecimal("22.5");
+        BudgetReservation reservation = budgetService.reserveBudget(plan.id(), orderId, "BTC-USDT-SWAP", margin, new BigDecimal("50"));
+        PendingOrder order = pendingOrders.createAutoPendingOrder(MarketType.OKX_SWAP, plan, orderId,
+                margin, reservation.reservationId(), allocation("22.5"), "AUTO_balance_recheck");
+        CountingGateway gateway = new CountingGateway();
+        AccountSnapshotService snapshots = mock(AccountSnapshotService.class);
+        when(snapshots.summary()).thenReturn(new AccountSummary(new BigDecimal("10000"), BigDecimal.TEN, "OKX_REAL", ""));
+        OrderConfirmService confirmService = new OrderConfirmService(
+                pendingOrders, new ContractRiskService(), testAdapter(gateway), null, null, snapshots, null, null, budgetService, clock);
+        DailyRiskService dailyRisk = mock(DailyRiskService.class);
+        confirmService.configureDailyRisk(dailyRisk);
+
+        OrderExecutionResult result = confirmService.confirmAuto(order.id(), new BigDecimal("50"));
+
+        assertThat(result.executed()).isFalse();
+        assertThat(result.message()).contains("可用余额不足");
+        assertThat(order.status()).isEqualTo(OrderStatus.REJECTED);
+        assertThat(gateway.placeOrderCalls).isZero();
+        assertThat(budgetService.reservation(reservation.reservationId()).orElseThrow().status().name()).isEqualTo("RELEASED");
+        verifyNoInteractions(dailyRisk);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void automaticConfirmationResizesAsterAndStillChecksNetRiskReward(boolean passesNetRiskReward) {
+        Clock clock = Clock.fixed(Instant.parse("2026-11-19T10:27:45Z"), ZoneOffset.UTC);
+        var pendingOrders = new PendingOrderService(120, clock);
+        var budgetService = new AutoTradeBudgetService(new AgentProperties());
+        BigDecimal margin = new BigDecimal("11.93435348");
+        TradePlan plan = new TradePlan(UUID.randomUUID(), "ASTER-USDT-SWAP", TradePlanType.OPEN_SHORT, "MARKET",
+                DirectionBias.BEARISH, new BigDecimal("0.75"),
+                new BigDecimal("0.5225"), new BigDecimal("0.53338286"), new BigDecimal("0.49855771"),
+                6, new BigDecimal("148.78"), new BigDecimal("12.95674638"), new BigDecimal("1.619212886907"),
+                new BigDecimal("2.2"), 82, BigDecimal.ZERO, BigDecimal.ONE, new BigDecimal("100000000"),
+                "cross", List.of(), List.of(), "", false, clock.instant().plusSeconds(120));
+        UUID id = UUID.randomUUID();
+        var reservation = budgetService.reserveBudget(plan.id(), id, plan.instId(), margin, new BigDecimal("150"));
+        PendingOrder order = pendingOrders.createAutoPendingOrder(MarketType.OKX_SWAP, plan, id, margin,
+                reservation.reservationId(), allocation("11.93435348"), "AUTO_ASTER_RISK");
+        var rules = new OkxInstrumentRules(plan.instId(), BigDecimal.ONE, "ASTER",
+                BigDecimal.ONE, BigDecimal.ONE, new BigDecimal("0.0001"));
+        var gateway = new CountingGateway();
+        var adapter = new OkxTradeAdapter(gateway, instId -> rules);
+        var compiler = new CanonicalPlanCompiler();
+        adapter.setCanonicalPlanCompiler(compiler);
+        AgentProperties properties = new AgentProperties();
+        if (passesNetRiskReward) {
+            properties.market().setMaxFundingAbs(BigDecimal.ZERO);
+        }
+        AccountSnapshotService snapshots = mock(AccountSnapshotService.class);
+        when(snapshots.summary()).thenReturn(new AccountSummary(
+                new BigDecimal("10000"), new BigDecimal("100"), "OKX_DEMO", ""));
+        var confirmService = new OrderConfirmService(pendingOrders, new CapturingRiskService(), adapter,
+                null, properties, snapshots, null, null, budgetService, clock);
+        confirmService.configureInstrumentRules(instId -> rules);
+        confirmService.configureCanonicalPlanCompiler(compiler);
+        NetProfitExitPolicy exitCosts = mock(NetProfitExitPolicy.class);
+        when(exitCosts.feeRates(plan.instId())).thenReturn(new NetProfitExitPolicy.FeeRates(
+                new BigDecimal("0.0002"), new BigDecimal("0.0005")));
+        ReflectionTestUtils.setField(confirmService, "exitCosts", exitCosts);
+        DailyRiskService dailyRisk = mock(DailyRiskService.class);
+        when(dailyRisk.claimAutomaticEntry(anyString(), eq(id.toString()), any(BigDecimal.class),
+                eq(clock.instant()), any(BigDecimal.class))).thenReturn(new DailyRiskService.Decision(true, "OK"));
+        confirmService.configureDailyRisk(dailyRisk);
+
+        OrderExecutionResult result = confirmService.confirmAuto(order.id(), margin);
+
+        assertThat(order.size()).isEqualByComparingTo("136");
+        assertThat(order.executableContractQuantity()).isEqualByComparingTo("136");
+        assertThat(order.executableStopLossAmount()).isEqualByComparingTo("1.4824");
+        assertThat(order.maxLossAmount()).isEqualByComparingTo("1.4914");
+        assertThat(order.canonicalExecutablePlan().decisions())
+                .contains(CanonicalPlanCompiler.ENTRY_SIZE_REDUCED_TO_RISK_BUDGET);
+        assertThat(order.canonicalExecutablePlan().takeProfitLegs().stream()
+                .map(leg -> leg.executableContractQuantity()).reduce(BigDecimal.ZERO, BigDecimal::add))
+                .isEqualByComparingTo("136");
+        assertThat(budgetService.reservation(reservation.reservationId()).orElseThrow().amount())
+                .isEqualByComparingTo(margin);
+        if (passesNetRiskReward) {
+            assertThat(result.submitted()).as(result.message()).isTrue();
+            assertThat(gateway.placeOrderCalls).isEqualTo(1);
+            assertThat(gateway.lastOrderPayload.get("sz")).isEqualTo("136");
+            assertThat(gateway.lastOrderPayload.get("attachAlgoOrds")).asList().hasSize(1);
+            assertThat(((Map<?, ?>) ((List<?>) gateway.lastOrderPayload.get("attachAlgoOrds")).get(0)).get("slTriggerPx"))
+                    .isEqualTo("0.5334");
+            verify(dailyRisk).claimAutomaticEntry(anyString(), eq(id.toString()), any(BigDecimal.class),
+                    eq(clock.instant()), any(BigDecimal.class));
+        } else {
+            assertThat(result.submitted()).isFalse();
+            assertThat(result.message()).isEqualTo("NET_RISK_REWARD_AFTER_COSTS_TOO_LOW");
+            assertThat(gateway.placeOrderCalls).isZero();
+            assertThat(budgetService.reservation(reservation.reservationId()).orElseThrow().status().name())
+                    .isEqualTo("RELEASED");
+            verifyNoInteractions(dailyRisk);
+        }
+    }
 
     @Test
     void dailyRiskGateBlocksEntryBeforeExchangeWrite() {
@@ -677,10 +820,12 @@ class OrderConfirmServiceTest {
 
     private static class CountingGateway extends SuccessfulGateway {
         private int placeOrderCalls;
+        private Map<String, Object> lastOrderPayload;
 
         @Override
         public JsonNode placeOrder(Map<String, Object> payload) {
             placeOrderCalls++;
+            lastOrderPayload = payload;
             return super.placeOrder(payload);
         }
     }

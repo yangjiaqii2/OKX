@@ -158,7 +158,7 @@ public class PositionExitService {
             save(state);
             return ExitRunResult.noChange(decision);
         }
-        return amendProtectiveStop(order, state, decision, exchangeStop, side, now);
+        return amendProtectiveStop(order, state, decision, exchangeStop, side, position.posSide(), now);
     }
 
     /**
@@ -246,7 +246,7 @@ public class PositionExitService {
 
     private ExitRunResult amendProtectiveStop(PendingOrder order, PositionExitStateEntity state,
                                               ExitDecision decision, ExchangeStopView exchangeStop,
-                                              PositionExcursion.TradeSide side, Instant now) {
+                                              PositionExcursion.TradeSide side, String exchangePositionSide, Instant now) {
         BigDecimal target = decision.targetProtectiveStop();
         String algoClOrdId = exchangeStop.clientOrderId();
 
@@ -276,6 +276,7 @@ public class PositionExitService {
         Map<String, String> payload = new LinkedHashMap<>();
         payload.put("instId", order.instId());
         payload.put("algoClOrdId", algoClOrdId);
+        payload.put("posSide", exchangePositionSide == null ? "net" : exchangePositionSide);
         payload.put("newSlTriggerPx", target.stripTrailingZeros().toPlainString());
         payload.put("reqId", reqId);
         state.setPendingReqId(reqId);
@@ -288,7 +289,7 @@ public class PositionExitService {
             okxOrderGateway.amendAlgoOrder(payload, TradingOperationContext.of(
                     TradingOperationType.AMEND_PROTECTION, currentUsername(),
                     order.id().toString(),
-                    order.tradePlanId() == null ? null : order.tradePlanId().toString()));
+                    order.tradePlanId() == null ? null : order.tradePlanId().toString()).withDirection(order.posSide()));
         } catch (RuntimeException ex) {
             state.setStopAmendState("RECONCILIATION_REQUIRED");
             log.warn("profit protection amend failed instId={} pendingOrderId={} reason={}",

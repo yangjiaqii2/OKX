@@ -41,7 +41,7 @@ public class HistoricalCandidateEvaluationService {
         int minimum = Math.max(1, minimumSampleSize);
         List<AgentContractCandidateScoreEntity> loadedSnapshots = snapshotRepository
                 .findByScoringVersionOrderBySnapshotRankAsc(scoringVersion);
-        CohortSelection cohortSelection = selectCompleteCohorts(loadedSnapshots);
+        CohortSelection cohortSelection = selectCompleteCohorts(loadedSnapshots, scoringVersion);
         List<AgentContractCandidateScoreEntity> snapshots = cohortSelection.snapshots();
         List<Long> ids = snapshots.stream().map(AgentContractCandidateScoreEntity::getId)
                 .filter(java.util.Objects::nonNull).toList();
@@ -59,7 +59,10 @@ public class HistoricalCandidateEvaluationService {
             Map<String, BucketAccumulator> ranks = new LinkedHashMap<>();
             Map<String, BucketAccumulator> coverage = new LinkedHashMap<>();
             Map<String, BucketAccumulator> dimensions = new LinkedHashMap<>();
+            Map<String, BucketAccumulator> scanActions = new LinkedHashMap<>();
             for (Sample sample : samples) {
+                String action = sample.snapshot().getScanAction();
+                add(scanActions, action == null || action.isBlank() ? "UNKNOWN" : action, sample);
                 add(ranks, rankBucket(sample.snapshot().getSnapshotRank()), sample);
                 add(coverage, coverageBucket(sample.snapshot().getV2CoverageRatio()), sample);
                 for (Dimension dimension : Dimension.values()) {
@@ -70,25 +73,22 @@ public class HistoricalCandidateEvaluationService {
             horizonReports.put(horizon, new HorizonEvaluation(
                     snapshots.size(), samples.size(), snapshots.size() - samples.size(),
                     materialize(ranks, minimum), materialize(coverage, minimum),
-                    materialize(dimensions, minimum)));
+                    materialize(dimensions, minimum), materialize(scanActions, minimum)));
         }
         return new EvaluationReport(scoringVersion, snapshots.size(), cohortSelection.incompleteCohortCount(), horizonReports);
     }
 
-    private CohortSelection selectCompleteCohorts(List<AgentContractCandidateScoreEntity> loaded) {
+    private CohortSelection selectCompleteCohorts(List<AgentContractCandidateScoreEntity> loaded, String version) {
         if (scanRunRepository == null) return new CohortSelection(loaded, 0);
         Map<Long, List<AgentContractCandidateScoreEntity>> byRun = loaded.stream()
                 .filter(snapshot -> snapshot.getScanRunId() != null)
                 .collect(Collectors.groupingBy(AgentContractCandidateScoreEntity::getScanRunId));
         List<AgentContractCandidateScoreEntity> complete = new ArrayList<>();
         int incomplete = 0;
+        Map<Long, Integer> completeCounts = scanRunRepository.findCompleteForVersion(version).stream()
+                .collect(Collectors.toMap(AgentScanRunEntity::getId, AgentScanRunEntity::getCandidateCount));
         for (Map.Entry<Long, List<AgentContractCandidateScoreEntity>> entry : byRun.entrySet()) {
-            AgentScanRunEntity run = scanRunRepository.findById(entry.getKey()).orElse(null);
-            long persisted = snapshotRepository.countByScanRunId(entry.getKey());
-            boolean isComplete = run != null && "SUCCESS".equals(run.getStatus())
-                    && run.getCandidateCount() > 0
-                    && run.getCandidateCount() == persisted
-                    && persisted == entry.getValue().size();
+            boolean isComplete = completeCounts.getOrDefault(entry.getKey(), 0) == entry.getValue().size();
             if (isComplete) complete.addAll(entry.getValue());
             else incomplete++;
         }
@@ -217,7 +217,8 @@ public class HistoricalCandidateEvaluationService {
     public record HorizonEvaluation(int candidateCount, int completeOutcomeCount, int missingOutcomeCount,
                                     Map<String, BucketMetrics> rankBuckets,
                                     Map<String, BucketMetrics> coverageBuckets,
-                                    Map<String, BucketMetrics> dimensionBuckets) {}
+                                    Map<String, BucketMetrics> dimensionBuckets,
+                                    Map<String, BucketMetrics> scanActionBuckets) {}
 
     public record BucketMetrics(int sampleCount, long rawSampleCount, long directionalSampleCount,
                                 long excursionSampleCount, boolean insufficientSample,

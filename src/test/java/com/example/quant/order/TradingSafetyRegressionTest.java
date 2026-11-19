@@ -249,10 +249,11 @@ class TradingSafetyRegressionTest {
         pending.markConfirmed(Instant.now());
         pending.transition(OrderStatus.CONFIRMED, OrderStatus.SUBMITTING);
         PendingOrderRepository repository = mock(PendingOrderRepository.class);
+        when(repository.saveAndFlush(any(PendingOrderEntity.class))).thenAnswer(call -> call.getArgument(0));
         when(repository.findAll()).thenReturn(List.of(PendingOrderEntity.from(pending, "local-admin")));
         PendingOrder restored = new PendingOrderService(120, repository).get(pending.id());
         assertThat(restored.status()).isEqualTo(OrderStatus.UNKNOWN_SUBMIT_STATUS);
-        verify(repository).save(argThat(row -> row.toDomain().status() == OrderStatus.UNKNOWN_SUBMIT_STATUS));
+        verify(repository).saveAndFlush(argThat(row -> row.toDomain().status() == OrderStatus.UNKNOWN_SUBMIT_STATUS));
     }
 
     @Test
@@ -261,6 +262,7 @@ class TradingSafetyRegressionTest {
         pending.markSubmitted(Instant.now(), "ACK1");
         pending.markRejected("local database failed after ACK");
         PendingOrderRepository repository = mock(PendingOrderRepository.class);
+        when(repository.saveAndFlush(any(PendingOrderEntity.class))).thenAnswer(call -> call.getArgument(0));
         when(repository.findAll()).thenReturn(List.of(PendingOrderEntity.from(pending, "local-admin")));
         PendingOrderService restoredService = new PendingOrderService(120, repository);
         assertThat(restoredService.allOrders()).hasSize(1);

@@ -79,7 +79,7 @@ quant:
       deep-analysis-limit: ${QUANT_AGENT_DEEP_ANALYSIS_LIMIT:}
       deep-analysis-concurrency: ${QUANT_AGENT_DEEP_ANALYSIS_CONCURRENCY:4}
       # deep-analysis-limit 中划给轮换覆盖的名额（不新增分析量，只改变分配）。设 0 = 纯成交额截断。
-      deep-analysis-rotation-quota: ${QUANT_AGENT_DEEP_ANALYSIS_ROTATION_QUOTA:6}
+      deep-analysis-rotation-quota: ${QUANT_AGENT_DEEP_ANALYSIS_ROTATION_QUOTA:20}
       universe:
         market-cap-enabled: true
         circulation-enabled: true
@@ -119,7 +119,7 @@ quant:
           extreme-funding-rate: ${QUANT_PROVIDER_EXTREME_FUNDING_RATE:0.0030}
     auto-trade:
       enabled: ${QUANT_AGENT_AUTO_TRADE_ENABLED:true}
-      min-score: ${QUANT_AGENT_AUTO_TRADE_MIN_SCORE:65}
+      min-score: ${QUANT_AGENT_AUTO_TRADE_MIN_SCORE:60}
       no-risk-min-score: ${QUANT_AGENT_AUTO_TRADE_NO_RISK_MIN_SCORE:70}
       min-risk-reward: 2
       require-backtest-pass: ${QUANT_AGENT_REQUIRE_BACKTEST_PASS:false}
@@ -127,7 +127,7 @@ quant:
       min-open-positions: ${QUANT_AGENT_MIN_OPEN_POSITIONS:3}
       in-flight-order-hold-seconds: ${QUANT_AGENT_IN_FLIGHT_ORDER_HOLD_SECONDS:120}
     score:
-      min-total-score: ${QUANT_AGENT_MIN_TOTAL_SCORE:65}
+      min-total-score: ${QUANT_AGENT_MIN_TOTAL_SCORE:60}
       min-trend-score: 15
       min-volume-score: 15
       min-liquidity-score: 10
@@ -138,7 +138,7 @@ quant:
     market:
       min-volume-24h-usdt: 2000000
       max-spread-bps: 8
-      min-depth-usdt: 20000
+      min-depth-usdt: ${QUANT_AGENT_MIN_DEPTH_USDT:5000}
       max-depth-usage-rate: 0.20
       max-funding-abs: 0.0015
       max-wick-ratio: 0.55
@@ -172,7 +172,7 @@ quant:
     ranking:
       max-auto-trade-fallback-rank: 5
       min-risk-reward: 1.5
-      min-final-rank-score: ${QUANT_AGENT_MIN_FINAL_RANK_SCORE:65}
+      min-final-rank-score: ${QUANT_AGENT_MIN_FINAL_RANK_SCORE:60}
     budget:
       enabled: true
       input-margin-means-total-budget: true
@@ -209,13 +209,13 @@ quant:
     position-quality:
       enabled: true
       min-score-by-open-positions:
-        0: ${QUANT_AGENT_POSITION_MIN_SCORE_0:65}
-        1: ${QUANT_AGENT_POSITION_MIN_SCORE_1:65}
-        2: ${QUANT_AGENT_POSITION_MIN_SCORE_2:65}
+        0: ${QUANT_AGENT_POSITION_MIN_SCORE_0:60}
+        1: ${QUANT_AGENT_POSITION_MIN_SCORE_1:60}
+        2: ${QUANT_AGENT_POSITION_MIN_SCORE_2:60}
       min-final-rank-score-by-open-positions:
-        0: ${QUANT_AGENT_POSITION_MIN_FINAL_RANK_0:65}
-        1: ${QUANT_AGENT_POSITION_MIN_FINAL_RANK_1:65}
-        2: ${QUANT_AGENT_POSITION_MIN_FINAL_RANK_2:65}
+        0: ${QUANT_AGENT_POSITION_MIN_FINAL_RANK_0:60}
+        1: ${QUANT_AGENT_POSITION_MIN_FINAL_RANK_1:60}
+        2: ${QUANT_AGENT_POSITION_MIN_FINAL_RANK_2:60}
       max-positions-by-market-regime:
         BULLISH: ${QUANT_AGENT_MAX_POSITIONS_BULLISH:3}
         BEARISH: ${QUANT_AGENT_MAX_POSITIONS_BEARISH:3}
@@ -290,6 +290,7 @@ quant:
       interval-seconds: 10
       max-hold-minutes: 120
     lifecycle:
+      net-profit-exit-enabled: false
       entry-timeout-minutes: 15
       sideways-position-hours: 3
       sideways-pnl-range-pct: 1

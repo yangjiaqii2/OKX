@@ -178,10 +178,10 @@ public class OkxWebSocketService {
         lastReconciliationAt = clock.instant();
         if (result.ready()) {
             reconnectAttempt = 0;
-            readiness.update(TradingEngineState.READY, "PRIVATE_WS_RECONCILED");
+            readiness.updateConnection(TradingEngineState.READY, "PRIVATE_WS_RECONCILED");
             return true;
         }
-        readiness.update(TradingEngineState.BLOCKED, result.reason());
+        readiness.updateConnection(TradingEngineState.BLOCKED, result.reason());
         return false;
     }
 
@@ -207,7 +207,7 @@ public class OkxWebSocketService {
         }
         connectionState = OkxPrivateWebSocketState.DEGRADED;
         reason = disconnectReason;
-        readiness.update(TradingEngineState.DEGRADED, disconnectReason);
+        readiness.updateConnection(TradingEngineState.DEGRADED, disconnectReason);
         reconnectAttempt++;
         long delay = reconnectDelayMillis(reconnectAttempt,
                 Math.max(1_000L, properties.websocket().reconnectDelayMs()));

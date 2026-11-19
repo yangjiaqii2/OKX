@@ -6,6 +6,8 @@ import com.example.quant.account.OkxCredentialStore;
 import com.example.quant.account.PositionCloseService;
 import com.example.quant.account.PositionSnapshotService;
 import com.example.quant.account.dto.PositionSummary;
+import com.example.quant.okxtrade.EntryOrderReconciliation;
+import com.example.quant.agent.exit.NetProfitExitPolicy;
 import com.example.quant.agent.budget.AutoTradeBudgetService;
 import com.example.quant.agent.budget.BudgetReservation;
 import com.example.quant.agent.event.TradeEventPayload;
@@ -76,6 +78,16 @@ public class AutoTradeLifecycleService {
     private PositionCloseService positionCloseService;
     private PositionExitService positionExitService;
     private ExitLegLedgerService exitLegLedgerService;
+    @Autowired
+    private NetProfitExitPolicy netProfitExitPolicy;
+    @Autowired
+    private com.example.quant.risk.DailyRiskService dailyRisk;
+
+    private boolean usesNetProfitPolicy(PendingOrder order) {
+        return order.canonicalExecutablePlan() != null
+                && NetProfitExitPolicy.VERSION.equals(order.canonicalExecutablePlan().strategyVersion());
+    }
+
     private final Map<UUID, Set<String>> submittedProtectionIds = new java.util.concurrent.ConcurrentHashMap<>();
 
     public AutoTradeLifecycleService(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
@@ -223,6 +235,30 @@ public class AutoTradeLifecycleService {
             }
             PositionSummary position = matchingPosition(order, positions);
             Duration age = Duration.between(order.submittedAt(), now);
+            if (order.status() != OrderStatus.SUBMITTED && (managedProtectionStatus(order.status())
+                    || shouldRecoverMissingProtection(order))
+                    && (position == null || age.toMinutes() >= Math.max(1, agentProperties.lifecycle().entryTimeoutMinutes()))) {
+                try {
+                    boolean terminal = EntryOrderReconciliation.ensureTerminal(okxOrderGateway, order);
+                    if (terminal) {
+                        PositionSyncResult refreshed = positions();
+                        if (!refreshed.available()) continue;
+                        position = matchingPosition(order, refreshed.positions());
+                    } else if (position == null) {
+                        continue;
+                    }
+                    if (!terminal) log.warn("Entry remainder unresolved pendingOrderId={}", order.id());
+                } catch (RuntimeException ex) {
+                    log.warn("Entry remainder reconciliation failed pendingOrderId={}", order.id(), ex);
+                    if (position == null) continue;
+                }
+            }
+            boolean forceCloseDue = position != null && order.status() != OrderStatus.SUBMITTED
+                    && shouldForceClose(order, position, Duration.between(holdingStart(order), now));
+            if (forceCloseDue) {
+                maxHoldCloseSubmitted += submitTimedClose(order, position, now, "MAX_HOLD_TIMEOUT");
+                continue;
+            }
             if (position != null && order.status() == OrderStatus.EMERGENCY_ATTENTION_REQUIRED
                     && isProtectionSafetyEmergency(order)) {
                 // A safety-close failure is not a normal lifecycle state. On
@@ -231,7 +267,7 @@ public class AutoTradeLifecycleService {
                 // is covering the live position.
                 boolean validStop;
                 try {
-                    validStop = hasValidStop(activeAlgoProtections(order), decimal(position.size()));
+                    validStop = hasValidStop(activeAlgoProtections(order), decimal(position.size()).abs());
                 } catch (RuntimeException protectionQueryFailure) {
                     // An unavailable protection read cannot be treated as a
                     // safe stop. Keep the durable safety-close incident
@@ -284,13 +320,13 @@ public class AutoTradeLifecycleService {
                     }
                     continue;
                 }
-                if (position != null) {
+                if (position != null || (fill.filledSize().signum() > 0 && !shouldCancelStaleEntry(order, age))) {
                     if (order.budgetReservationId() != null) {
                         budgetService.markUsed(order.budgetReservationId());
                     }
                     try {
-                        BigDecimal positionSize = decimal(position.size());
-                        BigDecimal avgPx = positive(position.avgPrice(), positive(fill.avgPx(), order.price()));
+                        BigDecimal positionSize = position == null ? fill.filledSize() : decimal(position.size()).abs();
+                        BigDecimal avgPx = position == null ? fill.avgPx() : positive(position.avgPrice(), positive(fill.avgPx(), order.price()));
                         ProtectionSubmitResult protection = submitProtection(order, avgPx, positionSize, "POSITION_SYNC_FILL", false);
                         if (protection == ProtectionSubmitResult.COMPLETE) {
                             order.markProtectionSubmitted("POSITION_SYNC_FILL_PROTECTION_SUBMITTED");
@@ -307,7 +343,7 @@ public class AutoTradeLifecycleService {
                                 "按持仓快照补交保护单", order.externalOrderId(), order.clientOrderId(), null);
                         entryFilledProtected++;
                     } catch (RuntimeException ex) {
-                        if (triggerSafetyClose(order, position,
+                        if (position != null && triggerSafetyClose(order, position,
                                 "CANONICAL_SL_UNEXPRESSIBLE_AFTER_ENTRY", ex)) {
                             recordEvent(order, TradeEventType.PROTECTION_FAILED, OrderStatus.SUBMITTED.name(),
                                     OrderStatus.CLOSE_SUBMITTED.name(), "TERMINAL_SAFETY_REDUCTION",
@@ -317,6 +353,15 @@ public class AutoTradeLifecycleService {
                             recordEvent(order, TradeEventType.PROTECTION_FAILED, OrderStatus.SUBMITTED.name(),
                                     OrderStatus.PROTECTION_FAILED.name(), "PROTECTION_FAILED_AFTER_POSITION_SYNC",
                                     ex.getMessage(), order.externalOrderId(), order.clientOrderId(), null);
+                        }
+                    }
+                    if (age.toMinutes() >= Math.max(1, agentProperties.lifecycle().entryTimeoutMinutes())) {
+                        try {
+                            if (!EntryOrderReconciliation.ensureTerminal(okxOrderGateway, order)) {
+                                log.warn("Entry cancel awaiting final state pendingOrderId={}", order.id());
+                            }
+                        } catch (RuntimeException ex) {
+                            log.warn("Entry cancel unresolved pendingOrderId={}", order.id(), ex);
                         }
                     }
                     continue;
@@ -339,6 +384,7 @@ public class AutoTradeLifecycleService {
                         continue;
                     }
                     if (fill.filledSize().signum() <= 0) {
+                        if (dailyRisk != null) dailyRisk.releaseDefinitiveFailure(currentUsername(), order.id().toString(), now);
                         order.markEntryTimeoutCancelled("ENTRY_TIMEOUT_CANCELLED");
                         if (order.budgetReservationId() != null) {
                             budgetService.release(order.budgetReservationId(), "ENTRY_TIMEOUT_CANCELLED");
@@ -387,6 +433,18 @@ public class AutoTradeLifecycleService {
                 }
                 continue;
             }
+            if (position != null && usesNetProfitPolicy(order) && managedProtectionStatus(order.status())) {
+                try {
+                    boolean filled = exitLegLedgerService.firstLegHasFill(currentUsername(), order.id().toString());
+                    String reason = netProfitExitPolicy.exitReason(order, holdingStart(order), now, filled);
+                    if (reason != null) {
+                        submitTimedClose(order, position, now, reason);
+                        continue;
+                    }
+                } catch (RuntimeException ex) {
+                    log.warn("Short term exit facts unavailable pendingOrderId={} reason={}", order.id(), ex.getMessage());
+                }
+            }
             // Profit protection. Reconciles the durable exit state against the
             // exchange and moves the protective stop toward profit. It never
             // closes a position, so it cannot race with the close branches below.
@@ -428,12 +486,6 @@ public class AutoTradeLifecycleService {
                 }
                 continue;
             }
-            age = Duration.between(holdingStart(order), now);
-            boolean forceCloseDue = position != null && shouldForceClose(order, position, age);
-            if (forceCloseDue) {
-                maxHoldCloseSubmitted += submitMaxHoldClose(order, position, now);
-                continue;
-            }
             if (position != null && order.status() == OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED) {
                 try {
                     tightenTakeProfit(order, position);
@@ -446,7 +498,8 @@ public class AutoTradeLifecycleService {
                 }
                 continue;
             }
-            boolean sidewaysDue = position != null && shouldAdjustSideways(order, position, age);
+            age = Duration.between(holdingStart(order), now);
+            boolean sidewaysDue = !usesNetProfitPolicy(order) && position != null && shouldAdjustSideways(order, position, age);
             if (position != null && managedProtectionStatus(order.status())
                     && order.status() != OrderStatus.SIDEWAYS_TIMEOUT_TP_ADJUSTED
                     && !sidewaysDue && !forceCloseDue) {
@@ -707,7 +760,7 @@ public class AutoTradeLifecycleService {
         }
         OrderStatus previousStatus = order.status();
         try {
-            BigDecimal positionSize = decimal(position.size());
+            BigDecimal positionSize = decimal(position.size()).abs();
             BigDecimal avgPx = positive(position.avgPrice(), order.price());
             EntryFill entryFill = queryEntryFill(order);
             if (!hasText(entryFill.state())) {
@@ -764,7 +817,9 @@ public class AutoTradeLifecycleService {
             return false;
         }
         long minutes = age.toMinutes();
-        if (minutes >= Math.max(1, agentProperties.lifecycle().maxHoldMinutes())) {
+        int maxMinutes = Math.max(1, agentProperties.lifecycle().maxHoldMinutes());
+        if (usesNetProfitPolicy(order)) maxMinutes = Math.min(maxMinutes, 60);
+        if (minutes >= maxMinutes) {
             return true;
         }
         return minutes >= Math.max(1, agentProperties.lifecycle().lossCloseMinutes())
@@ -775,7 +830,7 @@ public class AutoTradeLifecycleService {
     private int tightenTakeProfit(PendingOrder order, PositionSummary position) {
         BigDecimal avgPx = positive(position.avgPrice(), order.price());
         OkxInstrumentRules rules = instrumentRules(order.instId());
-        BigDecimal size = rules.floorToLot(decimal(position.size()));
+        BigDecimal size = rules.floorToLot(decimal(position.size()).abs());
         if (size.signum() <= 0 || size.compareTo(rules.minSize()) < 0) {
             throw new IllegalStateException("SIDEWAYS_POSITION_MIN_SIZE_UNEXPRESSIBLE");
         }
@@ -828,7 +883,7 @@ public class AutoTradeLifecycleService {
             ActiveAlgoProtection tranche = active.stream()
                     .filter(item -> "TP1".equalsIgnoreCase(item.role())
                             || "TP2".equalsIgnoreCase(item.role())
-                            || "TP3".equalsIgnoreCase(item.role()))
+                            || "TP3".equalsIgnoreCase(item.role()) || "TP_FINAL".equalsIgnoreCase(item.role()))
                     .findFirst().orElse(null);
             if (tranche == null || tranche.size().signum() <= 0) {
                 throw new IllegalStateException("SIDEWAYS_REPLACEMENT_RECONCILE_REQUIRED");
@@ -960,7 +1015,7 @@ public class AutoTradeLifecycleService {
         active.stream()
                 .filter(item -> "TP1".equalsIgnoreCase(item.role())
                         || "TP2".equalsIgnoreCase(item.role())
-                        || "TP3".equalsIgnoreCase(item.role()))
+                        || "TP3".equalsIgnoreCase(item.role()) || "TP_FINAL".equalsIgnoreCase(item.role()))
                 .filter(item -> !keepClientId.equals(item.clientOrderId()))
                 .forEach(item -> cancelAlgo(order, item.clientOrderId()));
     }
@@ -1000,8 +1055,14 @@ public class AutoTradeLifecycleService {
         tradeOrderRepository.save(entity);
     }
 
-    private int submitMaxHoldClose(PendingOrder order, PositionSummary position, Instant now) {
+    private int submitTimedClose(PendingOrder order, PositionSummary position, Instant now, String reason) {
         Map<String, String> payload = new LinkedHashMap<>();
+        try {
+            if (!EntryOrderReconciliation.ensureTerminal(okxOrderGateway, order)) return 0;
+        } catch (RuntimeException ex) {
+            log.warn("Max hold close waiting for entry reconciliation pendingOrderId={}", order.id(), ex);
+            return 0;
+        }
         String closeClOrdId = "MAXC" + shortHash(order.id().toString(), 24);
         ClosePositionRecordEntity unresolved = unresolvedCloseIntent(order);
         if (unresolved != null) {
@@ -1018,6 +1079,7 @@ public class AutoTradeLifecycleService {
         }
         ClosePositionRecordEntity intent = createMaxHoldCloseIntent(order, position, closeClOrdId, now);
         if (intent != null) {
+            intent.setSource("MAX_HOLD_TIMEOUT".equals(reason) ? reason : "SHORT_TERM_EXIT");
             String intentOwner = intent.getUserName();
             String pendingOrderId = intent.getPendingOrderId();
             try {
@@ -1047,7 +1109,7 @@ public class AutoTradeLifecycleService {
             JsonNode response = okxOrderGateway.closePosition(payload,
                     operationContext(order, TradingOperationType.CLOSE_POSITION));
             String closeOrderId = closeId(response);
-            order.markCloseSubmitted(closeOrderId, "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED");
+            order.markCloseSubmitted(closeOrderId, reason + "_CLOSE_SUBMITTED");
             if (intent != null) {
                 intent.setCloseOrderId(closeOrderId);
                 intent.setStatus("CLOSE_SUBMITTED");
@@ -1059,7 +1121,7 @@ public class AutoTradeLifecycleService {
             }
             recordEvent(order, TradeEventType.MAX_HOLD_CLOSE_SUBMITTED, OrderStatus.PROTECTION_SUBMITTED.name(),
                     OrderStatus.CLOSE_SUBMITTED.name(), "MAX_HOLD_TIMEOUT_CLOSE_SUBMITTED",
-                    "达到最大持仓时间后提交平仓", closeOrderId, order.clientOrderId(), null);
+                    reason, closeOrderId, order.clientOrderId(), null);
             return 1;
         } catch (RuntimeException ex) {
             if (intent != null) {
@@ -1137,7 +1199,7 @@ public class AutoTradeLifecycleService {
         record.setPosSide(order.posSide());
         record.setMarginMode(order.tdMode());
         record.setCloseClOrdId(closeClOrdId);
-        record.setSize(decimal(position.size()));
+        record.setSize(decimal(position.size()).abs());
         record.setAvgPx(position.avgPrice());
         record.setStatus("CLOSE_SUBMITTING");
         record.setRequestSent(false);
@@ -1172,10 +1234,13 @@ public class AutoTradeLifecycleService {
                     canonicalPlan.stopLoss().intendedPrice(), order.action(), rules);
             Map<String, String> stopLoss = stopLossPayload(order, canonicalPlan, rules, normalizedSize,
                     avgPx, stopSuffix, preserveProtectedStop(order, existingStop, canonicalStop));
-            placeProtection(order, stopLoss, TradingOperationType.PLACE_STOP_LOSS);
-            requireActiveProtection(order, stopLoss.get("algoClOrdId"), "STOP_LOSS");
-            if (existingStop != null) {
-                cancelAlgo(order, existingStop.clientOrderId());
+            BigDecimal desiredStop = new BigDecimal(stopLoss.get("slTriggerPx"));
+            if (existingStop == null || !amendCanonicalStopInPlace(order, existingStop, desiredStop, normalizedSize)) {
+                placeProtection(order, stopLoss, TradingOperationType.PLACE_STOP_LOSS);
+                requireActiveProtection(order, stopLoss.get("algoClOrdId"), "STOP_LOSS");
+                if (existingStop != null) {
+                    cancelAlgo(order, existingStop.clientOrderId());
+                }
             }
         }
 
@@ -1262,7 +1327,8 @@ public class AutoTradeLifecycleService {
         if (data == null || !data.isArray()) {
             return List.of();
         }
-        Set<String> ownedIds = ownedProtectionIds(order);
+        Map<String, String> recordedRoles = new LinkedHashMap<>();
+        Set<String> ownedIds = ownedProtectionIds(order, recordedRoles);
         List<ActiveAlgoProtection> result = new ArrayList<>();
         for (JsonNode item : data) {
             String state = item.path("state").asText("");
@@ -1292,6 +1358,8 @@ public class AutoTradeLifecycleService {
                 role = "TP2";
             } else if (clientId.toLowerCase().endsWith("tp3")) {
                 role = "TP3";
+            } else if (clientId.toLowerCase().endsWith("tpf") || "TP_FINAL".equals(recordedRoles.get(clientId))) {
+                role = "TP_FINAL";
             } else if (clientId.toLowerCase().endsWith("swt")) {
                 role = "SIDEWAYS_TP";
             } else {
@@ -1305,15 +1373,16 @@ public class AutoTradeLifecycleService {
             if (activeSize.signum() <= 0) {
                 activeSize = decimal(item, "sz");
             }
-            result.add(new ActiveAlgoProtection(clientId, role, activeSize, decimal(trigger)));
+            result.add(new ActiveAlgoProtection(clientId, role, activeSize, decimal(trigger), decimal(item, "tpOrdPx"),
+                    state.isBlank() || "live".equalsIgnoreCase(state)));
         }
         return List.copyOf(result);
     }
 
-    private Set<String> ownedProtectionIds(PendingOrder order) {
+    private Set<String> ownedProtectionIds(PendingOrder order, Map<String, String> recordedRoles) {
         Set<String> ids = new LinkedHashSet<>(submittedProtectionIds.getOrDefault(order.id(), Set.of()));
         ids.add(OkxTradeAdapter.attachedStopLossClientOrderId(order));
-        for (String role : List.of("SL", "REPLACE_SL", "SIDEWAYS_TP", "TP1", "TP2", "TP3")) {
+        for (String role : List.of("SL", "REPLACE_SL", "SIDEWAYS_TP", "TP1", "TP2", "TP3", "TP_FINAL")) {
             ids.add(lifecycleAlgoClOrdId(order, role));
         }
         if (tradeOrderRepository != null) {
@@ -1323,13 +1392,16 @@ public class AutoTradeLifecycleService {
                     .filter(row -> order.instId().equalsIgnoreCase(row.getInstId()) && row.isReduceOnly())
                     .filter(row -> closeSide(order).equalsIgnoreCase(row.getSide()))
                     .filter(row -> order.posSide().equalsIgnoreCase(row.getPosSide()) || "net".equalsIgnoreCase(row.getPosSide()))
-                    .map(TradeOrderEntity::getClOrdId).filter(AutoTradeLifecycleService::hasText).forEach(ids::add);
+                    .filter(row -> hasText(row.getClOrdId())).forEach(row -> {
+                        ids.add(row.getClOrdId());
+                        recordedRoles.put(row.getClOrdId(), row.getOrderRole());
+                    });
         }
         return ids;
     }
 
     private static boolean isOrderBoundProfitId(PendingOrder order, String clientId) {
-        return clientId.matches("lc" + shortHash(order.id().toString(), 12) + "[a-f0-9]{12}(TP1|TP2|TP3|SWT)");
+        return clientId.matches("lc" + shortHash(order.id().toString(), 12) + "[a-f0-9]{12}(TP1|TP2|TP3|TPF|SWT)");
     }
 
     private Map<String, String> stopLossPayload(PendingOrder order, CanonicalExecutablePlan plan,
@@ -1385,7 +1457,7 @@ public class AutoTradeLifecycleService {
                 triggerSafetyClose(order, position, "CANONICAL_PLAN_UNAVAILABLE_AFTER_ENTRY", queryFailure);
                 return true;
             }
-            if (hasValidStop(active, decimal(position.size()))) {
+            if (hasValidStop(active, decimal(position.size()).abs())) {
                 order.markEmergencyAttentionRequired("CANONICAL_PLAN_UNAVAILABLE_WITH_VALID_SL");
                 return true;
             }
@@ -1396,20 +1468,30 @@ public class AutoTradeLifecycleService {
             return true;
         }
         OkxInstrumentRules rules = instrumentRules(order.instId());
-        BigDecimal size = rules.floorToLot(decimal(position.size()));
+        BigDecimal size = rules.floorToLot(decimal(position.size()).abs());
         if (size.signum() <= 0) {
             return false;
         }
         List<ActiveAlgoProtection> active = activeAlgoProtections(order);
         boolean changed = false;
-        ActiveAlgoProtection stop = active.stream()
-                .filter(item -> "STOP_LOSS".equals(item.role()))
-                .findFirst().orElse(null);
+        List<ActiveAlgoProtection> stops = active.stream().filter(item -> "STOP_LOSS".equals(item.role())).toList();
+        ActiveAlgoProtection stop = stops.stream().filter(item -> item.size().compareTo(size) == 0
+                && item.triggerPrice().signum() > 0)
+                .reduce((left, right) -> improvesOrEquals(left.triggerPrice(), right.triggerPrice(), order.action())
+                        ? left : right).orElse(stops.isEmpty() ? null : stops.get(0));
         BigDecimal canonicalStop = canonicalPlanCompiler.normalizeStopPrice(
                 plan.stopLoss().intendedPrice(), order.action(), rules);
         // Profit protection may already have moved the stop toward profit. The
         // canonical initial stop is the floor, never a target to come back to:
         // re-placing protection must not release locked profit.
+        if (usesNetProfitPolicy(order) && exitLegLedgerService.firstLegHasFill(currentUsername(), order.id().toString())) {
+            try {
+                BigDecimal breakEven = netProfitExitPolicy.quote(order, rules, size, "BREAK_EVEN", Instant.now()).trigger();
+                if (improvesOrEquals(breakEven, canonicalStop, order.action())) canonicalStop = breakEven;
+            } catch (RuntimeException missingFacts) {
+                log.warn("Runner stop awaiting cost facts pendingOrderId={}", order.id());
+            }
+        }
         BigDecimal desiredStop = preserveProtectedStop(order, stop, canonicalStop);
         boolean priceNeedsFix = stop != null && stop.triggerPrice().signum() > 0
                 && !improvesOrEquals(stop.triggerPrice(), desiredStop, order.action());
@@ -1444,10 +1526,18 @@ public class AutoTradeLifecycleService {
                 }
             }
         } catch (RuntimeException ex) {
+            if ("AMEND_READBACK_PENDING".equals(ex.getMessage())) return true;
             if (triggerSafetyClose(order, position, "CANONICAL_SL_UNEXPRESSIBLE_AFTER_ENTRY", ex)) {
                 return true;
             }
             throw ex;
+        }
+        if (stops.size() > 1 && stop != null && stop.size().compareTo(size) == 0
+                && improvesOrEquals(stop.triggerPrice(), desiredStop, order.action())) {
+            for (ActiveAlgoProtection duplicate : stops) {
+                if (!duplicate.clientOrderId().equals(stop.clientOrderId())) cancelAlgo(order, duplicate.clientOrderId());
+            }
+            return true;
         }
         boolean rulesChanged = !canonicalPlanCompiler.matchesSnapshot(plan, rules);
         ProtectionAllocation allocation = rulesChanged
@@ -1484,22 +1574,24 @@ public class AutoTradeLifecycleService {
         payload.put("algoClOrdId", stop.clientOrderId());
         payload.put("newSlTriggerPx", value(desiredStop));
         payload.put("newSz", value(desiredSize));
-        payload.put("reqId", "amend-" + shortHash(order.id() + ":" + value(desiredStop)
+        payload.put("posSide", positionMode() == OkxPositionMode.NET ? "net" : order.posSide());
+        payload.put("reqId", "amend" + shortHash(order.id() + ":" + value(desiredStop)
                 + ":" + value(desiredSize), 16));
         try {
             JsonNode response = okxOrderGateway.amendAlgoOrder(payload,
                     operationContext(order, TradingOperationType.AMEND_PROTECTION));
-            if (response == null) {
-                return false;
-            }
-            return activeAlgoProtections(order).stream()
+            if (response == null) throw new IllegalStateException("AMEND_READBACK_PENDING");
+            boolean confirmed = activeAlgoProtections(order).stream()
                     .filter(item -> stop.clientOrderId().equals(item.clientOrderId()))
                     .anyMatch(item -> item.triggerPrice() != null
                             && item.triggerPrice().compareTo(desiredStop) == 0
                             && item.size() != null && item.size().compareTo(desiredSize) == 0);
-        } catch (RuntimeException ex) {
-            log.warn("canonical stop amend uncertain pendingOrderId={} reason={}", order.id(), ex.getMessage());
+            if (!confirmed) throw new IllegalStateException("AMEND_READBACK_PENDING");
+            return true;
+        } catch (UnsupportedOperationException unsupported) {
             return false;
+        } catch (RuntimeException ex) {
+            throw new IllegalStateException("AMEND_READBACK_PENDING", ex);
         }
     }
 
@@ -1524,6 +1616,28 @@ public class AutoTradeLifecycleService {
             changed = true;
         }
         OkxInstrumentRules rules = instrumentRules(order.instId());
+        if (usesNetProfitPolicy(order)) {
+            for (ActiveAlgoProtection leg : active) {
+                if (!leg.live() || !("TP1".equals(leg.role()) || "TP_FINAL".equals(leg.role()))
+                        || reconciliation.cancelRoles().contains(leg.role())) continue;
+                try {
+                    var quote = netProfitExitPolicy.quote(order, rules, leg.size(), leg.role(), now);
+                    if (leg.limitPrice().signum() > 0
+                            && improvesOrEquals(leg.limitPrice(), quote.limit(), order.action())) continue;
+                    Map<String, String> amend = Map.of("instId", order.instId(), "algoClOrdId", leg.clientOrderId(),
+                            "posSide", positionMode() == OkxPositionMode.NET ? "net" : order.posSide(),
+                            "newTpTriggerPx", value(quote.trigger()), "newTpOrdPx", value(quote.limit()),
+                            "reqId", "tp" + shortHash(leg.clientOrderId() + ":" + value(quote.limit())
+                                    + ":" + value(quote.trigger()), 20));
+                    okxOrderGateway.amendAlgoOrder(amend, operationContext(order, TradingOperationType.AMEND_PROTECTION));
+                    return activeAlgoProtections(order).stream().anyMatch(item -> leg.clientOrderId().equals(item.clientOrderId())
+                            && item.limitPrice().compareTo(quote.limit()) == 0);
+                } catch (RuntimeException uncertain) {
+                    log.warn("Net profit leg awaiting reconciliation pendingOrderId={} role={}", order.id(), leg.role());
+                    return changed;
+                }
+            }
+        }
         for (Map.Entry<String, BigDecimal> entry : reconciliation.submitQuantities().entrySet()) {
             BigDecimal quantity = entry.getValue();
             if (quantity.signum() <= 0 || quantity.compareTo(rules.minSize()) < 0
@@ -1539,6 +1653,16 @@ public class AutoTradeLifecycleService {
             payload.put("orderRole", leg.semanticId());
             payload.put("tpTriggerPx", value(leg.executableTargetPrice()));
             payload.put("tpOrdPx", "-1");
+            if (usesNetProfitPolicy(order)) {
+                try {
+                    NetProfitExitPolicy.Quote quote = netProfitExitPolicy.quote(order, rules, quantity, leg.semanticId(), now);
+                    payload.put("tpTriggerPx", value(quote.trigger()));
+                    payload.put("tpOrdPx", value(quote.limit()));
+                } catch (RuntimeException missingFacts) {
+                    log.warn("Deferring net profit leg {} for {}: {}", leg.semanticId(), order.id(), missingFacts.getMessage());
+                    continue;
+                }
+            }
             placeProtection(order, payload, TradingOperationType.PLACE_TAKE_PROFIT);
             requireActiveProtection(order, payload.get("algoClOrdId"), leg.semanticId());
             changed = true;
@@ -1678,7 +1802,7 @@ public class AutoTradeLifecycleService {
                 operationType,
                 currentUsername(),
                 order == null ? null : order.id().toString(),
-                order == null || order.tradePlanId() == null ? null : order.tradePlanId().toString());
+                order == null || order.tradePlanId() == null ? null : order.tradePlanId().toString()).withDirection(order == null ? null : order.posSide());
     }
 
     private void recordProtectionSubmitted(PendingOrder order, Map<String, String> payload, JsonNode response) {
@@ -1945,6 +2069,7 @@ public class AutoTradeLifecycleService {
         if (cleanSuffix.contains("TP3")) {
             return "TP3";
         }
+        if (cleanSuffix.contains("TPFINAL")) return "TPF";
         return "LC";
     }
 
@@ -2017,7 +2142,7 @@ public class AutoTradeLifecycleService {
 
     private static boolean isTakeProfitRole(String role) {
         return "TP1".equalsIgnoreCase(role) || "TP2".equalsIgnoreCase(role)
-                || "TP3".equalsIgnoreCase(role) || "SIDEWAYS_TP".equalsIgnoreCase(role);
+                || "TP3".equalsIgnoreCase(role) || "TP_FINAL".equalsIgnoreCase(role) || "SIDEWAYS_TP".equalsIgnoreCase(role);
     }
 
     private static String compact(String value) {
@@ -2040,7 +2165,7 @@ public class AutoTradeLifecycleService {
     }
 
     private record ActiveAlgoProtection(String clientOrderId, String role, BigDecimal size,
-                                        BigDecimal triggerPrice) {
+                                        BigDecimal triggerPrice, BigDecimal limitPrice, boolean live) {
     }
 
     private record PositionSyncResult(boolean available, List<PositionSummary> positions) {

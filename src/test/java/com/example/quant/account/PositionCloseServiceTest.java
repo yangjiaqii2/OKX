@@ -93,6 +93,9 @@ class PositionCloseServiceTest {
         cancelled.put("code", "0");
         cancelled.putArray("data").addObject().put("sCode", "0");
         when(cancelGateway.cancelAlgoOrder(any())).thenReturn(cancelled);
+        ObjectNode terminalEntry = new ObjectMapper().createObjectNode();
+        terminalEntry.putArray("data").addObject().put("state", "filled");
+        when(cancelGateway.queryOrder(any())).thenReturn(terminalEntry);
         ClosePositionRecoveryService recovery = new ClosePositionRecoveryService(repository, protections, orders,
                 new AutoTradeBudgetService(new AgentProperties()), snapshots, cancelGateway);
 
@@ -150,6 +153,8 @@ class PositionCloseServiceTest {
                 new BigDecimal(shortSide ? "102" : "98"), new BigDecimal(shortSide ? "96" : "104"),
                 BigDecimal.TEN, new BigDecimal("2"), 80, BigDecimal.ZERO, BigDecimal.ZERO,
                 new BigDecimal("100000000"), UUID.randomUUID(), "test", now, now.plusSeconds(120));
+        order.applyBudgetReservation(BigDecimal.TEN, UUID.randomUUID(), null,
+                order.id().toString().replace("-", ""));
         order.markSubmitted(now, "entry-" + order.id());
         order.markProtectionSubmitted("test active position");
         return order;
@@ -508,6 +513,13 @@ class PositionCloseServiceTest {
     }
 
     private static class CloseGateway implements OkxOrderGateway {
+        @Override
+        public JsonNode queryOrder(Map<String, String> payload) {
+            ObjectNode result = new ObjectMapper().createObjectNode();
+            result.putArray("data").addObject().put("state", "filled");
+            return result;
+        }
+
         private Map<String, String> closePayload;
         private int calls;
 

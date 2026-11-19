@@ -18,6 +18,10 @@ public class FailureReasonClassifier {
         // Global blockers take precedence over candidate-local plan/AI wording.
         if (normalized.contains("pre_order_setup_failed")
                 || normalized.contains("daily_risk_")
+                || normalized.contains("max_daily_")
+                || normalized.contains("daily_ledger_sync_required")
+                || normalized.contains("max_consecutive_losses")
+                || normalized.contains("loss_cooldown_active")
                 || normalized.contains("trading_mode_disabled")
                 || normalized.contains("trading engine")
                 || normalized.contains("启动对账")

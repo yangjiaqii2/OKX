@@ -170,7 +170,14 @@ public class PendingOrderService {
     }
 
     public void cancel(UUID id) {
-        get(id).markCancelled("用户取消");
+        PendingOrder order = get(id);
+        synchronized (order) {
+            if (order.status() == OrderStatus.CANCELLED) return;
+            if (order.status() != OrderStatus.PENDING_CONFIRM && order.status() != OrderStatus.BUDGET_RESERVED) {
+                throw new IllegalStateException("订单已进入确认或提交阶段，不能本地取消");
+            }
+            order.markCancelled("用户取消");
+        }
     }
 
     private void restorePendingOrders() {
@@ -204,8 +211,17 @@ public class PendingOrderService {
 
     private void persist(PendingOrder order) {
         if (pendingOrderRepository != null) {
-            pendingOrderRepository.save(PendingOrderEntity.from(order,
-                    orderOwners.getOrDefault(order.id(), currentUsername())));
+            synchronized (order) {
+                try {
+                    var saved = pendingOrderRepository.saveAndFlush(PendingOrderEntity.from(order,
+                            orderOwners.getOrDefault(order.id(), currentUsername())));
+                    order.persistedVersion(saved.stateVersion());
+                } catch (org.springframework.dao.OptimisticLockingFailureException stale) {
+                    pendingOrderRepository.findById(order.id().toString())
+                            .ifPresent(row -> orders.replace(order.id(), order, attach(row.toDomain())));
+                    throw stale;
+                }
+            }
         }
     }
 

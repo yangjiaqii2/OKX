@@ -31,6 +31,11 @@ public class DailyRiskEntryClaimEntity {
     @Column(name = "net_pnl", precision = 30, scale = 12)
     private BigDecimal netPnl;
 
+    @Column(name = "reserved_loss_usdt", precision = 30, scale = 12)
+    private BigDecimal reservedLossUsdt;
+
+    public void setReservedLossUsdt(BigDecimal value) { reservedLossUsdt = value; }
+
     public String getUserName() { return userName; }
     public void setUserName(String value) { userName = value; }
     public LocalDate getTradeDay() { return tradeDay; }

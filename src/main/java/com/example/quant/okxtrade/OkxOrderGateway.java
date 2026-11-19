@@ -64,7 +64,7 @@ public interface OkxOrderGateway {
      * take-profit algo orders; never for move_order_stop.
      */
     default JsonNode amendAlgoOrder(Map<String, String> payload) {
-        return null;
+        throw new UnsupportedOperationException("amend-algos");
     }
 
     default JsonNode amendAlgoOrder(Map<String, String> payload, TradingOperationContext context) {

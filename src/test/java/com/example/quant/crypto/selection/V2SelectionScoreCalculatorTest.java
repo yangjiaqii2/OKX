@@ -128,7 +128,7 @@ class V2SelectionScoreCalculatorTest {
 
         assertThat(result.availableWeight()).isEqualByComparingTo("15");
         assertThat(result.coverageRatio()).isEqualByComparingTo("0.15");
-        assertThat(result.normalizedScore()).isEqualByComparingTo("95");
+        assertThat(result.normalizedScore()).isEqualByComparingTo("90");
         assertThat(result.rankingScore()).isLessThan(BigDecimal.valueOf(60));
         assertThat(V2SelectionScoreCalculator.compareForRanking(completeCandidate(), relativeStrengthOnly))
                 .isLessThan(0);

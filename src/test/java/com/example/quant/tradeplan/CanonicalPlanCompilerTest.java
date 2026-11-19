@@ -8,6 +8,8 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class CanonicalPlanCompilerTest {
     private static final OkxInstrumentRules RULES = new OkxInstrumentRules(
@@ -146,6 +148,28 @@ class CanonicalPlanCompilerTest {
 
         assertThat(result.status()).isEqualTo(CanonicalExecutablePlan.CompilationStatus.REJECTED);
         assertThat(result.decisions()).contains("EXECUTABLE_RISK_EXCEEDS_RISK_BUDGET");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"99.9, 995", "0.4, 0"})
+    void automaticSizingRespectsQuoteContractValueAndMinimumLot(String budget, int expectedContracts) {
+        var rules = new OkxInstrumentRules("XAU-USDT-SWAP", BigDecimal.ONE, "USDT",
+                BigDecimal.valueOf(5), BigDecimal.valueOf(5), new BigDecimal("0.1"));
+        TradeIntent base = intent(BigDecimal.TEN, DirectionBias.BULLISH);
+        TradeIntent sized = new TradeIntent(base.planId(), base.instId(), base.action(), base.entryPolicy(),
+                new BigDecimal("100.04"), base.initialStopLossPrice(), base.intendedTakeProfitPrice(),
+                base.intendedBaseQuantity(), new BigDecimal(budget), base.strategyVersion(), base.exitLegs());
+
+        CanonicalExecutablePlan result = new CanonicalPlanCompiler().compileAutomaticEntry(sized, rules);
+
+        if (expectedContracts == 0) {
+            assertThat(result.accepted()).isFalse();
+            assertThat(result.decisions()).containsExactly("EXECUTABLE_RISK_EXCEEDS_RISK_BUDGET");
+        } else {
+            assertThat(result.accepted()).isTrue();
+            assertThat(result.entry().executableContractQuantity()).isEqualByComparingTo(String.valueOf(expectedContracts));
+            assertThat(result.risk().executableStopLossAmount()).isEqualByComparingTo("99.5");
+        }
     }
 
     @Test

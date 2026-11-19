@@ -14,9 +14,18 @@ import org.springframework.stereotype.Component;
 @Component
 public class CanonicalPlanCompiler {
     public static final String VERSION = "canonical-plan-v1";
+    public static final String ENTRY_SIZE_REDUCED_TO_RISK_BUDGET = "ENTRY_SIZE_REDUCED_TO_RISK_BUDGET";
     private static final BigDecimal ONE = BigDecimal.ONE;
 
     public CanonicalExecutablePlan compile(TradeIntent intent, OkxInstrumentRules rules) {
+        return compile(intent, rules, false);
+    }
+
+    public CanonicalExecutablePlan compileAutomaticEntry(TradeIntent intent, OkxInstrumentRules rules) {
+        return compile(intent, rules, true);
+    }
+
+    private CanonicalExecutablePlan compile(TradeIntent intent, OkxInstrumentRules rules, boolean resizeToRiskBudget) {
         if (intent == null) {
             throw new IllegalArgumentException("TradeIntent 不能为空");
         }
@@ -40,7 +49,18 @@ public class CanonicalPlanCompiler {
         BigDecimal executableStopLoss = calculateExecutableStopLossAmount(entry, stop, contracts, rules);
         if (intent.riskBudget() != null && intent.riskBudget().signum() > 0
                 && executableStopLoss.compareTo(intent.riskBudget()) > 0) {
-            return rejected(intent, rules, decisions, "EXECUTABLE_RISK_EXCEEDS_RISK_BUDGET");
+            if (!resizeToRiskBudget) {
+                return rejected(intent, rules, decisions, "EXECUTABLE_RISK_EXCEEDS_RISK_BUDGET");
+            }
+            contracts = contracts.min(maxContractsForRiskBudget(entry, stop, intent.riskBudget(), rules));
+            if (contracts.signum() <= 0 || contracts.compareTo(rules.minSize()) < 0) {
+                return rejected(intent, rules, decisions, "EXECUTABLE_RISK_EXCEEDS_RISK_BUDGET");
+            }
+            executableStopLoss = calculateExecutableStopLossAmount(entry, stop, contracts, rules);
+            if (executableStopLoss.compareTo(intent.riskBudget()) > 0) {
+                return rejected(intent, rules, decisions, "EXECUTABLE_RISK_EXCEEDS_RISK_BUDGET");
+            }
+            decisions.add(ENTRY_SIZE_REDUCED_TO_RISK_BUDGET);
         }
 
         if (intent.exitLegs().isEmpty()) {
@@ -261,6 +281,13 @@ public class CanonicalPlanCompiler {
                 ? contracts.multiply(rules.contractValue()).divide(entry, 16, RoundingMode.DOWN)
                 : contracts.multiply(rules.contractValue());
         return entry.subtract(stop).abs().multiply(base).setScale(8, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal maxContractsForRiskBudget(BigDecimal entry, BigDecimal stop, BigDecimal riskBudget,
+                                                        OkxInstrumentRules rules) {
+        BigDecimal lossPerLot = entry.subtract(stop).abs().multiply(rules.contractValue()).multiply(rules.lotSize());
+        BigDecimal budget = rules.contractValueInQuoteCurrencyForAudit() ? riskBudget.multiply(entry) : riskBudget;
+        return budget.divide(lossPerLot, 0, RoundingMode.DOWN).multiply(rules.lotSize());
     }
 
     private enum PriceRole { ENTRY, STOP, TARGET }

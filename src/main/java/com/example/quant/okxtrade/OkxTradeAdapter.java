@@ -256,6 +256,12 @@ public class OkxTradeAdapter {
         }
     }
 
+    public void settleEntryBeforeClose(PendingOrder order) {
+        if (order.submittedAt() != null && !EntryOrderReconciliation.ensureTerminal(okxOrderGateway, order)) {
+            throw new IllegalStateException("ENTRY_REMAINDER_UNCONFIRMED");
+        }
+    }
+
     public OrderExecutionResult closePosition(String instId, String posSide, String marginMode) {
         return closePosition(instId, posSide, marginMode, null);
     }

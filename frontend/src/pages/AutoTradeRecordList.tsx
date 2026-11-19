@@ -1,3 +1,7 @@
+import { PanelState } from '../components/PanelState';
+import { PositionSnapshotTable } from '../components/PositionSnapshotTable';
+import { accountPositionPnl, openPositions } from '../displayData';
+import { ScrollableTable } from '../components/ScrollableTable';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 import {
@@ -10,22 +14,20 @@ import {
   MenuItem,
   Select,
   Stack,
-  Table,
   TableBody,
   TableCell,
-  TableContainer,
   TableHead,
   TableRow,
   TextField,
   Typography,
 } from '@mui/material';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
-import { glassCard } from '../components/glass';
+import { panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { StatusChip } from '../components/StatusChip';
-import { formatAutoTradeReason, formatDecisionSource, formatEntryMode, formatLeverage, formatNumber, formatOpenDirection, formatPrice, formatSignalType, formatStage, formatStatus, formatUSDT } from '../formatters';
+import { formatTrend, formatAutoTradeReason, formatDecisionSource, formatEntryMode, formatLeverage, formatNumber, formatOpenDirection, formatPrice, formatScanAction, formatSignalType, formatStage, formatStatus, formatUSDT } from '../formatters';
 
 type AutoTradeRecord = Record<string, unknown>;
 
@@ -63,37 +65,44 @@ export function AutoTradeRecordList() {
   const [data, setData] = useState<AutoTradePage>(emptyPage);
   const [status, setStatus] = useState('');
   const [instId, setInstId] = useState('');
-  const [positions, setPositions] = useState<Record<string, unknown>[]>([]);
+  const [appliedFilters, setAppliedFilters] = useState({ status: '', instId: '' });
+  const [positions, setPositions] = useState<Record<string, unknown>[] | null>(null);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const inFlight = useRef(false);
+  const busy = loading || refreshing;
 
-  async function load(nextPage = page, silent = false) {
+  async function load(nextPage = page, silent = false, filters = appliedFilters) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     if (silent) {
       setRefreshing(true);
     } else {
       setLoading(true);
     }
     try {
-      const [recordData, positionData] = await Promise.all([
+      const [recordData, positionData] = await Promise.allSettled([
         quantApi.autoTradeRecords({
-          status,
-          instId: instId.trim(),
+          ...filters,
           page: nextPage,
           size: pageSize,
         }),
         quantApi.positions(),
       ]);
-      const result = recordData as Record<string, unknown>;
+      setPositions(positionData.status === 'fulfilled' && Array.isArray(positionData.value)
+        ? positionData.value as Record<string, unknown>[] : null);
+      if (recordData.status === 'rejected') throw recordData.reason;
+      const result = recordData.value as Record<string, unknown>;
       setData({
         items: Array.isArray(result.items) ? (result.items as AutoTradeRecord[]) : [],
         total: Number(result.total ?? 0),
         page: Number(result.page ?? nextPage),
         size: Number(result.size ?? pageSize),
       });
-      setPositions(Array.isArray(positionData) ? (positionData as Record<string, unknown>[]) : []);
       setPage(nextPage);
+      setAppliedFilters(filters);
       setError('');
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : '自动交易记录加载失败';
@@ -102,6 +111,7 @@ export function AutoTradeRecordList() {
         notify(message, { type: 'error' });
       }
     } finally {
+      inFlight.current = false;
       setLoading(false);
       setRefreshing(false);
     }
@@ -114,12 +124,9 @@ export function AutoTradeRecordList() {
   const summary = useMemo(() => {
     const executed = data.items.filter((item) => item.status === 'EXECUTED' || item.status === 'ENTRY_SUBMITTED').length;
     const waiting = data.items.filter((item) => item.status === 'WAITING_ENTRY').length;
-    const pnl = data.items.reduce((sum, item) => {
-      const position = positionFor(item, positions);
-      return sum + Number(position?.unrealizedPnl ?? 0);
-    }, 0);
-    return { executed, waiting, pnl };
-  }, [data.items, positions]);
+    return { executed, waiting };
+  }, [data.items]);
+  const pnl = accountPositionPnl(positions);
 
   const hasNext = (page + 1) * pageSize < data.total;
 
@@ -128,12 +135,11 @@ export function AutoTradeRecordList() {
       <Stack spacing={2}>
         <PageHeader
           title="自动交易记录"
-          subtitle={`共 ${data.total} 条复盘记录，当前页等待入场 ${summary.waiting} 条、已提交 ${summary.executed} 条，当前持仓浮盈亏 ${formatUSDT(summary.pnl)}`}
-          eyebrow="Auto Trade Audit"
-          actions={
+          subtitle={`共 ${data.total} 条复盘记录，当前页等待入场 ${summary.waiting} 条、已提交 ${summary.executed} 条，当前账户持仓浮盈亏 ${pnl == null ? '不可用' : formatUSDT(pnl)}`}
+          filters={
             <>
-              <FormControl size="small" sx={{ minWidth: { xs: 1, sm: 150 } }}>
-                <Select value={status} onChange={(event) => setStatus(event.target.value)}>
+              <FormControl size="small" sx={{ width: { xs: 1, sm: 172 } }}>
+                <Select displayEmpty inputProps={{ 'aria-label': '状态筛选' }} value={status} onChange={(event) => setStatus(event.target.value)}>
                   {statusOptions.map((option) => (
                     <MenuItem key={option.value || 'all'} value={option.value}>
                       {option.label}
@@ -146,6 +152,7 @@ export function AutoTradeRecordList() {
                 value={instId}
                 onChange={(event) => setInstId(event.target.value)}
                 placeholder="搜索合约"
+                inputProps={{ 'aria-label': '搜索合约' }}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
@@ -153,14 +160,14 @@ export function AutoTradeRecordList() {
                     </InputAdornment>
                   ),
                 }}
-                sx={{ minWidth: { xs: 1, sm: 220 } }}
+                sx={{ width: { xs: 1, sm: 220 } }}
               />
               <Button
                 variant="outlined"
                 size="small"
                 startIcon={<SearchIcon />}
-                onClick={() => void load(0)}
-                disabled={refreshing}
+                onClick={() => void load(0, false, { status, instId: instId.trim() })}
+                disabled={busy}
               >
                 查询
               </Button>
@@ -169,7 +176,7 @@ export function AutoTradeRecordList() {
                 size="small"
                 startIcon={refreshing ? <CircularProgress size={14} /> : <RefreshIcon />}
                 onClick={() => void load(page, true)}
-                disabled={refreshing}
+                disabled={busy}
               >
                 刷新
               </Button>
@@ -179,118 +186,108 @@ export function AutoTradeRecordList() {
 
         {error ? <Alert severity="error">{error}</Alert> : null}
 
-        <Box sx={{ ...glassCard }}>
+        <Box sx={{ ...panel }}>
           {loading ? (
-            <Box sx={{ minHeight: 260, display: 'grid', placeItems: 'center' }}>
-              <CircularProgress size={28} />
-            </Box>
+            <PanelState loading />
           ) : data.items.length === 0 ? (
-            <Box sx={{ minHeight: 220, display: 'grid', placeItems: 'center', p: 3 }}>
-              <Typography color="text.secondary">暂无自动交易记录。</Typography>
-            </Box>
+            <PanelState>暂无自动交易记录。</PanelState>
           ) : (
-            <TableContainer>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>时间</TableCell>
-                    <TableCell>状态</TableCell>
-                    <TableCell>合约</TableCell>
-                    <TableCell>开仓方向</TableCell>
-                    <TableCell align="right">原始分</TableCell>
-                    <TableCell align="right">最终分</TableCell>
-                    <TableCell>信号</TableCell>
-                    <TableCell>AI 决策</TableCell>
-                    <TableCell align="right">保证金</TableCell>
-                    <TableCell align="right">杠杆</TableCell>
-                    <TableCell align="right">计划入场</TableCell>
-                    <TableCell align="right">持仓均价</TableCell>
-                    <TableCell align="right">未实现盈亏</TableCell>
-                    <TableCell align="right">盈亏比</TableCell>
-                    <TableCell>阶段</TableCell>
-                    <TableCell>原因</TableCell>
-                    <TableCell>OKX订单号</TableCell>
-                    <TableCell>说明</TableCell>
+            <ScrollableTable label="自动交易记录">
+              <TableHead>
+                <TableRow>
+                  <TableCell>时间</TableCell>
+                  <TableCell>状态</TableCell>
+                  <TableCell>合约</TableCell>
+                  <TableCell>候选趋势</TableCell>
+                  <TableCell>订单方向</TableCell>
+                  <TableCell align="right">综合评分</TableCell>
+                  <TableCell align="right">最终排名分</TableCell>
+                  <TableCell>信号</TableCell>
+                  <TableCell>扫描动作</TableCell>
+                  <TableCell>AI 决策</TableCell>
+                  <TableCell align="right">保证金</TableCell>
+                  <TableCell align="right">杠杆</TableCell>
+                  <TableCell align="right">计划入场</TableCell>
+                  <TableCell align="right">盈亏比</TableCell>
+                  <TableCell>阶段</TableCell>
+                  <TableCell>原因</TableCell>
+                  <TableCell>OKX订单号</TableCell>
+                  <TableCell>AI 说明</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {data.items.map((record) => (
+                  <TableRow key={String(record.id)} hover>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatTime(record.createdAt)}</TableCell>
+                    <TableCell>
+                      <StatusChip value={String(record.status ?? '-')} />
+                    </TableCell>
+                    <TableCell sx={{ fontWeight: 900 }}>{String(record.instId ?? '-')}</TableCell>
+                    <TableCell>{formatTrend(record.trendDirection)}</TableCell>
+                    <TableCell>{record.status === 'SKIPPED' ? '—' : formatOpenDirection(record.action, record.posSide)}</TableCell>
+                    <TableCell align="right">{formatNumber(record.candidateScore, 0)}</TableCell>
+                    <TableCell align="right">{formatNumber(record.finalRankScore, 8)}</TableCell>
+                    <TableCell>{formatSignalType(record.signalType)}</TableCell>
+                    <TableCell>{formatScanAction(record.scanAction, record.reasonMessage ?? record.message)}</TableCell>
+                    <TableCell sx={{ minWidth: 160 }}>
+                      <Stack spacing={0.5}>
+                        <Typography variant="caption" fontWeight={800}>
+                          {formatDecisionSource(record.decisionSource)}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {record.aiConfidence == null ? '-' : `${formatNumber(Number(record.aiConfidence) * 100, 0)}%`}
+                          {' · '}{formatEntryMode(record.aiEntryMode)}
+                        </Typography>
+                      </Stack>
+                    </TableCell>
+                    <TableCell align="right">{formatUSDT(record.marginAmount)}</TableCell>
+                    <TableCell align="right">{formatLeverage(record.leverage)}</TableCell>
+                    <TableCell align="right">{formatPrice(record.entryPrice ?? record.lastPrice)}</TableCell>
+                    <TableCell align="right">{formatNumber(record.riskRewardRatio, 2)}</TableCell>
+                    <TableCell>{formatStage(record.stage)}</TableCell>
+                    <TableCell sx={{ minWidth: 180, maxWidth: 320, overflowWrap: 'anywhere' }}>
+                      {Boolean(record.scanCoverage) && (
+                        <Typography variant="caption" component="div" color="text.secondary">
+                          {String(record.scanCoverage)}
+                        </Typography>
+                      )}
+                      {formatAutoTradeReason(record.reasonMessage ?? record.message ?? record.reasonCode)}
+                    </TableCell>
+                    <TableCell sx={{ maxWidth: 150, overflowWrap: 'anywhere' }}>
+                      {String(record.okxOrderId ?? '-')}
+                    </TableCell>
+                    <TableCell sx={{ minWidth: 260, maxWidth: 420, overflowWrap: 'anywhere' }}>
+                      {formatAutoTradeReason(record.selectionReason)}
+                    </TableCell>
                   </TableRow>
-                </TableHead>
-                <TableBody>
-                  {data.items.map((record) => {
-                    const position = positionFor(record, positions);
-                    return (
-                      <TableRow key={String(record.id)} hover>
-                        <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatTime(record.createdAt)}</TableCell>
-                        <TableCell>
-                          <StatusChip value={String(record.status ?? '-')} />
-                        </TableCell>
-                        <TableCell sx={{ fontWeight: 900 }}>{String(record.instId ?? '-')}</TableCell>
-                        <TableCell>
-                          {formatOpenDirection(
-                            record.action,
-                            record.posSide,
-                            record.aiDirection,
-                            record.trendDirection,
-                          )}
-                        </TableCell>
-                        <TableCell align="right">{formatNumber(record.candidateScore, 0)}</TableCell>
-                        <TableCell align="right">{formatNumber(record.finalRankScore, 0)}</TableCell>
-                        <TableCell>{formatSignalType(record.signalType)}</TableCell>
-                        <TableCell sx={{ minWidth: 160 }}>
-                          <Stack spacing={0.25}>
-                            <Typography variant="caption" fontWeight={800}>
-                              {formatDecisionSource(record.decisionSource)}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {record.aiConfidence == null ? '-' : `${formatNumber(Number(record.aiConfidence) * 100, 0)}%`}
-                              {' · '}{formatEntryMode(record.aiEntryMode)}
-                            </Typography>
-                          </Stack>
-                        </TableCell>
-                        <TableCell align="right">{formatUSDT(record.marginAmount)}</TableCell>
-                        <TableCell align="right">{formatLeverage(record.leverage)}</TableCell>
-                        <TableCell align="right">{formatPrice(record.entryPrice ?? record.lastPrice)}</TableCell>
-                        <TableCell align="right">{formatPrice(position?.avgPrice)}</TableCell>
-                        <TableCell align="right">{formatUSDT(position?.unrealizedPnl)}</TableCell>
-                        <TableCell align="right">{formatNumber(record.riskRewardRatio, 2)}</TableCell>
-                        <TableCell>{formatStage(record.stage)}</TableCell>
-                        <TableCell sx={{ minWidth: 180, maxWidth: 320, overflowWrap: 'anywhere' }}>
-                          {formatAutoTradeReason(record.reasonCode ?? record.reasonMessage ?? '-')}
-                        </TableCell>
-                        <TableCell sx={{ fontFamily: '"JetBrains Mono", monospace', maxWidth: 150, overflowWrap: 'anywhere' }}>
-                          {String(record.okxOrderId ?? '-')}
-                        </TableCell>
-                        <TableCell sx={{ minWidth: 260, maxWidth: 420, overflowWrap: 'anywhere' }}>
-                          {formatAutoTradeReason(record.selectionReason ?? record.reasonMessage ?? record.message ?? '-')}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                ))}
+              </TableBody>
+            </ScrollableTable>
           )}
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems="center" sx={{ p: 1.5 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} gap={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
             <Typography variant="caption" color="text.secondary" fontWeight={700}>
-              第 {page + 1} 页，每页 {pageSize} 条，状态筛选：{formatStatus(status || '全部')}
+              第 {page + 1} 页，每页 {pageSize} 条，状态筛选：{formatStatus(appliedFilters.status || '全部')}
             </Typography>
             <Stack direction="row" spacing={1}>
-              <Button size="small" variant="outlined" disabled={page <= 0 || refreshing} onClick={() => void load(page - 1, true)}>
+              <Button size="small" variant="outlined" disabled={page <= 0 || busy} onClick={() => void load(page - 1, true)}>
                 上一页
               </Button>
-              <Button size="small" variant="outlined" disabled={!hasNext || refreshing} onClick={() => void load(page + 1, true)}>
+              <Button size="small" variant="outlined" disabled={!hasNext || busy} onClick={() => void load(page + 1, true)}>
                 下一页
               </Button>
             </Stack>
           </Stack>
         </Box>
+        <Box sx={{ ...panel, p: 2 }}>
+          <Stack spacing={1.5}>
+            <Typography component="h2" variant="h6">当前账户持仓</Typography>
+            {positions ? <PositionSnapshotTable positions={openPositions(positions)} /> : (
+              loading ? <PanelState loading /> : <Alert severity="warning">当前持仓数据不可用。</Alert>
+            )}
+          </Stack>
+        </Box>
       </Stack>
     </PageShell>
-  );
-}
-
-function positionFor(record: AutoTradeRecord, positions: Record<string, unknown>[]) {
-  return positions.find((position) =>
-    String(position.instId ?? '') === String(record.instId ?? '')
-      && (!record.posSide || String(position.posSide ?? '') === String(record.posSide ?? '')),
   );
 }
 

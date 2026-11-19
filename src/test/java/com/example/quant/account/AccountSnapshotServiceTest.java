@@ -6,6 +6,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.quant.config.TradingMode;
+import com.example.quant.account.dto.AccountSummary;
 import com.example.quant.config.TradingProperties;
 import com.example.quant.crypto.OkxRestClient;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -41,7 +42,7 @@ class AccountSnapshotServiceTest {
 
             List<String> messages = appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
             assertThat(messages).anyMatch(message -> message.contains("OKX account balance parsed")
-                    && message.contains("availableSource=top.availEq")
+                    && message.contains("availableSource=details.USDT.availBal")
                     && message.contains("equity=100")
                     && message.contains("availableBalance=80"));
             assertThat(messages).noneMatch(message -> message.contains("rawResponse=")
@@ -87,6 +88,90 @@ class AccountSnapshotServiceTest {
             logger.detachAppender(appender);
             appender.stop();
         }
+    }
+
+    @Test
+    void rejectsMalformedBalanceInsteadOfReportingSuccessfulZeroBalances() throws Exception {
+        JsonNode response = new ObjectMapper().readTree("""
+                {"code":"0","data":[{"totalEq":"invalid","availEq":"80"}]}
+                """);
+        AccountSnapshotService service = new AccountSnapshotService(new FixedRestClient(response));
+        service.configureTrading(new TradingProperties(TradingMode.DEMO, true, 120, false));
+
+        assertThat(service.summary().mode()).isEqualTo("OKX_ERROR");
+        assertThat(service.verifyOkx().ok()).isFalse();
+    }
+
+    @Test
+    void preservesExplicitZeroWithPositiveCashBalance() throws Exception {
+        AccountSummary summary = summaryFor("""
+                {"totalEq":"100","availEq":"0","details":[
+                  {"ccy":"USDT","availEq":"0","availBal":"0","cashBal":"100","eq":"100"}
+                ]}
+                """);
+
+        assertThat(summary.mode()).isEqualTo("OKX_REAL");
+        assertThat(summary.equity()).isEqualByComparingTo("100");
+        assertThat(summary.availableBalance()).isZero();
+    }
+
+    @Test
+    void preservesUsdtAvailableEquityEvenWhenOtherAvailableAmountsArePositive() throws Exception {
+        AccountSummary summary = summaryFor("""
+                {"totalEq":"200","availEq":"150","details":[
+                  {"ccy":"USDT","availEq":"0","availBal":"90","eq":"100"}
+                ]}
+                """);
+
+        assertThat(summary.availableBalance()).isZero();
+    }
+
+    @Test
+    void zeroAccountAvailableEquityBlocksPositiveUsdtAvailableBalance() throws Exception {
+        AccountSummary summary = summaryFor("""
+                {"totalEq":"200","availEq":"0","details":[{"ccy":"USDT","availBal":"90"}]}
+                """);
+
+        assertThat(summary.availableBalance()).isZero();
+    }
+
+    @Test
+    void fallsBackOnlyToUsdtAvailableBalanceWhenItsAvailableEquityIsBlank() throws Exception {
+        AccountSummary summary = summaryFor("""
+                {"totalEq":"200","availEq":"150","details":[
+                  {"ccy":"BTC","availEq":"2"}, {"ccy":"USDT","availEq":"","availBal":"18.50"}
+                ]}
+                """);
+
+        assertThat(summary.availableBalance()).isEqualByComparingTo("18.50");
+    }
+
+    @Test
+    void reportsUnavailableWhenOnlyAggregateAndCashAmountsArePresent() throws Exception {
+        AccountSummary summary = summaryFor("""
+                {"totalEq":"200","availEq":"150","details":[
+                  {"ccy":"BTC","availEq":"2"}, {"ccy":"USDT","availEq":null,"cashBal":"90","eq":"100"}
+                ]}
+                """);
+
+        assertThat(summary.mode()).isEqualTo("OKX_REAL");
+        assertThat(summary.equity()).isEqualByComparingTo("200");
+        assertThat(summary.availableBalance()).isNull();
+    }
+
+    @Test
+    void rejectsMalformedUsdtAvailableEquityEvenWhenFallbackBalanceIsPositive() throws Exception {
+        AccountSummary summary = summaryFor("""
+                {"totalEq":"200","details":[{"ccy":"USDT","availEq":{},"availBal":"90"}]}
+                """);
+
+        assertThat(summary.mode()).isEqualTo("OKX_ERROR");
+        assertThat(summary.availableBalance()).isNull();
+    }
+
+    private static AccountSummary summaryFor(String account) throws Exception {
+        JsonNode response = new ObjectMapper().readTree("{\"code\":\"0\",\"data\":[" + account + "]}");
+        return new AccountSnapshotService(new FixedRestClient(response)).summary();
     }
 
     private static final class FixedRestClient extends OkxRestClient {

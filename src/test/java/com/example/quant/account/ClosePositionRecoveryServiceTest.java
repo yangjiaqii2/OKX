@@ -42,6 +42,69 @@ import org.mockito.ArgumentCaptor;
 class ClosePositionRecoveryServiceTest {
 
     @Test
+    void winningExitPriceCanStillRecordAnAccountLossAfterBothFeesAndFunding() {
+        var repository = mock(ClosePositionRecordRepository.class);
+        var trades = mock(TradeOrderRepository.class);
+        var pending = new PendingOrderService(120);
+        var budget = new AutoTradeBudgetService(new AgentProperties());
+        PendingOrder order = autoOrder(pending, budget);
+        var record = closeRecord(order);
+        record.setStatus("CLOSED");
+        record.setRealizedPnl(new BigDecimal("0.50"));
+        record.setFee(new BigDecimal("-0.40"));
+        record.setFundingFee(new BigDecimal("-0.10"));
+        when(repository.findByUserNameAndStatus("local-admin", "CLOSED")).thenReturn(List.of(record));
+        var ledger = mock(TradeFillLedgerService.class);
+        var entry = fillRow("entry", "1", "10", "0", "-0.40");
+        var exit = fillRow("exit", "2", "10", "0.50", "-0.40");
+        entry.setSide("sell");
+        exit.setSide("buy");
+        entry.setFeeCurrency("USDT");
+        exit.setFeeCurrency("USDT");
+        when(ledger.fillsForPendingOrder("local-admin", order.id().toString())).thenReturn(List.of(entry, exit));
+        var risk = mock(DailyRiskService.class);
+        when(risk.awaitsOutcome("local-admin", order.id().toString())).thenReturn(true);
+        var service = new ClosePositionRecoveryService(repository, trades, pending, budget,
+                new FixedPositionSnapshotService(List.of()));
+        service.configureDailyRisk(risk);
+        service.configureCloseLedger(mock(OkxCurrentOrderService.class), ledger);
+        Instant now = Instant.parse("2026-06-18T01:00:00Z");
+        service.runOnce(now);
+        verify(risk).recordReconciledOutcome("local-admin", order.id().toString(), new BigDecimal("-0.40"), now);
+    }
+
+    @Test
+    void closeRemainsPendingWhenPositionReappearsAfterEntryCancel() {
+        var repository = mock(ClosePositionRecordRepository.class);
+        var orders = new PendingOrderService(120);
+        var budget = new AutoTradeBudgetService(new AgentProperties());
+        PendingOrder order = autoOrder(orders, budget);
+        order.markSubmitted(Instant.EPOCH, "entry");
+        order.markCloseSubmitted("close", "TEST");
+        var record = closeRecord(order);
+        when(repository.findByUserNameAndStatus("local-admin", "CLOSE_SUBMITTED")).thenReturn(List.of(record));
+        var position = new PositionSummary(order.instId(), order.posSide(), "2",
+                BigDecimal.TEN, BigDecimal.ZERO, "OKX_DEMO");
+        var snapshots = mock(PositionSnapshotService.class);
+        when(snapshots.positions()).thenReturn(List.of(), List.of(position));
+        var gateway = mock(OkxOrderGateway.class);
+        var json = new ObjectMapper();
+        var live = json.createObjectNode();
+        live.putArray("data").addObject().put("state", "partially_filled");
+        var cancelled = json.createObjectNode().put("code", "0");
+        cancelled.putArray("data").addObject().put("sCode", "0").put("state", "canceled");
+        when(gateway.queryOrder(any())).thenReturn(live, cancelled);
+        when(gateway.cancelOrder(any())).thenReturn(cancelled);
+        var service = new ClosePositionRecoveryService(repository, mock(TradeOrderRepository.class),
+                orders, budget, snapshots, gateway);
+        assertThat(service.runOnce().closed()).isZero();
+        verify(gateway).cancelOrder(Map.of("instId", order.instId(), "clOrdId", order.clientOrderId()));
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSE_SUBMITTED);
+        assertThat(budget.reservation(order.budgetReservationId()).orElseThrow().status())
+                .isEqualTo(BudgetReservationStatus.USED);
+    }
+
+    @Test
     void reconcilesCloseOrderAndFillBeforeMarkingPositionClosed() {
         ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
         TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
@@ -90,7 +153,7 @@ class ClosePositionRecoveryServiceTest {
     }
 
     @Test
-    void closesPostEntryOrderAndReleasesBudgetWhenPositionDisappears() {
+    void holdsBudgetUntilNaturalCloseLedgerIsComplete() {
         ClosePositionRecordRepository closeRepository = mock(ClosePositionRecordRepository.class);
         TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
         PendingOrderService pendingOrderService = new PendingOrderService(120);
@@ -119,7 +182,7 @@ class ClosePositionRecoveryServiceTest {
         assertThat(budgetService.reservation(order.budgetReservationId()))
                 .get()
                 .extracting(BudgetReservation::status)
-                .isEqualTo(BudgetReservationStatus.RELEASED);
+                .isEqualTo(BudgetReservationStatus.USED);
     }
 
     @Test
@@ -223,7 +286,7 @@ class ClosePositionRecoveryServiceTest {
                 .thenReturn(List.of());
         ClosePositionRecoveryService service = new ClosePositionRecoveryService(
                 closeRepository, tradeOrderRepository, pendingOrderService, budgetService,
-                new FixedPositionSnapshotService(List.of()));
+                new FixedPositionSnapshotService(List.of()), new CapturingOkxGateway());
 
         ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(
                 Instant.parse("2026-06-18T00:11:00Z"));
@@ -270,7 +333,7 @@ class ClosePositionRecoveryServiceTest {
                 .thenReturn(List.of());
         ClosePositionRecoveryService service = new ClosePositionRecoveryService(
                 closeRepository, tradeOrderRepository, pendingOrderService, budgetService,
-                new FixedPositionSnapshotService(List.of()));
+                new FixedPositionSnapshotService(List.of()), new CapturingOkxGateway());
 
         ClosePositionRecoveryService.CloseRecoveryResult result = service.runOnce(
                 Instant.parse("2026-06-18T00:11:00Z"));
@@ -454,9 +517,9 @@ class ClosePositionRecoveryServiceTest {
         TradeOrderRepository tradeOrderRepository = mock(TradeOrderRepository.class);
         PendingOrderService pendingOrderService = new PendingOrderService(120);
         AutoTradeBudgetService budgetService = new AutoTradeBudgetService(new AgentProperties());
-        ClosePositionRecordEntity userARecord = closeRecord(autoOrder(pendingOrderService, budgetService));
+        ClosePositionRecordEntity userARecord = AuthUserContext.callAs("userA", () -> closeRecord(autoOrder(pendingOrderService, budgetService)));
         userARecord.setUserName("userA");
-        ClosePositionRecordEntity userBRecord = closeRecord(autoOrder(pendingOrderService, budgetService));
+        ClosePositionRecordEntity userBRecord = AuthUserContext.callAs("userB", () -> closeRecord(autoOrder(pendingOrderService, budgetService)));
         userBRecord.setUserName("userB");
         when(closeRepository.findByUserNameAndStatus("userA", "CLOSE_SUBMITTED")).thenReturn(List.of(userARecord));
         when(closeRepository.findByUserNameAndStatus("userB", "CLOSE_SUBMITTED")).thenReturn(List.of(userBRecord));
@@ -680,6 +743,13 @@ class ClosePositionRecoveryServiceTest {
 
     private static class CapturingOkxGateway implements OkxOrderGateway {
         private final List<Map<String, String>> cancelAlgoPayloads = new ArrayList<>();
+
+        @Override
+        public JsonNode queryOrder(Map<String, String> payload) {
+            var result = new ObjectMapper().createObjectNode();
+            result.putArray("data").addObject().put("state", "filled");
+            return result;
+        }
 
         @Override
         public JsonNode placeOrder(Map<String, Object> payload) {

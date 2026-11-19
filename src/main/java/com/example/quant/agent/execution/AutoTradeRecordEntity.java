@@ -85,11 +85,23 @@ public class AutoTradeRecordEntity {
     @Column(name = "scan_id", length = 64)
     private String scanId;
 
+    @Column(name = "scan_coverage", length = 255)
+    private String scanCoverage;
+
+    public String getScanCoverage() { return scanCoverage; }
+    public void setScanCoverage(String scanCoverage) { this.scanCoverage = scanCoverage; }
+
     @Column(name = "final_rank_score", precision = 18, scale = 8)
     private BigDecimal finalRankScore;
 
     @Column(name = "signal_type", length = 64)
     private String signalType;
+
+    @Column(name = "scan_action", length = 32)
+    private String scanAction;
+
+    public String getScanAction() { return scanAction; }
+    public void setScanAction(String scanAction) { this.scanAction = scanAction; }
 
     @Column(name = "risk_mode", length = 32)
     private String riskMode;
@@ -233,6 +245,23 @@ public class AutoTradeRecordEntity {
 
     public String getRiskMode() {
         return riskMode;
+    }
+
+    // Earlier scan summaries retained the confirmation failure only in the reason text.
+    String resolveStage(String recordedStage) {
+        if (!"SKIPPED".equals(status) || (recordedStage != null && !"SCAN".equals(recordedStage))) {
+            return recordedStage;
+        }
+        String reason = reasonMessage == null || reasonMessage.isBlank() ? message : reasonMessage;
+        if (reason != null) {
+            for (String part : reason.split(":")) {
+                String code = part.trim();
+                if ("CANONICAL_PLAN_REJECTED".equals(code) || "NET_RISK_REWARD_AFTER_COSTS_TOO_LOW".equals(code)) {
+                    return "CONFIRM";
+                }
+            }
+        }
+        return recordedStage;
     }
 
     public String getStage() {

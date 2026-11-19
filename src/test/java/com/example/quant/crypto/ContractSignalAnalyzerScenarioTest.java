@@ -41,6 +41,54 @@ class ContractSignalAnalyzerScenarioTest {
     }
 
     @Test
+    void waitsForReclaimOnClosedAkeBarsWithoutUsingFutureCandles() throws Exception {
+        List<ContractCandle> bars = new ArrayList<>();
+        try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(
+                getClass().getResourceAsStream("/ake-20261119-5m.csv"), java.nio.charset.StandardCharsets.UTF_8))) {
+            for (String line : reader.lines().skip(1).toList()) {
+                String[] v = line.split(",");
+                bars.add(new ContractCandle(Instant.ofEpochMilli(Long.parseLong(v[0])), new BigDecimal(v[1]),
+                        new BigDecimal(v[2]), new BigDecimal(v[3]), new BigDecimal(v[4]), new BigDecimal(v[5])));
+            }
+        }
+        for (int end = 260; end <= 262; end++) {
+            var fast = bars.subList(end - 260, end);
+            var slow = com.example.quant.crypto.util.CandleAggregator.aggregate20m(fast);
+            var signal = analyzer.analyze("AKE-USDT-SWAP", fast.get(259).close(), new BigDecimal("0.01006"),
+                    new BigDecimal("90000000"), BigDecimal.ZERO, BigDecimal.TEN, BigDecimal.TEN,
+                    new ContractKlineSet(slow, fast, List.of(), List.of(), List.of()));
+            assertThat(signal.klineAnalysis().trend20m()).isEqualTo("UP");
+            assertThat(signal.signalType()).isEqualTo(ContractSignalType.WAIT_RECLAIM);
+            assertThat(signal.action()).isEqualTo("WAIT");
+        }
+        ContractCandle last = bars.get(261);
+        BigDecimal recovered = new BigDecimal("0.01070");
+        bars.add(new ContractCandle(last.timestamp().plusSeconds(300), last.close(), recovered, last.close(),
+                recovered, last.volume()));
+        var signal = analyzer.analyze("AKE-USDT-SWAP", recovered, new BigDecimal("0.01020"),
+                new BigDecimal("90000000"), BigDecimal.ZERO, BigDecimal.TEN, BigDecimal.TEN,
+                new ContractKlineSet(com.example.quant.crypto.util.CandleAggregator.aggregate20m(bars), bars,
+                        List.of(), List.of(), List.of()));
+        assertThat(signal.signalType()).isEqualTo(ContractSignalType.STRONG_LONG);
+    }
+
+    @Test
+    void smallTwoBarPullbackInsideFiveMinuteAtrPreservesLongSignal() {
+        List<ContractCandle> fast = new ArrayList<>(pullbackReady5m(true));
+        Instant peakTime = Instant.parse("2026-11-19T07:45:00Z");
+        for (int i = 0; i < 3; i++) {
+            BigDecimal price = new BigDecimal("105").subtract(new BigDecimal("0.01").multiply(BigDecimal.valueOf(i)));
+            fast.add(new ContractCandle(peakTime.plusSeconds(i * 300L), price, price.add(new BigDecimal("0.02")),
+                    price.subtract(new BigDecimal("0.02")), price, BigDecimal.TEN));
+        }
+        var slow = upTrend20m(new BigDecimal("100"), new BigDecimal("0.085"), false);
+        var signal = analyzer.analyze("TEST-USDT-SWAP", new BigDecimal("105"), new BigDecimal("100"),
+                new BigDecimal("900000000"), BigDecimal.ZERO, BigDecimal.TEN, BigDecimal.TEN,
+                new ContractKlineSet(slow, fast, slow, slow, List.of()));
+        assertThat(signal.signalType()).isEqualTo(ContractSignalType.STRONG_LONG);
+    }
+
+    @Test
     void classifiesWarmButValidTrendAsPullbackLongOrWaitConfirm() {
         ContractSignal signal = analyzer.analyze(
                 "WARM-USDT-SWAP",

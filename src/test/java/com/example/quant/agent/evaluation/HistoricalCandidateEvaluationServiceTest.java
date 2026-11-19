@@ -38,6 +38,7 @@ class HistoricalCandidateEvaluationServiceTest {
         assertThat(report.candidateCount()).isEqualTo(1);
         assertThat(report.horizons()).containsKey(60);
         HistoricalCandidateEvaluationService.HorizonEvaluation hour = report.horizons().get(60);
+        assertThat(hour.scanActionBuckets()).containsOnlyKeys("UNKNOWN");
         assertThat(hour.completeOutcomeCount()).isEqualTo(1);
         assertThat(hour.missingOutcomeCount()).isZero();
         assertThat(hour.rankBuckets().get("RANK_1_5").sampleCount()).isEqualTo(1);
@@ -56,6 +57,7 @@ class HistoricalCandidateEvaluationServiceTest {
         AgentContractCandidateScoreRepository snapshots = mock(AgentContractCandidateScoreRepository.class);
         CandidateFutureOutcomeRepository outcomes = mock(CandidateFutureOutcomeRepository.class);
         AgentContractCandidateScoreEntity snapshot = snapshot(3L, 20, "V2_WAVE_4_2", "0.50");
+        snapshot.setScanAction("NO_TRADE");
         snapshot.setCapitalFlowScore(new BigDecimal("20"));
         snapshot.setDerivativesScore(null);
         CandidateFutureOutcomeEntity outcome = outcome(3L, 60, "0.01", "0.01");
@@ -67,6 +69,7 @@ class HistoricalCandidateEvaluationServiceTest {
                 new HistoricalCandidateEvaluationService(snapshots, outcomes)
                         .evaluate("V2_WAVE_4_2", 1).horizons().get(60);
 
+        assertThat(hour.scanActionBuckets()).containsOnlyKeys("NO_TRADE");
         assertThat(hour.dimensionBuckets()).containsKey("CAPITAL_FLOW:20_40");
         assertThat(hour.dimensionBuckets()).doesNotContainKey("CAPITAL_FLOW:0_20");
         assertThat(hour.dimensionBuckets().keySet()).noneMatch(key -> key.startsWith("DERIVATIVES:"));
@@ -114,8 +117,7 @@ class HistoricalCandidateEvaluationServiceTest {
         second.setScanRunId(77L);
         when(snapshots.findByScoringVersionOrderBySnapshotRankAsc("V2_WAVE_4_2"))
                 .thenReturn(List.of(first, second));
-        when(runs.findById(77L)).thenReturn(java.util.Optional.of(run));
-        when(snapshots.countByScanRunId(77L)).thenReturn(2L);
+        when(runs.findCompleteForVersion("V2_WAVE_4_2")).thenReturn(List.of(run));
 
         HistoricalCandidateEvaluationService.EvaluationReport report =
                 new HistoricalCandidateEvaluationService(snapshots, outcomes, runs)

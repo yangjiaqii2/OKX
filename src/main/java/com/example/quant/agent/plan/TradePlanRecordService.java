@@ -161,7 +161,7 @@ public class TradePlanRecordService {
                 agentProperties.takeProfit().tp3Ratio(),
                 "trade-plan-v1");
         return intent.exitLegs().stream()
-                .map(exit -> takeProfit(plan, Integer.parseInt(exit.semanticId().substring(2)),
+                .map(exit -> takeProfit(plan, "TP_FINAL".equals(exit.semanticId()) ? 2 : Integer.parseInt(exit.semanticId().substring(2)),
                         exit.intendedTargetPrice(), exit.intendedFraction().movePointRight(2), exit.reason()))
                 .toList();
     }

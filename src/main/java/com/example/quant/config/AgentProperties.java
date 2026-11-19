@@ -291,7 +291,7 @@ public class AgentProperties {
 
     public static class AutoTrade {
         private boolean enabled = true;
-        private int minScore = 65;
+        private int minScore = 60;
         private BigDecimal minRiskReward = BigDecimal.valueOf(2);
         private boolean requireBacktestPass = false;
         private int noRiskMinScore = 70;
@@ -365,7 +365,9 @@ public class AgentProperties {
     }
 
     public static class Score {
-        private int minTotalScore = 65;
+        public static final int DEFAULT_MIN_TOTAL_SCORE = 60;
+
+        private int minTotalScore = DEFAULT_MIN_TOTAL_SCORE;
         private int minTrendScore = 15;
         private int minVolumeScore = 15;
         private int minLiquidityScore = 10;
@@ -433,7 +435,7 @@ public class AgentProperties {
     public static class Market {
         private BigDecimal minVolume24hUsdt = BigDecimal.valueOf(2_000_000);
         private BigDecimal maxSpreadBps = BigDecimal.valueOf(8);
-        private BigDecimal minDepthUsdt = BigDecimal.valueOf(20_000);
+        private BigDecimal minDepthUsdt = BigDecimal.valueOf(5_000);
         private BigDecimal maxDepthUsageRate = new BigDecimal("0.20");
         private BigDecimal maxFundingAbs = new BigDecimal("0.0015");
         private BigDecimal maxWickRatio = new BigDecimal("0.55");
@@ -694,7 +696,7 @@ public class AgentProperties {
     public static class Ranking {
         private int maxAutoTradeFallbackRank = 5;
         private BigDecimal minRiskReward = BigDecimal.valueOf(1.5);
-        private int minFinalRankScore = 65;
+        private int minFinalRankScore = 60;
 
         public int maxAutoTradeFallbackRank() {
             return maxAutoTradeFallbackRank;
@@ -968,10 +970,10 @@ public class AgentProperties {
     public static class PositionQuality {
         private boolean enabled = true;
         private Map<Integer, Integer> minScoreByOpenPositions = new LinkedHashMap<>(
-                Map.of(0, 65, 1, 65, 2, 65)
+                Map.of(0, 60, 1, 60, 2, 60)
         );
         private Map<Integer, Integer> minFinalRankScoreByOpenPositions = new LinkedHashMap<>(
-                Map.of(0, 65, 1, 65, 2, 65)
+                Map.of(0, 60, 1, 60, 2, 60)
         );
         private Map<String, Integer> maxPositionsByMarketRegime = new LinkedHashMap<>(
                 Map.of("BULLISH", 3, "BEARISH", 3, "CHOPPY", 2, "HIGH_VOLATILITY", 1, "RISK_OFF", 0)
@@ -1011,12 +1013,12 @@ public class AgentProperties {
 
         public int minScoreForOpenPositions(int openPositions) {
             return minScoreByOpenPositions.getOrDefault(openPositions,
-                    minScoreByOpenPositions.getOrDefault(2, 65));
+                    minScoreByOpenPositions.getOrDefault(2, 60));
         }
 
         public int minFinalRankScoreForOpenPositions(int openPositions) {
             return minFinalRankScoreByOpenPositions.getOrDefault(openPositions,
-                    minFinalRankScoreByOpenPositions.getOrDefault(2, 65));
+                    minFinalRankScoreByOpenPositions.getOrDefault(2, 60));
         }
 
         public int maxPositionsForRegime(String regime) {
@@ -1609,6 +1611,10 @@ public class AgentProperties {
     }
 
     public static class Lifecycle {
+        private boolean netProfitExitEnabled;
+        public boolean isNetProfitExitEnabled() { return netProfitExitEnabled; }
+        public void setNetProfitExitEnabled(boolean enabled) { netProfitExitEnabled = enabled; }
+
         private int entryTimeoutMinutes = 10;
         private int sidewaysPositionHours = 3;
         private BigDecimal sidewaysPnlRangePct = BigDecimal.ONE;
@@ -1845,23 +1851,10 @@ public class AgentProperties {
         private Breakout breakout = new Breakout();
         /** 深度分析合约数量上限；null 表示 {@code topCandidateLimit * 3}。 */
         private Integer deepAnalysisLimit;
-        /** 外部 Provider 并发上限（预留；深度分析默认串行）。 */
+        /** 并行分析合约数量。 */
         private int deepAnalysisConcurrency = 4;
-        /**
-         * {@code deepAnalysisLimit} 中预留给轮换覆盖的名额。
-         *
-         * <p>这些名额<b>不是新增</b>的分析量，而是从成交额头部划出来的，
-         * 因此外部请求预算、并发和 deadline 完全不变。
-         *
-         * <p>默认 6 = 默认 {@code deepAnalysisLimit}（30）的 20%。选这个起始值的依据只有两条，
-         * 都是确定性的、可验证的，<b>不代表它是最优值</b>：<ul>
-         *   <li>成交额头部仍保留 24 个名额，覆盖绝大多数高流动性标的；</li>
-         *   <li>剩余合格候选的完整覆盖延迟 = {@code ceil((passed - 24) / 6)} 轮。
-         *       例如 60 个合格候选 → 6 轮；120 个 → 16 轮。</li>
-         * </ul>
-         * 设为 0 可完整复现改造前的纯成交额截断行为。
-         */
-        private int deepAnalysisRotationQuota = 6;
+        /** 每轮从深度分析总名额中分配给最久未分析合约的数量。 */
+        private int deepAnalysisRotationQuota = 20;
 
         public Integer deepAnalysisLimit() {
             return deepAnalysisLimit;

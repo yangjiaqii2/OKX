@@ -90,6 +90,10 @@ class OkxContractScannerDeepAnalysisCoverageTest {
             analysed.addAll(fixture.client.klineRequests);
         }
 
+        assertThat(fixture.scanner.lastDiagnostics().funnel().stages())
+                .containsEntry("analyzed_last_30m", PASSED_COUNT)
+                .containsEntry("rotation_targets", ROTATION_QUOTA)
+                .containsEntry("analyzed_signals", DEEP_LIMIT);
         for (int i = 0; i < PASSED_COUNT; i++) {
             assertThat(analysed).contains("SYM" + i + "-USDT-SWAP");
         }

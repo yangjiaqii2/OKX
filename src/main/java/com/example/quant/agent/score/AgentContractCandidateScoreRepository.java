@@ -7,5 +7,4 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface AgentContractCandidateScoreRepository extends JpaRepository<AgentContractCandidateScoreEntity, Long> {
     List<AgentContractCandidateScoreEntity> findByScoringVersionOrderBySnapshotRankAsc(String scoringVersion);
     List<AgentContractCandidateScoreEntity> findByIdIn(Collection<Long> ids);
-    long countByScanRunId(Long scanRunId);
 }

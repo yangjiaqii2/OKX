@@ -25,6 +25,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class PositionCloseService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PositionCloseService.class);
     private static final int SAFETY_CLOSE_MAX_ATTEMPTS = 3;
     private static final long SAFETY_CLOSE_RETRY_BACKOFF_SECONDS = 5;
     private static final List<OrderStatus> AUTO_CLOSE_BINDING_STATUSES = List.of(
@@ -97,6 +98,7 @@ public class PositionCloseService {
         String closeClOrdId = closeClientOrderId();
         ClosePositionRecordEntity record = createCloseIntent(position, closePosSide, closeMarginMode, closeClOrdId);
         Optional<PendingOrder> boundOrder = bindAutoTradeReference(record, position);
+        boundOrder.ifPresent(okxTradeAdapter::settleEntryBeforeClose);
         boundOrder.map(PendingOrder::tradePlanId).map(UUID::toString).ifPresent(record::setTradePlanId);
         save(record);
         try {
@@ -104,7 +106,9 @@ public class PositionCloseService {
                     position.instId(), position.posSide(), closeMarginMode, closeClOrdId,
                     TradingOperationContext.of(TradingOperationType.CLOSE_POSITION,
                             record.getUserName(), record.getPendingOrderId(),
-                            boundOrder.map(PendingOrder::tradePlanId).map(UUID::toString).orElse(null)));
+                            boundOrder.map(PendingOrder::tradePlanId).map(UUID::toString).orElse(null))
+                            .withDirection("net".equalsIgnoreCase(position.posSide())
+                                    ? (decimal(position.size()).signum() < 0 ? "short" : "long") : position.posSide()));
             record.setCloseOrderId(result.externalOrderId());
             record.setStatus("CLOSE_SUBMITTED");
             record.setRequestSent(true);
@@ -139,7 +143,7 @@ public class PositionCloseService {
      * reconciliation flow instead of submitting a second close order.
      */
     public OrderExecutionResult closePositionForSafety(PendingOrder order, PositionSummary position, String reason) {
-        if (order == null || position == null || decimal(position.size()).signum() <= 0) {
+        if (order == null || position == null || decimal(position.size()).signum() == 0) {
             throw new IllegalArgumentException("安全减仓要求已有正向持仓");
         }
         String username = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
@@ -181,6 +185,12 @@ public class PositionCloseService {
             record.setRetryCount(1);
             record.setLastAttemptAt(attemptAt);
         }
+        try {
+            okxTradeAdapter.settleEntryBeforeClose(order);
+        } catch (RuntimeException entryFailure) {
+            // An unresolved entry must not prevent emergency reduction of existing exposure.
+            log.warn("Emergency close requires entry reconciliation pendingOrderId={}", order.id(), entryFailure);
+        }
         save(record);
         try {
             OrderExecutionResult result = okxTradeAdapter.closePosition(
@@ -189,7 +199,7 @@ public class PositionCloseService {
                     closeClOrdId,
                     TradingOperationContext.of(TradingOperationType.CLOSE_POSITION,
                             username, order.id().toString(),
-                            order.tradePlanId() == null ? null : order.tradePlanId().toString()));
+                            order.tradePlanId() == null ? null : order.tradePlanId().toString()).withDirection(order.posSide()));
             record.setCloseOrderId(result.externalOrderId());
             record.setStatus("CLOSE_SUBMITTED");
             record.setRequestSent(true);
@@ -262,7 +272,7 @@ public class PositionCloseService {
         record.setPosSide(posSide);
         record.setMarginMode(marginMode);
         record.setCloseClOrdId(closeClOrdId);
-        record.setSize(decimal(position.size()));
+        record.setSize(decimal(position.size()).abs());
         record.setAvgPx(position.avgPrice());
         record.setStatus("CLOSE_SUBMITTING");
         record.setSource("MANUAL");
@@ -284,7 +294,7 @@ public class PositionCloseService {
         record.setPosSide(position.posSide());
         record.setMarginMode(hasText(position.marginMode()) ? position.marginMode() : order.tdMode());
         record.setCloseClOrdId(closeClOrdId);
-        record.setSize(decimal(position.size()));
+        record.setSize(decimal(position.size()).abs());
         record.setAvgPx(position.avgPrice());
         record.setStatus("CLOSE_SUBMITTING");
         record.setSource("SAFETY");

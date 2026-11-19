@@ -1,8 +1,11 @@
-import { Alert, Box, Card, CardContent, Chip, CircularProgress, Stack, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
+import { Alert, Box, Card, CardContent, Chip, Stack, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { useNotify } from 'react-admin';
+import { colors } from '../designTokens';
+import { hasAccountBalance, openPositions } from '../displayData';
+import { PanelState } from '../components/PanelState';
 import { quantApi } from '../api/quantApi';
-import { compactGlass, glassCard } from '../components/glass';
+import { insetPanel, panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PositionSnapshotTable } from '../components/PositionSnapshotTable';
 import { RiskCommandPanel } from '../components/RiskCommandPanel';
@@ -50,16 +53,17 @@ export function Dashboard() {
       let positionsError = '';
       try {
         const positionData = await quantApi.positions();
-        positions = Array.isArray(positionData) ? (positionData as Record<string, unknown>[]) : [];
+        if (!Array.isArray(positionData)) throw new Error('持仓响应格式异常');
+        positions = openPositions(positionData as Record<string, unknown>[]);
       } catch (error) {
         positionsError = error instanceof Error ? error.message : '持仓接口调用失败';
       }
       const contractsError = contractResult.status === 'rejected'
         ? (contractResult.reason instanceof Error ? contractResult.reason.message : '合约机会池加载失败')
-        : '';
+        : Array.isArray(contractResult.value) ? '' : '合约机会响应格式异常';
       const ordersError = orderResult.status === 'rejected'
         ? (orderResult.reason instanceof Error ? orderResult.reason.message : '待确认订单加载失败')
-        : '';
+        : Array.isArray(orderResult.value) ? '' : '待确认订单响应格式异常';
       const profitError = profitResult.status === 'rejected'
         ? (profitResult.reason instanceof Error ? profitResult.reason.message : '自动交易收益加载失败')
         : '';
@@ -102,20 +106,24 @@ export function Dashboard() {
       <PageShell title="量化交易终端">
         <Stack spacing={2}>
           <PageHeader title="量化交易终端" subtitle="正在同步 OKX 账户、风险状态、候选合约和待确认订单。" />
-          <Box sx={{ ...glassCard, py: 8, display: 'grid', placeItems: 'center', borderRadius: 1 }}>
-            <CircularProgress size={28} />
-          </Box>
+          <PanelState loading sx={panel} />
         </Stack>
       </PageShell>
     );
   }
 
-  const accountMode = String(state.account?.mode ?? 'OKX_UNBOUND');
-  const pendingCount = state.orders.length;
+  const accountMode = String(state.account?.mode ?? 'UNKNOWN');
+  const balanceAvailable = hasAccountBalance(accountMode);
+  const availableBalance = state.account?.availableBalance;
+  const positionCount = state.positionsError || accountMode === 'OKX_UNBOUND' ? null : state.positions.length;
+  const pendingCount = state.ordersError ? null : state.orders.length;
   const topContracts = state.contracts.slice(0, 4) as Record<string, unknown>[];
   const fxRateAvailable = Number.isFinite(Number(state.fxRate?.rate)) && Number(state.fxRate?.rate) > 0;
   const formatAsset = (value: unknown) => formatAssetMoney(value, assetCurrency, state.fxRate);
-  const profitQuality = profitQualityLabel(String(state.profit?.dataQuality ?? 'ESTIMATED_UNREALIZED_ONLY'));
+  const profitQuality = profitQualityLabel(String(state.profit?.dataQuality ?? 'UNKNOWN'));
+  const unrealizedPnl = state.profit?.unrealizedPnlUsdt;
+  const realizedPnl = state.profit?.realizedPnlUsdt;
+  const netPnl = state.profit?.totalNetPnlUsdt;
   
   return (
     <PageShell title="量化交易终端">
@@ -166,42 +174,42 @@ export function Dashboard() {
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(6, minmax(0, 1fr))' },
+            gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', xl: 'repeat(6, minmax(0, 1fr))' },
             gap: 1.5,
           }}
         >
           <TradeMetricCard
             label="账户总权益"
-            value={formatAsset(state.account?.equity)}
+            value={balanceAvailable ? formatAsset(state.account?.equity) : '不可用'}
             helper={formatStatus(accountMode)}
-            accent={accountMode === 'OKX_REAL' ? 'success' : 'warning'}
+            accent={balanceAvailable ? 'success' : 'warning'}
           />
           <TradeMetricCard
             label="可用余额"
-            value={formatAsset(state.account?.availableBalance)}
+            value={balanceAvailable && availableBalance != null ? formatAsset(availableBalance) : '不可用'}
             helper="OKX账户数据源"
           />
           <TradeMetricCard
             label="今日已实现 PnL"
-            value={formatAsset(state.profit?.todayRealizedPnlUsdt)}
+            value={state.profit?.todayRealizedPnlUsdt == null ? '不可用' : formatAsset(state.profit.todayRealizedPnlUsdt)}
             helper={profitQuality}
             accent={state.profit?.todayRealizedPnlUsdt == null ? 'warning' : Number(state.profit.todayRealizedPnlUsdt) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
             label="未实现 PnL"
-            value={formatAsset(state.profit?.unrealizedPnlUsdt)}
-            helper={profitQuality}
-            accent={Number(state.profit?.unrealizedPnlUsdt ?? 0) >= 0 ? 'success' : 'error'}
+            value={unrealizedPnl == null ? '不可用' : formatAsset(unrealizedPnl)}
+            helper={unrealizedPnl == null ? '持仓或仓位归属数据不可用' : '已归属策略仓位'}
+            accent={unrealizedPnl == null ? 'warning' : Number(unrealizedPnl) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
-            label="累计已实现 PnL"
-            value={formatAsset(state.profit?.realizedPnlUsdt)}
-            helper={profitQuality.includes('真实') ? 'OKX成交净收益' : '估算口径'}
-            accent={state.profit?.realizedPnlUsdt == null ? 'warning' : Number(state.profit.realizedPnlUsdt) >= 0 ? 'success' : 'error'}
+            label="已实现净收益"
+            value={realizedPnl == null ? '不可用' : formatAsset(realizedPnl)}
+            helper={profitQuality}
+            accent={realizedPnl == null ? 'warning' : Number(realizedPnl) >= 0 ? 'success' : 'error'}
           />
           <TradeMetricCard
             label="当前持仓"
-            value={state.positions.length}
+            value={positionCount ?? '不可用'}
             helper="OKX仓位快照"
             accent={state.positions.length > 0 ? 'warning' : 'info'}
           />
@@ -213,7 +221,7 @@ export function Dashboard() {
           </Alert>
         ) : null}
 
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' }, gap: 1.5 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(3, minmax(0, 1fr))' }, gap: 1.5 }}>
           <TradeMetricCard label="已实现毛收益" value={formatAsset(state.profit?.grossRealizedPnlUsdt)} helper={profitQuality} />
           <TradeMetricCard label="交易手续费" value={formatAsset(state.profit?.tradingFeesUsdt)} helper="来自可追溯 OKX fills" />
           <TradeMetricCard label="资金费" value={formatAsset(state.profit?.fundingUsdt)} helper="来自已管理合约的 OKX bills" />
@@ -236,36 +244,36 @@ export function Dashboard() {
             <Box
               sx={{
                 display: 'grid',
-                gridTemplateColumns: { xs: '1fr', md: 'repeat(4, minmax(0, 1fr))' },
+                gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' },
                 gap: 2,
               }}
             >
               <TradeMetricCard
                 label="自动交易净 PnL"
-                value={formatAsset(state.profit?.totalNetPnlUsdt)}
+                value={netPnl == null ? '不可用' : formatAsset(netPnl)}
                 helper={profitQuality}
-                accent={state.profit?.totalNetPnlUsdt == null ? 'warning' : Number(state.profit.totalNetPnlUsdt) >= 0 ? 'success' : 'error'}
+                accent={netPnl == null ? 'warning' : Number(netPnl) >= 0 ? 'success' : 'error'}
               />
               <TradeMetricCard
                 label="预算收益率"
                 value={formatPercent(state.profit?.budgetRoiPct)}
-                helper={`已提交 ${formatAsset(state.profit?.submittedMarginUsdt)}`}
+                helper={`预算 ${formatAsset(state.profit?.totalBudgetUsdt)} · 累计已提交保证金 ${formatAsset(state.profit?.submittedMarginUsdt)}`}
               />
               <TradeMetricCard
                 label="合约机会"
-                value={state.contracts.length}
+                value={state.contractsError ? '不可用' : state.contracts.length}
                 helper="按成交量与趋势筛选"
                 accent="info"
               />
               <TradeMetricCard
                 label="待确认订单"
-                value={pendingCount}
+                value={pendingCount ?? '不可用'}
                 helper="确认后按当前交易模式提交OKX"
-                accent={pendingCount > 0 ? 'warning' : 'success'}
+                accent={pendingCount === 0 ? 'success' : 'warning'}
               />
             </Box>
 
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: '1.2fr 0.8fr' }, gap: 2 }}>
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', xl: 'minmax(0, 1.2fr) minmax(0, 0.8fr)' }, gap: 2 }}>
               <Card>
                 <CardContent>
                   <Stack spacing={1.5}>
@@ -286,7 +294,9 @@ export function Dashboard() {
                 <CardContent>
                   <Stack spacing={1.5}>
                     <Typography variant="h6">待处理动作</Typography>
-                    {pendingCount === 0 ? (
+                    {pendingCount == null ? (
+                      <Typography color="text.secondary" variant="body2">待确认订单不可用。</Typography>
+                    ) : pendingCount === 0 ? (
                       <Typography color="text.secondary" variant="body2">
                         当前没有待确认订单。
                       </Typography>
@@ -295,12 +305,12 @@ export function Dashboard() {
                         <Box
                           key={String(order.id)}
                           sx={{
-                            ...compactGlass,
-                            p: 1.25,
+                            ...insetPanel,
+                            p: 1.5,
                             borderLeft: '3px solid',
                             borderColor: 'warning.main',
                             borderRadius: 1,
-                            bgcolor: 'rgba(245, 158, 11, 0.08)',
+                            bgcolor: colors.warningSoft,
                           }}
                         >
                           <Typography fontWeight={800}>{String(order.instId ?? '-')}</Typography>
@@ -322,33 +332,32 @@ export function Dashboard() {
             <Stack spacing={1.5}>
               <Stack direction="row" alignItems="center" justifyContent="space-between">
                 <Typography variant="h6">OKX机会池</Typography>
-                <Chip size="small" label={`合约候选 ${state.contracts.length}`} variant="outlined" />
+                <Chip size="small" label={state.contractsError ? '候选不可用' : `合约候选 ${state.contracts.length}`} variant="outlined" />
               </Stack>
-              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4, minmax(0, 1fr))' }, gap: 1 }}>
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, gap: 1 }}>
                 {topContracts.length === 0 ? (
                   <Typography color="text.secondary" variant="body2">
-                    暂无合约机会。可以在 OKX合约 页面刷新扫描。
+                    {state.contractsError ? '合约机会数据不可用。' : '暂无合约机会。可以在 OKX合约 页面刷新扫描。'}
                   </Typography>
                 ) : (
                   topContracts.map((contract) => (
                     <Box
                       key={String(contract.instId)}
                       sx={{
-                        ...compactGlass,
-                        p: 1.25,
+                        ...insetPanel,
+                        p: 1.5,
                         borderRadius: 1,
-                        bgcolor: 'rgba(15, 23, 42, 0.62)',
+                        bgcolor: colors.subtle,
                       }}
                     >
                       <Typography fontWeight={900}>{String(contract.instId ?? '-')}</Typography>
-                      <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', mt: 0.5 }}>
+                      <Typography sx={{ mt: 0.5 }}>
                         {formatPrice(contract.lastPrice)}
                       </Typography>
                       <Typography
                         variant="caption"
                         sx={{
                           color: Number(contract.changePercent24h) >= 0 ? 'success.main' : 'error.main',
-                          fontFamily: '"JetBrains Mono", monospace',
                         }}
                       >
                         {formatPercent(contract.changePercent24h)} · 评分 {formatNumber(contract.score, 0)} · {formatLeverage(contract.suggestedLeverage)}
@@ -387,7 +396,12 @@ function profitQualityLabel(value: string) {
     case 'OKX_FILLS_NET_PNL':
       return '真实净收益';
     case 'EXCHANGE_RECENT_LEDGER':
-      return 'OKX近期账本：可追溯订单';
+    case 'AUTO_SCOPED_EXCHANGE_RECENT_LEDGER':
+      return 'OKX 近期账本 · 可追溯订单';
+    case 'AUTO_SCOPED_LEDGER_FUNDING_UNATTRIBUTED':
+      return '不可用：资金费归属未确认';
+    case 'POSITION_ATTRIBUTION_UNAVAILABLE':
+      return '不可用：仓位归属未确认';
     case 'CLOSE_RECORD_ESTIMATED':
       return '估算：平仓记录口径';
     case 'PARTIAL_CLOSE_RECORD_ESTIMATED':
@@ -399,6 +413,6 @@ function profitQualityLabel(value: string) {
     case 'ESTIMATED_UNREALIZED_ONLY':
       return '估算：仅当前浮盈';
     default:
-      return '估算收益';
+      return '收益来源未确认';
   }
 }

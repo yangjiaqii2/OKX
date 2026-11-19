@@ -6,7 +6,6 @@ import com.example.quant.auth.AuthUserContext;
 import com.example.quant.common.PageResult;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.agent.selection.ContractSelectionDecision;
-import com.example.quant.market.DirectionBias;
 import jakarta.persistence.criteria.Predicate;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -44,6 +43,8 @@ public class AutoTradeRecordService {
         try {
             Instant now = result.createdAt() == null ? Instant.now() : result.createdAt();
             AutoTradeRecordEntity entity = new AutoTradeRecordEntity();
+            entity.setScanId(org.slf4j.MDC.get("coverageScanId"));
+            entity.setScanCoverage(org.slf4j.MDC.get("scanCoverage"));
             entity.setStatus(result.status());
             entity.setUserName(currentUsername());
             entity.setTriggerType("SCHEDULER");
@@ -51,14 +52,14 @@ public class AutoTradeRecordService {
             entity.setTradePlanId(result.tradePlanId());
             entity.setPendingOrderId(result.pendingOrderId());
             entity.setOkxOrderId(result.okxOrderId());
-            DirectionHint direction = resolveOpenDirection(result, candidate, selection);
-            entity.setAction(direction.action());
-            entity.setPosSide(direction.posSide());
+            entity.setAction(result.action());
+            entity.setPosSide(result.posSide());
             entity.setLeverage(result.leverage());
             entity.setMarginAmount(result.marginAmount());
             entity.setEntryPrice(result.entryPrice());
             entity.setCandidateCount(candidateCount);
             if (candidate != null) {
+                entity.setScanAction(candidate.action());
                 entity.setCandidateScore(candidate.score());
                 entity.setTrendDirection(candidate.trendDirection() == null ? null : candidate.trendDirection().name());
                 entity.setLastPrice(candidate.lastPrice());
@@ -73,7 +74,7 @@ public class AutoTradeRecordService {
             entity.setMessage(result.message());
             entity.setReasonCode(reasonCode(result.message()));
             entity.setReasonMessage(result.message());
-            entity.setStage(stageFor(result.status()));
+            entity.setStage(entity.resolveStage(stageFor(result.status())));
             entity.setFallbackAllowed(fallbackAllowed(result.status()));
             applySelection(entity, result, selection);
             entity.setCreatedAt(now);
@@ -168,37 +169,6 @@ public class AutoTradeRecordService {
             return null;
         }
         return "SKIPPED".equals(status) || "REJECTED".equals(status);
-    }
-
-    /**
-     * 跳过/未成单记录往往没有 action/posSide；用 AI 方向或候选趋势补开仓方向，便于复盘展示。
-     */
-    private static DirectionHint resolveOpenDirection(AutoTradeResult result, ContractCandidate candidate,
-                                                      ContractSelectionDecision selection) {
-        if (hasText(result.action()) || hasText(result.posSide())) {
-            return new DirectionHint(result.action(), result.posSide());
-        }
-        DirectionBias bias = null;
-        if (selection != null) {
-            ContractSelectionDecision.RankedCandidate ranked = selection.rankedCandidates().stream()
-                    .filter(item -> result.instId() != null && result.instId().equals(item.instId()))
-                    .findFirst()
-                    .orElse(null);
-            bias = ranked == null ? selection.direction() : ranked.direction();
-        }
-        if (bias == null && candidate != null) {
-            bias = candidate.trendDirection();
-        }
-        if (bias == DirectionBias.BULLISH) {
-            return new DirectionHint("OPEN_LONG", "long");
-        }
-        if (bias == DirectionBias.BEARISH) {
-            return new DirectionHint("OPEN_SHORT", "short");
-        }
-        return new DirectionHint(null, null);
-    }
-
-    private record DirectionHint(String action, String posSide) {
     }
 
     private static String currentUsername() {

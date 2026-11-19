@@ -145,6 +145,14 @@ public class ExitLegLedgerService {
         return new Reconciliation(saved, submit, cancel, outstandingTotal);
     }
 
+    public boolean firstLegHasFill(String owner, String pendingOrderId) {
+        if (ledgerRepository.findByUserNameAndPendingOrderIdAndExitLegId(owner, pendingOrderId, "TP1")
+                .map(row -> nz(row.getFilledQuantity()).signum() > 0).orElse(false)) return true;
+        return filledByLeg(tradeOrderRepository.findByUserNameAndPendingOrderIdOrderByCreatedAtAsc(owner, pendingOrderId),
+                tradeFillRepository.findByUserNameAndPendingOrderId(owner, pendingOrderId), Set.of("TP1"))
+                .getOrDefault("TP1", BigDecimal.ZERO).signum() > 0;
+    }
+
     public void recordSubmitted(String userName, String pendingOrderId, String exitLegId,
                                  String clOrdId, String algoId, Instant now) {
         ExitLegLedgerEntity row = ledgerRepository

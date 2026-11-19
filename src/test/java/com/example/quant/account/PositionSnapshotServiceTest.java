@@ -98,6 +98,8 @@ class PositionSnapshotServiceTest {
         PositionSummary position = com.example.quant.auth.AuthUserContext.callAs(
                 "alice", () -> service.positions().get(0));
 
+        assertThat(position.margin()).isNull();
+        assertThat(position.initialMargin()).isNull();
         assertThat(position.ownership()).isEqualTo("UNMANAGED");
         assertThat(position.reconciliationReason()).isEqualTo("NO_TRACEABLE_LOCAL_FILL_CHAIN");
     }

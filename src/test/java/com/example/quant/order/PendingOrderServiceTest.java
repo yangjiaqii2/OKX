@@ -156,7 +156,7 @@ class PendingOrderServiceTest {
         saved.setSubmittedAt(Instant.parse("2026-06-18T00:00:00Z"));
         saved.setExternalOrderId("okx-ord-1");
         when(repository.findAll()).thenReturn(List.of(saved));
-        when(repository.save(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(repository.saveAndFlush(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         PendingOrderService service = new PendingOrderService(120, repository);
 
@@ -168,7 +168,7 @@ class PendingOrderServiceTest {
 
         restored.markEntryTimeoutCancelled("ENTRY_TIMEOUT_CANCELLED");
 
-        verify(repository, atLeast(1)).save(any(PendingOrderEntity.class));
+        verify(repository, atLeast(1)).saveAndFlush(any(PendingOrderEntity.class));
     }
 
     @Test
@@ -179,7 +179,7 @@ class PendingOrderServiceTest {
         saved.setSubmittedAt(Instant.parse("2026-06-18T00:00:00Z"));
         saved.setExternalOrderId("okx-ord-timeout");
         when(repository.findAll()).thenReturn(List.of(saved));
-        when(repository.save(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(repository.saveAndFlush(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         PendingOrderService service = new PendingOrderService(120, repository);
 
@@ -197,7 +197,7 @@ class PendingOrderServiceTest {
         PendingOrderEntity saved = PendingOrderEntity.from(original);
         PendingOrderRepository repository = mock(PendingOrderRepository.class);
         when(repository.findAll()).thenReturn(List.of(saved));
-        when(repository.save(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(repository.saveAndFlush(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         PendingOrder restored = new PendingOrderService(120, repository).get(original.id());
 

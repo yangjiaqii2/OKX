@@ -6,6 +6,7 @@ import com.example.quant.config.TradingMode;
 import com.example.quant.config.TradingProperties;
 import com.example.quant.crypto.OkxRestClient;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import java.math.BigDecimal;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -37,26 +38,22 @@ public class AccountSnapshotService {
                         data != null && data.isArray() ? data.size() : 0);
                 return new AccountSummary(
                         BigDecimal.ZERO,
-                        BigDecimal.ZERO,
+                        null,
                         "OKX_EMPTY",
                         "OKX returned no account balance data."
                 );
             }
             JsonNode account = data.get(0);
-            ParsedAmount available = firstPositive(
-                    new ParsedAmount("top.availEq", decimal(account, "availEq")),
-                    new ParsedAmount("details.USDT.availEq", detailDecimal(account, "USDT", "availEq")),
-                    new ParsedAmount("details.USDT.availBal", detailDecimal(account, "USDT", "availBal")),
-                    new ParsedAmount("details.USDT.cashBal", detailDecimal(account, "USDT", "cashBal")),
-                    new ParsedAmount("details.USDT.eq", detailDecimal(account, "USDT", "eq"))
-            );
+            JsonNode usdt = usdtDetail(account);
+            ParsedAmount available = availableUsdt(account, usdt);
             ParsedAmount equity = firstPositive(
-                    new ParsedAmount("top.totalEq", decimal(account, "totalEq")),
-                    new ParsedAmount("details.USDT.eq", detailDecimal(account, "USDT", "eq")),
-                    new ParsedAmount("details.USDT.cashBal", detailDecimal(account, "USDT", "cashBal")),
+                    new ParsedAmount("top.totalEq", reportedDecimal(account, "totalEq")),
+                    new ParsedAmount("details.USDT.eq", reportedDecimal(usdt, "eq")),
+                    new ParsedAmount("details.USDT.cashBal", reportedDecimal(usdt, "cashBal")),
                     available
             );
-            String availableStatus = available.value().signum() > 0 ? "AVAILABLE" : "UNAVAILABLE";
+            String availableStatus = available.value() == null ? "UNAVAILABLE"
+                    : available.value().signum() > 0 ? "AVAILABLE" : "INSUFFICIENT";
             log.info("OKX account balance parsed mode={} dataCount={} detailsCount={} equity={} equitySource={} availableBalance={} availableSource={} availableStatus={}",
                     accountMode(), data.size(), detailsCount(account), equity.value(), equity.source(),
                     available.value(), available.source(), availableStatus);
@@ -70,12 +67,12 @@ public class AccountSnapshotService {
             String mode = okxRestClient.hasCredentials() ? "OKX_ERROR" : "OKX_UNBOUND";
             log.warn("OKX account balance unavailable reason=API_ERROR mode={} errorType={} message={}",
                     mode, ex.getClass().getSimpleName(), compact(ex.getMessage()));
-            return new AccountSummary(BigDecimal.ZERO, BigDecimal.ZERO, mode, ex.getMessage());
+            return new AccountSummary(BigDecimal.ZERO, null, mode, ex.getMessage());
         } catch (RuntimeException ex) {
-            String mode = accountMode();
+            String mode = "OKX_ERROR";
             log.warn("OKX account balance unavailable reason=PARSER_ERROR mode={} errorType={} message={}",
                     mode, ex.getClass().getSimpleName(), compact(ex.getMessage()));
-            return new AccountSummary(BigDecimal.ZERO, BigDecimal.ZERO, mode, ex.getMessage());
+            return new AccountSummary(BigDecimal.ZERO, null, mode, "OKX 账户金额无法解析");
         }
     }
 
@@ -113,28 +110,48 @@ public class AccountSnapshotService {
         return raw.isBlank() ? "OKX接口验证失败。" : raw;
     }
 
-    private static BigDecimal decimal(JsonNode node, String field) {
-        String value = node.path(field).asText("0");
-        if (value == null || value.isBlank()) {
-            return BigDecimal.ZERO;
+    private static ParsedAmount availableUsdt(JsonNode account, JsonNode usdt) {
+        BigDecimal amount = reportedDecimal(usdt, "availEq");
+        String source = "details.USDT.availEq";
+        if (amount == null) {
+            amount = reportedDecimal(usdt, "availBal");
+            source = "details.USDT.availBal";
         }
-        return new BigDecimal(value);
+        BigDecimal accountAvailableEquity = reportedDecimal(account, "availEq");
+        // The account-wide field is in USD. It can rule out new margin when exhausted.
+        if (amount != null && amount.signum() > 0
+                && accountAvailableEquity != null && accountAvailableEquity.signum() <= 0) {
+            return new ParsedAmount("top.availEq", BigDecimal.ZERO);
+        }
+        return new ParsedAmount(amount == null ? "NONE" : source, amount);
     }
 
-    private static BigDecimal detailDecimal(JsonNode account, String currency, String field) {
+    private static BigDecimal reportedDecimal(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        if (value.isMissingNode() || value.isNull() || (value.isTextual() && value.textValue().isBlank())) {
+            return null;
+        }
+        if (!value.isNumber() && !value.isTextual()) {
+            throw new NumberFormatException("Invalid amount field: " + field);
+        }
+        try {
+            return new BigDecimal(value.asText());
+        } catch (NumberFormatException ex) {
+            throw new NumberFormatException("Invalid amount field: " + field);
+        }
+    }
+
+    private static JsonNode usdtDetail(JsonNode account) {
         JsonNode details = account.path("details");
         if (!details.isArray()) {
-            return BigDecimal.ZERO;
+            return MissingNode.getInstance();
         }
         for (JsonNode detail : details) {
-            if (currency.equalsIgnoreCase(detail.path("ccy").asText(""))) {
-                BigDecimal value = decimal(detail, field);
-                if (value.signum() > 0) {
-                    return value;
-                }
+            if ("USDT".equalsIgnoreCase(detail.path("ccy").asText(""))) {
+                return detail;
             }
         }
-        return BigDecimal.ZERO;
+        return MissingNode.getInstance();
     }
 
     private static ParsedAmount firstPositive(ParsedAmount... values) {

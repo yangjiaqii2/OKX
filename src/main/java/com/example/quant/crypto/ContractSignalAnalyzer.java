@@ -1,5 +1,6 @@
 package com.example.quant.crypto;
 
+import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.dto.ContractCandle;
 import com.example.quant.crypto.dto.ContractFactorScore;
 import com.example.quant.crypto.dto.ContractKlineAnalysis;
@@ -93,6 +94,10 @@ public class ContractSignalAnalyzer {
                 distanceFromEma20Pct,
                 change10m
         );
+        boolean longPullback = signalType == ContractSignalType.STRONG_LONG && awaitingReclaim(fiveMinute);
+        if (longPullback) {
+            signalType = ContractSignalType.WAIT_RECLAIM;
+        }
         DirectionBias direction = directionFor(signalType, trend20m, entry, main);
         String entryTiming5m = entryTiming(signalType, fast, direction, distanceFromEma20Pct);
         ContractKlineAnalysis klineAnalysis = new ContractKlineAnalysis(
@@ -120,6 +125,7 @@ public class ContractSignalAnalyzer {
                 fundingRate,
                 openInterest,
                 oiChange,
+                fiveMinute.size() >= 2 ? change5m : null,
                 main,
                 fast,
                 structure,
@@ -138,6 +144,9 @@ public class ContractSignalAnalyzer {
 
         List<String> reasons = reasons(signalType, todayChangePct, main, klineAnalysis, scores, newsRisk);
         List<String> risks = risks(signalType, todayChangePct, fundingRate, main, fast, klineAnalysis, newsRisk);
+        if (longPullback) {
+            reasons.add("原始20m信号=STRONG_LONG，5m冲高回落，等待收盘收复首根回落K线高点");
+        }
         if (oiChange == null) {
             risks.add("OI变化不可用，不能作为增仓确认");
         }
@@ -320,6 +329,7 @@ public class ContractSignalAnalyzer {
                                                          BigDecimal fundingRate,
                                                          BigDecimal openInterest,
                                                          BigDecimal oiChange,
+                                                         BigDecimal priceChange5m,
                                                          IndicatorSnapshot main,
                                                          IndicatorSnapshot fast,
                                                          StructureSnapshot structure,
@@ -371,7 +381,7 @@ public class ContractSignalAnalyzer {
         int volatility = (int) Math.round(atrScore * 0.50 + wickRisk * 0.25 + volatilityExpansion * 0.25);
 
         int fundingHealth = fundingHealthScore(direction, fundingRate);
-        int oiConsistency = oiConsistencyScore(direction, todayChangePct, openInterest, oiChange);
+        int oiConsistency = oiConsistencyScore(direction, priceChange5m, openInterest, oiChange);
         int crowding = fundingRate.abs().compareTo(FUNDING_EXTREME) >= 0 ? 20
                 : fundingRate.abs().compareTo(FUNDING_CROWDED) > 0 ? 45 : 85;
         int oiFunding = (int) Math.round(oiConsistency * 0.50 + fundingHealth * 0.30 + crowding * 0.20);
@@ -442,6 +452,11 @@ public class ContractSignalAnalyzer {
 
     static String action(ContractSignalType signalType, int score, String entryTiming5m,
                                  ContractNewsRiskAnalysis newsRisk) {
+        return action(signalType, score, entryTiming5m, newsRisk, AgentProperties.Score.DEFAULT_MIN_TOTAL_SCORE);
+    }
+
+    static String action(ContractSignalType signalType, int score, String entryTiming5m,
+                         ContractNewsRiskAnalysis newsRisk, int minScore) {
         if (signalType == ContractSignalType.NO_TRADE || "CRITICAL".equals(newsRisk.newsRiskLevel())
                 || "HIGH".equals(newsRisk.newsRiskLevel())) {
             return "NO_TRADE";
@@ -451,11 +466,12 @@ public class ContractSignalAnalyzer {
         }
         if (signalType == ContractSignalType.REVERSAL_SHORT
                 || signalType == ContractSignalType.WAIT_OVERHEATED
+                || signalType == ContractSignalType.WAIT_RECLAIM
                 || signalType == ContractSignalType.WAIT_OVERSOLD
                 || signalType == ContractSignalType.NEUTRAL) {
             return "WAIT";
         }
-        if (score >= 65 && "READY".equals(entryTiming5m)) {
+        if (score >= minScore && "READY".equals(entryTiming5m)) {
             return "AUTO_TRADE_ALLOWED";
         }
         return "WAIT_CONFIRM";
@@ -516,6 +532,34 @@ public class ContractSignalAnalyzer {
             return "WAIT_RETEST";
         }
         return "WAIT_PULLBACK";
+    }
+
+    // Reconstruct the outstanding rejection from closed bars, including after a restart.
+    private static boolean awaitingReclaim(List<ContractCandle> bars) {
+        BigDecimal reclaim = null;
+        for (int i = 16; i < bars.size(); i++) {
+            ContractCandle peak = bars.get(i - 2);
+            ContractCandle first = bars.get(i - 1);
+            ContractCandle last = bars.get(i);
+            if (reclaim != null && last.close().compareTo(reclaim) >= 0) {
+                reclaim = null;
+            }
+            if (peak.timestamp() == null || first.timestamp() == null || last.timestamp() == null
+                    || !peak.timestamp().plusSeconds(300).equals(first.timestamp())
+                    || !first.timestamp().plusSeconds(300).equals(last.timestamp())) {
+                continue;
+            }
+            if (peak.high().compareTo(bars.get(i - 3).high()) <= 0
+                    || first.high().compareTo(peak.high()) >= 0 || last.high().compareTo(first.high()) >= 0
+                    || first.close().compareTo(peak.close()) >= 0 || last.close().compareTo(first.close()) >= 0) {
+                continue;
+            }
+            BigDecimal recentAtr = atr(bars.subList(i - 16, i - 1), 14);
+            if (peak.high().subtract(last.close()).compareTo(recentAtr) >= 0) {
+                reclaim = first.high();
+            }
+        }
+        return reclaim != null;
     }
 
     private static String entryTiming(ContractSignalType signalType, IndicatorSnapshot fast, DirectionBias direction,
@@ -817,15 +861,15 @@ public class ContractSignalAnalyzer {
         return 85;
     }
 
-    private static int oiConsistencyScore(DirectionBias direction, BigDecimal todayChangePct,
+    static int oiConsistencyScore(DirectionBias direction, BigDecimal priceChange5m,
                                           BigDecimal openInterest, BigDecimal oiChange) {
-        if (openInterest == null || openInterest.signum() <= 0 || oiChange == null) {
+        if (priceChange5m == null || openInterest == null || openInterest.signum() <= 0 || oiChange == null || oiChange.signum() == 0) {
             return 50;
         }
-        if (direction == DirectionBias.BULLISH && todayChangePct.signum() > 0 && oiChange.signum() >= 0) {
+        if (direction == DirectionBias.BULLISH && priceChange5m.signum() > 0 && oiChange.signum() > 0) {
             return 85;
         }
-        if (direction == DirectionBias.BEARISH && todayChangePct.signum() < 0 && oiChange.signum() >= 0) {
+        if (direction == DirectionBias.BEARISH && priceChange5m.signum() < 0 && oiChange.signum() > 0) {
             return 85;
         }
         if (oiChange.signum() < 0) {

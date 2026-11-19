@@ -4,6 +4,7 @@ public enum ContractSignalType {
     STRONG_LONG,
     PULLBACK_LONG,
     WAIT_OVERHEATED,
+    WAIT_RECLAIM,
     REVERSAL_SHORT,
     TREND_SHORT,
     WAIT_OVERSOLD,

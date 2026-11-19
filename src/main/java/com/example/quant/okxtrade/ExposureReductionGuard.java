@@ -14,6 +14,8 @@ import org.springframework.stereotype.Service;
 public class ExposureReductionGuard {
     private final PositionSnapshotService positionSnapshotService;
     private final TradingMode tradingMode;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.example.quant.account.PositionReconciliationService reconciliation;
 
     public ExposureReductionGuard(PositionSnapshotService positionSnapshotService, TradingProperties tradingProperties) {
         this.positionSnapshotService = positionSnapshotService;
@@ -54,19 +56,13 @@ public class ExposureReductionGuard {
             reject("IDEMPOTENCY_KEY_REQUIRED");
         }
 
-        List<PositionSummary> positions;
-        try {
-            positions = positionSnapshotService.positions();
-        } catch (RuntimeException ex) {
-            throw new IllegalStateException("POSITION_SNAPSHOT_UNAVAILABLE: " + compact(ex.getMessage()), ex);
+        PositionSummary position = matchingPosition(payload, instId);
+        if (!"MANAGED".equalsIgnoreCase(position.ownership()) && reconciliation != null) {
+            reconciliation.reconcile();
+            position = matchingPosition(payload, instId);
         }
-        String requestedPosSide = normalizedPosSide(text(payload, "posSide"));
-        PositionSummary position = positions.stream()
-                .filter(item -> instId.equalsIgnoreCase(item.instId()))
-                .filter(item -> positionSideMatches(requestedPosSide, item.posSide()))
-                .filter(item -> decimal(item.size()).signum() != 0)
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("POSITION_NOT_CONFIRMED"));
+        if (context.positionDirection() != null && !com.example.quant.account.PositionSideMatcher.matches(
+                instId, context.positionDirection(), null, position)) reject("POSITION_DIRECTION_CHANGED");
         String expectedMode = tradingMode == TradingMode.DEMO ? "OKX_DEMO"
                 : tradingMode == TradingMode.LIVE ? "OKX_REAL" : "DISABLED";
         if (!expectedMode.equalsIgnoreCase(position.mode())) {
@@ -83,6 +79,12 @@ public class ExposureReductionGuard {
                 && !requestedMarginMode.equalsIgnoreCase(position.marginMode())) {
             reject("MARGIN_MODE_MISMATCH");
         }
+        if (context.operationType() == TradingOperationType.AMEND_PROTECTION && hasText(text(payload, "newSz"))) {
+            BigDecimal newSize = decimal(text(payload, "newSz"));
+            if (newSize.signum() <= 0 || newSize.compareTo(decimal(position.size()).abs()) > 0) {
+                reject("INVALID_AMENDED_PROTECTION_SIZE");
+            }
+        }
         if (context.operationType() == TradingOperationType.CLOSE_POSITION
                 || context.operationType() == TradingOperationType.AMEND_PROTECTION) {
             return;
@@ -98,6 +100,22 @@ public class ExposureReductionGuard {
         if (!reductionSideMatches(text(payload, "side"), position)) {
             reject("REDUCTION_SIDE_MISMATCH");
         }
+    }
+
+    private PositionSummary matchingPosition(Map<String, String> payload, String instId) {
+        List<PositionSummary> positions;
+        try {
+            positions = positionSnapshotService.positions();
+        } catch (RuntimeException ex) {
+            throw new IllegalStateException("POSITION_SNAPSHOT_UNAVAILABLE: " + compact(ex.getMessage()), ex);
+        }
+        String requestedPosSide = normalizedPosSide(text(payload, "posSide"));
+        return positions.stream()
+                .filter(item -> instId.equalsIgnoreCase(item.instId()))
+                .filter(item -> positionSideMatches(requestedPosSide, item.posSide()))
+                .filter(item -> decimal(item.size()).signum() != 0)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("POSITION_NOT_CONFIRMED"));
     }
 
     private static boolean positionSideMatches(String requested, String actual) {

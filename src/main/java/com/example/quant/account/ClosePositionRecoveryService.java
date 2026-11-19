@@ -14,6 +14,7 @@ import com.example.quant.ledger.TradeFillEntity;
 import com.example.quant.okxtrade.OkxCurrentOrderService;
 import com.example.quant.okxtrade.OkxOrderGateway;
 import com.example.quant.okxtrade.OkxCancelAcknowledgement;
+import com.example.quant.okxtrade.EntryOrderReconciliation;
 import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
@@ -63,6 +64,8 @@ public class ClosePositionRecoveryService {
     private final TradeReviewService tradeReviewService;
     private final TradeEventService tradeEventService;
     private DailyRiskService dailyRiskService;
+    @Autowired
+    private ClosedPositionFunding closedPositionFunding;
     private OkxCurrentOrderService currentOrderService;
     private TradeFillLedgerService fillLedgerService;
 
@@ -137,6 +140,7 @@ public class ClosePositionRecoveryService {
             if (!hasText(record.getCloseOrderId()) && hasText(record.getCloseClOrdId())) {
                 discoverCloseOrder(record);
             }
+            boolean entrySettled = entrySettledForClose(record);
             if (hasOpenPosition(record, positions)) {
                 if ("CLOSE_SUBMITTING".equals(record.getStatus())) {
                     record.setStatus("CLOSE_SUBMIT_UNKNOWN");
@@ -146,7 +150,7 @@ public class ClosePositionRecoveryService {
                 }
                 continue;
             }
-            if (!reconcileCloseExecution(record)) {
+            if (!entrySettled || !reconcileCloseExecution(record)) {
                 continue;
             }
             record.setStatus("CLOSED");
@@ -163,6 +167,25 @@ public class ClosePositionRecoveryService {
         closed += closeOrdersWithoutPositions(positions, now);
         repairClosedLedger(now);
         return new CloseRecoveryResult(closed, retryResult.retried(), retryResult.attentionRequired());
+    }
+
+    private boolean entrySettledForClose(ClosePositionRecordEntity record) {
+        if (!hasText(record.getPendingOrderId())) return true;
+        try {
+            return entrySettledAndFlat(pendingOrderService.get(UUID.fromString(record.getPendingOrderId())));
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
+
+    private boolean entrySettledAndFlat(PendingOrder order) {
+        if (order.submittedAt() == null) return true;
+        try {
+            return EntryOrderReconciliation.ensureTerminal(okxOrderGateway, order)
+                    && !hasOpenPosition(order, positionSnapshotService.positions());
+        } catch (RuntimeException ex) {
+            return false;
+        }
     }
 
     private boolean reconcileCloseExecution(ClosePositionRecordEntity record) {
@@ -248,7 +271,8 @@ public class ClosePositionRecoveryService {
         if (currentOrderService == null) {
             return;
         }
-        closePositionRecordRepository.findByUserNameAndStatus(currentUsername(), "CLOSED").stream()
+        List<ClosePositionRecordEntity> closed = closePositionRecordRepository.findByUserNameAndStatus(currentUsername(), "CLOSED");
+        closed.stream()
                 .filter(record -> hasText(record.getCloseClOrdId()))
                 .filter(record -> record.getRealizedPnl() == null || record.getFee() == null)
                 .forEach(record -> {
@@ -257,6 +281,14 @@ public class ClosePositionRecoveryService {
                         closePositionRecordRepository.save(record);
                     }
                 });
+        if (dailyRiskService != null) {
+            for (var record : closed) {
+                if (hasText(record.getPendingOrderId())
+                        && dailyRiskService.awaitsOutcome(currentUsername(), record.getPendingOrderId())) {
+                    recordDailyRiskOutcome(record, now);
+                }
+            }
+        }
     }
 
     private static String usableOrderId(String orderId) {
@@ -287,6 +319,7 @@ public class ClosePositionRecoveryService {
             if (!POSITION_CONFIRMED_STATUSES.contains(order.status()) || hasOpenPosition(order, positions)) {
                 continue;
             }
+            if (!entrySettledAndFlat(order)) continue;
             OrderStatus previousStatus = order.status();
             ClosePositionRecordEntity record = naturalCloseRecord(order, now);
             boolean ledgerComplete = reconcileNaturalClose(order, record);
@@ -299,7 +332,7 @@ public class ClosePositionRecoveryService {
             } else {
                 order.markClosedReconciling("POSITION_GONE_PNL_INCOMPLETE");
             }
-            if (order.budgetReservationId() != null) {
+            if (ledgerComplete && order.budgetReservationId() != null) {
                 budgetService.release(order.budgetReservationId(), "POSITION_GONE");
                 recordEvent(record, TradeEventType.BUDGET_RELEASED, "USED", "RELEASED",
                         "POSITION_GONE", "持仓消失后释放自动交易预算");
@@ -627,9 +660,43 @@ public class ClosePositionRecoveryService {
             return;
         }
         BigDecimal netPnl = record.getRealizedPnl().add(record.getFee());
+        if (fillLedgerService != null) {
+            var fills = fillLedgerService.fillsForPendingOrder(record.getUserName(), record.getPendingOrderId());
+            if (!fills.isEmpty()) {
+                BigDecimal bought = BigDecimal.ZERO;
+                BigDecimal sold = BigDecimal.ZERO;
+                BigDecimal allFillsNet = BigDecimal.ZERO;
+                for (TradeFillEntity fill : fills) {
+                    if (fill.getFee() == null || fill.getFillPnl() == null || fill.getFillSize() == null
+                            || !"USDT".equalsIgnoreCase(fill.getFeeCurrency())) return;
+                    if ("buy".equalsIgnoreCase(fill.getSide())) bought = bought.add(fill.getFillSize());
+                    else if ("sell".equalsIgnoreCase(fill.getSide())) sold = sold.add(fill.getFillSize());
+                    else return;
+                    allFillsNet = allFillsNet.add(fill.getFillPnl()).add(fill.getFee());
+                }
+                if (bought.signum() <= 0 || bought.compareTo(sold) != 0) return;
+                netPnl = allFillsNet;
+                if (record.getFundingFee() == null && closedPositionFunding != null) {
+                    try {
+                        closedPositionFunding.lookup(record, fills, bought, allFillsNet).ifPresent(value -> {
+                            record.setFundingFee(value);
+                            closePositionRecordRepository.save(record);
+                        });
+                    } catch (RuntimeException unavailable) {
+                        record.setRecoveryResult("FUNDING_HISTORY_RECONCILIATION_PENDING");
+                    }
+                }
+            } else if (record.getPendingOrderId() != null) {
+                try {
+                    if (pendingOrderService.get(UUID.fromString(record.getPendingOrderId())).submittedAt() != null) return;
+                } catch (IllegalArgumentException missingOrder) {
+                    return;
+                }
+            }
+        }
         if (record.getFundingFee() != null) {
             netPnl = netPnl.add(record.getFundingFee());
-        } else if (netPnl.signum() > 0) {
+        } else if (netPnl.signum() >= 0) {
             // Unknown funding must not reset a loss streak based on an unverified positive outcome.
             return;
         }

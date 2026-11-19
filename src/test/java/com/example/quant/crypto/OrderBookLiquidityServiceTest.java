@@ -10,8 +10,29 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class OrderBookLiquidityServiceTest {
+
+    @ParameterizedTest
+    @CsvSource({
+            "5000,50.02,true",
+            "5000,50.00,false",
+            "20000,50.02,false"
+    })
+    void appliesConfiguredFloorToThinnerSide(int floor, String bidContracts, boolean expected) {
+        AgentProperties properties = new AgentProperties();
+        properties.market().setMinDepthUsdt(BigDecimal.valueOf(floor));
+        var book = new FakeOkxRestClient(bidContracts);
+        var service = new OrderBookLiquidityService(book, properties, instId ->
+                new OkxInstrumentRules(instId, BigDecimal.ONE, "BTC", BigDecimal.ONE,
+                        BigDecimal.ONE, new BigDecimal("0.01")));
+
+        var snapshot = service.snapshot("BTC-USDT-SWAP");
+        assertThat(snapshot.tradable()).isEqualTo(expected);
+        if (!expected) assertThat(snapshot.denyReason()).isEqualTo("depth_usdt_below_" + floor);
+    }
 
     @Test
     void convertsOkxSwapContractSizeToUsdtDepthWithContractValue() {
@@ -43,8 +64,15 @@ class OrderBookLiquidityServiceTest {
     private static final class FakeOkxRestClient extends OkxRestClient {
         private final ObjectMapper objectMapper = new ObjectMapper();
 
+        private final String bidContracts;
+
         FakeOkxRestClient() {
+            this("101000");
+        }
+
+        FakeOkxRestClient(String bidContracts) {
             super(null, null, null, null, null);
+            this.bidContracts = bidContracts;
         }
 
         @Override
@@ -52,8 +80,8 @@ class OrderBookLiquidityServiceTest {
             try {
                 if (requestPath.startsWith("/api/v5/market/books")) {
                     return objectMapper.readTree("""
-                            {"code":"0","data":[{"bids":[["99.98","101000"]],"asks":[["100.02","101000"]]}]}
-                            """);
+                            {"code":"0","data":[{"bids":[["99.98","%s"]],"asks":[["100.02","101000"]]}]}
+                            """.formatted(bidContracts));
                 }
                 if (requestPath.startsWith("/api/v5/public/instruments")) {
                     return objectMapper.readTree("""

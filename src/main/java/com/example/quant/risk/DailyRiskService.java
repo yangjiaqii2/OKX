@@ -28,9 +28,35 @@ public class DailyRiskService {
         this.tradingDayResolver = new TradingDayResolver();
     }
 
-    @Transactional
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.example.quant.config.ContractProperties contractLimits;
+
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public Decision checkRound(String owner, BigDecimal equity, Instant now) {
+        return checkOrClaim(owner, null, equity, now, BigDecimal.ZERO);
+    }
+
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Decision claimEntry(String owner, String entryKey, BigDecimal accountEquity, Instant now) {
-        if (owner == null || owner.isBlank() || entryKey == null || entryKey.isBlank()) {
+        if (entryKey == null) return Decision.blocked("DAILY_RISK_IDENTITY_MISSING");
+        return checkOrClaim(owner, entryKey, accountEquity, now, BigDecimal.ZERO);
+    }
+
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public Decision claimAutomaticEntry(String owner, String entryKey, BigDecimal equity, Instant now,
+                                        BigDecimal projectedLoss) {
+        if (entryKey == null) return Decision.blocked("DAILY_RISK_IDENTITY_MISSING");
+        if (projectedLoss == null || projectedLoss.signum() <= 0) return Decision.blocked("DAILY_RISK_COST_UNKNOWN");
+        if (equity == null || equity.signum() <= 0) return Decision.blocked("ACCOUNT_EQUITY_UNAVAILABLE");
+        if (projectedLoss.compareTo(equity.multiply(percentRate(properties.risk().singleTradeRiskPercent()))) > 0) {
+            return Decision.blocked("DAILY_RISK_SINGLE_TRADE_COST_LIMIT");
+        }
+        return checkOrClaim(owner, entryKey, equity, now, projectedLoss);
+    }
+
+    private Decision checkOrClaim(String owner, String entryKey, BigDecimal accountEquity, Instant now,
+                                  BigDecimal projectedLoss) {
+        if (owner == null || owner.isBlank() || (entryKey != null && entryKey.isBlank())) {
             return Decision.blocked("DAILY_RISK_IDENTITY_MISSING");
         }
         if (accountEquity == null || accountEquity.signum() <= 0) {
@@ -38,9 +64,6 @@ public class DailyRiskService {
         }
         Instant effectiveNow = now == null ? Instant.now() : now;
         LocalDate day = tradingDayResolver.tradingDate(effectiveNow);
-        if (claims.findByUserNameAndTradeDayAndEntryKey(owner, day, entryKey).isPresent()) {
-            return Decision.allowed("DAILY_RISK_ENTRY_ALREADY_CLAIMED");
-        }
         LedgerPnlService.Summary summary = pnl == null ? null : pnl.summary(owner);
         if (summary == null || summary.todayNetRealizedPnl() == null
                 || !"EXCHANGE_RECENT_LEDGER".equals(summary.dataQuality())) {
@@ -48,8 +71,19 @@ public class DailyRiskService {
         }
         DailyRiskStateEntity state = states.findForUpdate(owner, day)
                 .orElseGet(() -> newState(owner, day, accountEquity, effectiveNow, latestState(owner)));
+        if (entryKey != null && claims.findByUserNameAndTradeDayAndEntryKey(owner, day, entryKey).isPresent()) {
+            return Decision.allowed("DAILY_RISK_ENTRY_ALREADY_CLAIMED");
+        }
+        if (claims.unsettledCloses(owner) > 0) return Decision.blocked("DAILY_RISK_PRIOR_CLOSE_UNSETTLED");
         BigDecimal baseline = positive(state.getStartingEquity(), accountEquity);
         BigDecimal maxDailyLoss = baseline.multiply(percentRate(properties.risk().maxDailyLossPercent()));
+        if (contractLimits != null && contractLimits.maxDailyLossRate() != null) {
+            maxDailyLoss = maxDailyLoss.min(baseline.multiply(contractLimits.maxDailyLossRate()));
+        }
+        BigDecimal reserved = claims.outstandingLoss(owner);
+        BigDecimal committedLoss = summary.todayNetRealizedPnl().min(BigDecimal.ZERO).abs()
+                .add(reserved == null ? BigDecimal.ZERO : reserved).add(projectedLoss);
+        if (committedLoss.compareTo(maxDailyLoss) > 0) return Decision.blocked("MAX_DAILY_LOSS_REACHED");
         if (summary.todayNetRealizedPnl().signum() < 0
                 && summary.todayNetRealizedPnl().abs().compareTo(maxDailyLoss) >= 0) {
             return Decision.blocked("MAX_DAILY_LOSS_REACHED");
@@ -64,6 +98,7 @@ public class DailyRiskService {
                 < Math.max(0, properties.risk().cooldownMinutesAfterLoss())) {
             return Decision.blocked("LOSS_COOLDOWN_ACTIVE");
         }
+        if (entryKey == null) return Decision.allowed("DAILY_RISK_ROUND_ALLOWED");
         state.setStartingEquity(baseline);
         state.setEntryCount(state.getEntryCount() + 1);
         state.setUpdatedAt(effectiveNow);
@@ -73,6 +108,7 @@ public class DailyRiskService {
         claim.setTradeDay(day);
         claim.setEntryKey(entryKey);
         claim.setClaimedAt(effectiveNow);
+        claim.setReservedLossUsdt(projectedLoss);
         claims.save(claim);
         return Decision.allowed("DAILY_RISK_ENTRY_CLAIMED");
     }
@@ -117,6 +153,10 @@ public class DailyRiskService {
             claim.setNetPnl(netPnl);
             claims.save(claim);
         });
+    }
+
+    public boolean awaitsOutcome(String owner, String entryKey) {
+        return claims.existsByUserNameAndEntryKeyAndOutcomeRecordedFalse(owner, entryKey);
     }
 
     private DailyRiskStateEntity latestState(String owner) {

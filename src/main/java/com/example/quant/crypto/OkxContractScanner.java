@@ -12,6 +12,10 @@ import com.example.quant.agent.gate.ContractTradeGate;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.scan.ActiveEntryIntentInstIds;
 import com.example.quant.crypto.scan.DeepAnalysisTargetAllocator;
+import com.example.quant.crypto.scan.DeepAnalysisTargetAllocator.Visit;
+import com.example.quant.crypto.scan.ScanCoverageStore;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorCompletionService;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.crypto.dto.ContractFactorScore;
 import com.example.quant.crypto.dto.ContractKlineSet;
@@ -71,6 +75,7 @@ import org.springframework.stereotype.Service;
 public class OkxContractScanner {
     private static final Logger log = LoggerFactory.getLogger(OkxContractScanner.class);
 
+    private final ShortTermOpenInterest oiWindow = new ShortTermOpenInterest();
     private final OkxRestClient okxRestClient;
     private final OkxMarketService okxMarketService;
     private final ContractSignalAnalyzer signalAnalyzer;
@@ -89,6 +94,9 @@ public class OkxContractScanner {
     private final OkxAthBreakoutProvider athBreakoutProvider;
     private final V2SelectionScoreCalculator v2SelectionScoreCalculator = new V2SelectionScoreCalculator();
     private final DeepAnalysisTargetAllocator deepAnalysisTargetAllocator = new DeepAnalysisTargetAllocator();
+    @Autowired
+    private ScanCoverageStore coverageStore;
+    private final Map<String, Visit> localVisits = new ConcurrentHashMap<>();
     private volatile ActiveEntryIntentInstIds activeEntryIntentInstIds = Set::of;
     private final AtomicReference<ScanDiagnostics> lastDiagnostics = new AtomicReference<>();
     private final AtomicReference<ScanRunReport> lastScanReport = new AtomicReference<>();
@@ -307,11 +315,10 @@ public class OkxContractScanner {
                         && snapshot.volume24h().compareTo(agentProperties.market().minVolume24hUsdt()) >= 0)
                 .filter(snapshot -> snapshot.range24hPct().signum() == 0
                         || snapshot.range24hPct().compareTo(agentProperties.market().max24hRangePct()) <= 0)
-                // V1 行为：funding rate 拿不到时跳过该 symbol（不当作 0 参与评分）。
-                .filter(snapshot -> hasFundingRate(snapshot.instId()))
                 .sorted(Comparator.comparing(TickerSnapshot::change24h, Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(TickerSnapshot::volume24h, Comparator.nullsLast(Comparator.reverseOrder())))
-                .map(snapshot -> analyzeSnapshot(snapshot, environment, safeKlines(snapshot.instId())))
+                .map(snapshot -> analyzeSnapshot(snapshot, environment, null))
+                .filter(Objects::nonNull)
                 .sorted(Comparator.comparing((ContractCandidate candidate) -> firstPlaceEligible(candidate) ? 1 : 0)
                         .reversed()
                         .thenComparing(ContractCandidate::finalRankScore, Comparator.nullsLast(Comparator.reverseOrder()))
@@ -332,6 +339,9 @@ public class OkxContractScanner {
             log.debug("contract analysis skipped instId={} reason=FUNDING_RATE_UNAVAILABLE", snapshot.instId());
             return null;
         }
+        if (klineSet == null) {
+            klineSet = safeKlines(snapshot.instId());
+        }
         OpenInterestReading oiReading = fetchOpenInterestReading(snapshot.instId(), snapshot.lastPrice());
         BigDecimal openInterest = oiReading.coinAmount();
         OrderBookLiquiditySnapshot liquidity = orderBookLiquidityService.snapshot(snapshot.instId());
@@ -343,8 +353,7 @@ public class OkxContractScanner {
                 snapshot.volume24h(),
                 fundingRate,
                 openInterest,
-                // The scan has no comparable previous OI. Historical OI belongs to V2 derivatives scoring.
-                null,
+                oiWindow.previous(snapshot.instId(), oiReading.timestamp, openInterest, System.currentTimeMillis()),
                 klineSet
         );
         ContractScoreBreakdown scoreBreakdown = adjustedScoreBreakdown(signal.scoreBreakdown(), liquidity, environment,
@@ -499,8 +508,7 @@ public class OkxContractScanner {
         }
         int deepTargetLimit = agentProperties.deepAnalysisLimit();
         // 硬过滤已经判定资格；这里只决定有限的深度分析名额分配给谁。
-        // 成交额头部保持原行为，其余名额在剩余合格候选上按列表下标轮换。
-        // 名额总量不变。覆盖上界只对「名单与排序稳定、扫描完成并 commit、进程未重启」成立。
+        // 已有等待意图优先刷新，轮换依据按合约保存的分析记录。
         List<TickerSnapshot> passedByTurnover = outcome.passed().stream()
                 .map(filterCtx -> snapshotByInstId.get(filterCtx.instId()))
                 .filter(Objects::nonNull)
@@ -509,11 +517,13 @@ public class OkxContractScanner {
         // 已经存在等待入场意图的合约必须每轮拿到新数据：evaluate() 找不到候选就既不触发也不失效。
         // 名额同样从 deepTargetLimit 内部扣除，不扩大请求预算。
         Set<String> pinnedInstIds = pinnedInstIds();
+        Map<String, Visit> history = coverageStore == null ? localVisits : coverageStore.load();
+        long roundTime = ctx.startedAt().toEpochMilli();
         DeepAnalysisTargetAllocator.Allocation allocation = deepAnalysisTargetAllocator.allocate(
                 passedByTurnover.stream().map(TickerSnapshot::instId).toList(),
                 deepTargetLimit,
                 agentProperties.selection().deepAnalysisRotationQuota(),
-                pinnedInstIds);
+                pinnedInstIds, history, roundTime);
         List<TickerSnapshot> deepTargets = allocation.instIds().stream()
                 .map(snapshotByInstId::get)
                 .filter(Objects::nonNull)
@@ -535,9 +545,11 @@ public class OkxContractScanner {
         Map<String, DataQuality> relativeStrengthQualityByInstId = new LinkedHashMap<>();
         Map<String, AthBreakoutSnapshot> athBreakoutByInstId = new LinkedHashMap<>();
         Map<String, DataQuality> athBreakoutQualityByInstId = new LinkedHashMap<>();
+        Set<String> attempted = ConcurrentHashMap.newKeySet();
         List<ContractCandidate> candidates = runDeepAnalysisConcurrent(
                 ctx,
                 deepTargets,
+                attempted,
                 environment,
                 mcapByBase,
                 oiByInstId,
@@ -546,6 +558,34 @@ public class OkxContractScanner {
                 relativeStrengthQualityByInstId,
                 athBreakoutByInstId,
                 athBreakoutQualityByInstId);
+        Map<String, Visit> visits = new LinkedHashMap<>();
+        for (String id : attempted) {
+            Visit previous = history.get(id);
+            visits.put(id, new Visit(roundTime, previous == null ? 0 : previous.analyzedAt()));
+        }
+        int analyzed = 0;
+        for (ContractCandidate c : candidates) {
+            if (c.klineAnalysis() != null && c.klineAnalysis().decisionCandleTimestamp() != null) {
+                visits.put(c.instId(), new Visit(roundTime, roundTime));
+                analyzed++;
+            }
+        }
+        if (coverageStore == null) {
+            localVisits.putAll(visits);
+        } else {
+            coverageStore.save(visits);
+        }
+        long recentCutoff = roundTime - Duration.ofMinutes(30).toMillis();
+        int recentlyAnalyzed = 0;
+        for (TickerSnapshot ticker : passedByTurnover) {
+            Visit visit = visits.getOrDefault(ticker.instId(), history.get(ticker.instId()));
+            if (visit != null && visit.analyzedAt() > 0 && visit.analyzedAt() >= recentCutoff) {
+                recentlyAnalyzed++;
+            }
+        }
+        outcome.funnel().recordStage("analyzed_last_30m", recentlyAnalyzed);
+        outcome.funnel().recordStage("rotation_targets", allocation.rotationCount());
+        outcome.funnel().recordStage("analyzed_signals", analyzed);
         if (ctx.status() != ScanRunStatus.COMPLETED || ctx.isExpired()) {
             ScanDiagnostics partialDiagnostics = ScanDiagnostics.fromV2(
                     outcome, snapshots.size(),
@@ -624,10 +664,6 @@ public class OkxContractScanner {
         ScanRunReport report = buildScanReport(ctx, diagnostics, snapshots.size(), outcome.passed().size(),
                 deepTargetLimit, ranked.size());
         lastScanReport.set(report);
-        // 只有真正跑完的扫描才推进轮换游标，否则被 deadline 掐掉的候选会被当成"已覆盖"而跳过。
-        if (ctx.status() == ScanRunStatus.COMPLETED) {
-            deepAnalysisTargetAllocator.commit(allocation);
-        }
         long deliveredEligible = ranked.stream().filter(c -> tradableNow(c, agentProperties)).count();
         log.info("scanV2 universe={} passed={} rejected={} deepTargetLimit={} deepTargets={} "
                         + "pinnedWaiting={} turnoverHead={} rotation={} deepCompleted={} "
@@ -695,7 +731,7 @@ public class OkxContractScanner {
     private static final int TIER_TRADABLE_NOW = 2;
     private static final int TIER_PINNED = 3;
 
-    private static final String ACTION_NOT_READY_PREFIX = "candidate_action_not_auto_trade_allowed";
+    private static final Set<String> WAITING_ACTIONS = Set.of("WAIT", "WAIT_CONFIRM", "WAIT_PULLBACK", "WAIT_RETEST");
 
     /**
      * 候选的交付档位。任何字段缺失导致的异常一律按最低档处理（fail-closed）。
@@ -724,7 +760,8 @@ public class OkxContractScanner {
                 return TIER_TRADABLE_NOW;
             }
             // 唯一的阻碍就是动作尚未就绪 → 这是等待价格触发的候选，不是不可交易的候选。
-            return actionReasons.stream().allMatch(reason -> reason.startsWith(ACTION_NOT_READY_PREFIX))
+            return candidate.action() != null && WAITING_ACTIONS.contains(candidate.action())
+                    && actionReasons.size() == 1
                     ? TIER_PLAN_ELIGIBLE : TIER_OBSERVE_ONLY;
         } catch (RuntimeException ex) {
             log.debug("delivery tier check failed instId={} message={}",
@@ -780,6 +817,7 @@ public class OkxContractScanner {
     private List<ContractCandidate> runDeepAnalysisConcurrent(
             ScanContext ctx,
             List<TickerSnapshot> deepTargets,
+            Set<String> attempted,
             MarketEnvironment environment,
             Map<String, ProviderResult<MarketCapSnapshot>> mcapByBase,
             Map<String, OpenInterestHistorySnapshot> oiByInstId,
@@ -794,6 +832,7 @@ public class OkxContractScanner {
         int configuredConcurrency = Math.max(1, agentProperties.selection().deepAnalysisConcurrency());
         int poolSize = Math.min(configuredConcurrency, deepTargets.size());
         ExecutorService pool = Executors.newFixedThreadPool(poolSize);
+        var completed = new ExecutorCompletionService<DeepAnalysisPiece>(pool);
         List<Future<DeepAnalysisPiece>> futures = new ArrayList<>(deepTargets.size());
         List<ContractCandidate> candidates = new ArrayList<>();
         try {
@@ -803,52 +842,51 @@ public class OkxContractScanner {
                     ctx.addSkippedByDeadline(deepTargets.size() - futures.size());
                     break;
                 }
-                futures.add(pool.submit(() -> analyzeDeepTarget(ctx, snapshot, environment, mcapByBase)));
+                futures.add(completed.submit(() -> analyzeDeepTarget(ctx, snapshot, attempted, environment, mcapByBase)));
             }
             Instant hardStop = ctx.hardStopAt();
             for (int index = 0; index < futures.size(); index++) {
-                Future<DeepAnalysisPiece> future = futures.get(index);
                 if (ctx.isExpired() || ctx.isPastHardStop()) {
-                    cancelRemainingDeepAnalysis(futures, index, ctx, deepTargets.size());
+                    cancelRemainingDeepAnalysis(futures, ctx, deepTargets.size());
                     break;
                 }
                 Duration waitBudget = waitBudget(ctx, hardStop);
                 if (waitBudget.isZero()) {
-                    cancelRemainingDeepAnalysis(futures, index, ctx, deepTargets.size());
+                    cancelRemainingDeepAnalysis(futures, ctx, deepTargets.size());
                     break;
                 }
                 try {
-                    DeepAnalysisPiece piece = future.get(waitBudget.toMillis(), TimeUnit.MILLISECONDS);
+                    Future<DeepAnalysisPiece> ready = completed.poll(waitBudget.toMillis(), TimeUnit.MILLISECONDS);
+                    if (ready == null) {
+                        cancelRemainingDeepAnalysis(futures, ctx, deepTargets.size());
+                        break;
+                    }
+                    DeepAnalysisPiece piece = ready.get();
                     mergeDeepAnalysisPiece(ctx, piece, candidates, oiByInstId, fundingByInstId,
                             relativeStrengthByInstId, relativeStrengthQualityByInstId,
                             athBreakoutByInstId, athBreakoutQualityByInstId);
-                } catch (TimeoutException ex) {
-                    future.cancel(true);
-                    ctx.markPartialTimeout();
-                    cancelRemainingDeepAnalysis(futures, index + 1, ctx, deepTargets.size());
-                    break;
                 } catch (ExecutionException ex) {
                     Throwable cause = ex.getCause();
                     if (cause instanceof InterruptedException || Thread.currentThread().isInterrupted()) {
                         Thread.currentThread().interrupt();
                         ctx.markPartialTimeout();
-                        cancelRemainingDeepAnalysis(futures, index + 1, ctx, deepTargets.size());
+                        cancelRemainingDeepAnalysis(futures, ctx, deepTargets.size());
                         break;
                     }
                     if (ctx.isExpired() || ctx.isPastHardStop() || !ctx.acceptingResults()) {
-                        cancelRemainingDeepAnalysis(futures, index + 1, ctx, deepTargets.size());
+                        cancelRemainingDeepAnalysis(futures, ctx, deepTargets.size());
                         break;
                     }
                     log.warn("deep analysis task failed scanId={} message={}",
                             ctx.scanId(), cause == null ? ex.getMessage() : cause.getMessage());
                 } catch (CancellationException ex) {
                     ctx.markPartialTimeout();
-                    cancelRemainingDeepAnalysis(futures, index + 1, ctx, deepTargets.size());
+                    cancelRemainingDeepAnalysis(futures, ctx, deepTargets.size());
                     break;
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
                     ctx.markPartialTimeout();
-                    cancelRemainingDeepAnalysis(futures, index, ctx, deepTargets.size());
+                    cancelRemainingDeepAnalysis(futures, ctx, deepTargets.size());
                     break;
                 }
             }
@@ -870,6 +908,7 @@ public class OkxContractScanner {
     private DeepAnalysisPiece analyzeDeepTarget(
             ScanContext ctx,
             TickerSnapshot snapshot,
+            Set<String> attempted,
             MarketEnvironment environment,
             Map<String, ProviderResult<MarketCapSnapshot>> mcapByBase) {
         if (!ctx.acceptingResults() || ctx.isExpired()) {
@@ -877,6 +916,7 @@ public class OkxContractScanner {
         }
         ctx.setStage("deep_analysis:" + snapshot.instId());
         ctx.beginDeepAnalysis();
+        attempted.add(snapshot.instId());
         try {
             String base = safeBaseOf(snapshot.instId());
             ProviderResult<MarketCapSnapshot> mcapResult = base == null
@@ -1020,12 +1060,11 @@ public class OkxContractScanner {
 
     private static void cancelRemainingDeepAnalysis(
             List<Future<DeepAnalysisPiece>> futures,
-            int startIndex,
             ScanContext ctx,
             int deepTargetCount) {
         ctx.markPartialTimeout();
-        for (int index = startIndex; index < futures.size(); index++) {
-            futures.get(index).cancel(true);
+        for (Future<DeepAnalysisPiece> future : futures) {
+            future.cancel(true);
         }
         ctx.addSkippedByDeadline(Math.max(0, deepTargetCount - ctx.deepAnalysisCompleted()));
     }
@@ -1553,7 +1592,8 @@ public class OkxContractScanner {
         if (finalRankScore.compareTo(BigDecimal.valueOf(agentProperties.ranking().minFinalRankScore())) < 0) {
             return "WAIT";
         }
-        return ContractSignalAnalyzer.action(signalType, adjustedScore, entryTiming5m, newsRisk);
+        return ContractSignalAnalyzer.action(signalType, adjustedScore, entryTiming5m, newsRisk,
+                agentProperties.score().minTotalScore());
     }
 
     private BigDecimal safeFundingRate(String instId) {
@@ -1567,22 +1607,6 @@ public class OkxContractScanner {
             log.debug("funding rate unavailable instId={} message={}", instId, ex.getMessage());
         }
         return null;
-    }
-
-    /**
-     * 用于 V1 路径预过滤：funding rate 拿得到才保留。失败 / 超时 / 数据缺失一律视为不可用。
-     * {@link #safeFundingRate(String)} 同样保留 null/UNKNOWN 语义；本方法用于 V1 预过滤，
-     * 避免为随后会被安全跳过的标的继续执行深度分析。
-     */
-    private boolean hasFundingRate(String instId) {
-        try {
-            JsonNode root = okxRestClient.publicGet("/api/v5/public/funding-rate?instId=" + OkxRestClient.encode(instId));
-            JsonNode data = root.path("data");
-            return data.isArray() && !data.isEmpty()
-                    && nullableDecimal(data.get(0), "fundingRate") != null;
-        } catch (Exception ex) {
-            return false;
-        }
     }
 
     /**
@@ -1625,13 +1649,16 @@ public class OkxContractScanner {
         private final BigDecimal coinAmount;
         private final BigDecimal usdNotional;
 
-        private OpenInterestReading(BigDecimal coinAmount, BigDecimal usdNotional) {
+        private final long timestamp;
+
+        private OpenInterestReading(BigDecimal coinAmount, BigDecimal usdNotional, long timestamp) {
+            this.timestamp = timestamp;
             this.coinAmount = coinAmount;
             this.usdNotional = usdNotional;
         }
 
         static OpenInterestReading unavailable() {
-            return new OpenInterestReading(null, null);
+            return new OpenInterestReading(null, null, 0);
         }
 
         static OpenInterestReading fromOkxRow(String instId, JsonNode row, BigDecimal lastPrice) {
@@ -1647,7 +1674,10 @@ public class OkxContractScanner {
                     && instId != null && instId.endsWith("-USDT-SWAP")) {
                 usd = oiCcy.multiply(lastPrice);
             }
-            return new OpenInterestReading(oiCcy, usd);
+            if (!row.path("instId").asText(instId).equals(instId)) {
+                return unavailable();
+            }
+            return new OpenInterestReading(oiCcy, usd, row.path("ts").asLong(0));
         }
 
         BigDecimal coinAmount() {

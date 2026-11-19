@@ -1,3 +1,4 @@
+import { colors } from '../designTokens';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import {
   Alert,
@@ -45,7 +46,7 @@ export function PendingOrderReviewDialog({ open, record, submitting, tradingMode
             onChange={(event) => setMarginAmount(event.target.value)}
             type="number"
             size="small"
-            inputProps={{ min: 0, step: '0.01' }}
+            inputProps={{ inputMode: 'decimal', min: 0, step: '0.01' }}
             helperText="这里输入的是保证金，不是开仓价；确认时按 保证金 × 杠杆 ÷ 计划入场价 换算下单数量"
             fullWidth
           />
@@ -54,7 +55,7 @@ export function PendingOrderReviewDialog({ open, record, submitting, tradingMode
               预计名义仓位约 {formatNumber(notional, 2)} USDT。提交成功只代表OKX已接收委托，成交、账单和持仓以OKX为准。
             </Alert>
           ) : null}
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' }, gap: 1 }}>
             <ReviewItem label="合约" value={String(record.instId ?? '-')} emphasis />
             <ReviewItem label="动作" value={formatAction(record.action)} emphasis />
             <ReviewItem label="方向" value={`${formatSide(record.side)} / ${formatSide(record.posSide)}`} />
@@ -72,7 +73,7 @@ export function PendingOrderReviewDialog({ open, record, submitting, tradingMode
           </Box>
         </Stack>
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2 }}>
+      <DialogActions>
         <Button onClick={onClose} disabled={submitting}>
           返回
         </Button>
@@ -88,16 +89,16 @@ function ReviewItem({ label, value, emphasis = false }: { label: string; value: 
   return (
     <Box
       sx={{
-        p: 1.25,
+        p: 1.5,
         borderRadius: 1,
-        border: '1px solid rgba(148, 163, 184, 0.12)',
-        bgcolor: emphasis ? 'rgba(245, 158, 11, 0.08)' : 'rgba(15, 23, 42, 0.62)',
+        border: 1, borderColor: 'divider',
+        bgcolor: emphasis ? colors.warningSoft : colors.subtle,
       }}
     >
       <Typography variant="caption" color="text.secondary" fontWeight={800}>
         {label}
       </Typography>
-      <Typography sx={{ mt: 0.5, fontFamily: '"JetBrains Mono", monospace', overflowWrap: 'anywhere' }} fontWeight={800}>
+      <Typography sx={{ mt: 0.5, overflowWrap: 'anywhere' }} fontWeight={800}>
         {value}
       </Typography>
     </Box>

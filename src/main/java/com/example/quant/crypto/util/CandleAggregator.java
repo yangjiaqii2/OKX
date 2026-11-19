@@ -44,7 +44,7 @@ public final class CandleAggregator {
      *   <li>输入先按 timestamp 升序排序（容忍乱序）</li>
      *   <li>按 {@code floor(timestamp mod 1200)} 对齐到 20m 桶起点</li>
      *   <li>桶内 5m K 线数 < 4 → 整桶丢弃（V1 行为，避免尾桶不完整）</li>
-     *   <li>桶内 5m K 线数 &gt; 4 → 取前 4 根（防御异常长桶）</li>
+     *   <li>完全重复的行去重；时间点缺失、错位或冲突的桶丢弃</li>
      *   <li>输出 20m K 线：open = 首根 5m open；close = 第 4 根 5m close；high/low/volume = 桶内 4 根的 max/min/sum</li>
      *   <li>尾部最多保留 {@link #MAX_AGGREGATED_BARS} 根（V1 行为）</li>
      * </ol>
@@ -58,6 +58,8 @@ public final class CandleAggregator {
         }
         // 1. 按 timestamp 排序（输入可能乱序，例如 Okx 返回倒序或被打散）。
         List<ContractCandle> sorted = fiveMinute.stream()
+                .filter(c -> c != null && c.timestamp() != null)
+                .distinct()
                 .sorted(Comparator.comparing(ContractCandle::timestamp))
                 .toList();
         // 2. 按自然 UTC 20m 边界分桶（00/20/40），不完整 bucket 直接丢弃。
@@ -70,14 +72,20 @@ public final class CandleAggregator {
         }
         List<ContractCandle> result = new ArrayList<>();
         for (Map.Entry<Instant, List<ContractCandle>> e : byBucket.entrySet()) {
-            List<ContractCandle> bucket = e.getValue();
-            if (bucket.size() < MIN_CANDLES_PER_BUCKET) {
-                // 不完整（尾桶或缺数据），按 V1 行为丢弃
+            List<ContractCandle> window = e.getValue();
+            if (window.size() != MIN_CANDLES_PER_BUCKET) {
                 continue;
             }
-            List<ContractCandle> window = bucket.size() > MIN_CANDLES_PER_BUCKET
-                    ? bucket.subList(0, MIN_CANDLES_PER_BUCKET)
-                    : bucket;
+            boolean aligned = true;
+            for (int i = 0; i < window.size(); i++) {
+                if (!e.getKey().plusSeconds(i * 300L).equals(window.get(i).timestamp())) {
+                    aligned = false;
+                    break;
+                }
+            }
+            if (!aligned) {
+                continue;
+            }
             BigDecimal high = window.stream().map(ContractCandle::high)
                     .max(Comparator.naturalOrder()).orElse(BigDecimal.ZERO);
             BigDecimal low = window.stream().map(ContractCandle::low)

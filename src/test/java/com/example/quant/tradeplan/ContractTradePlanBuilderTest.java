@@ -186,7 +186,7 @@ class ContractTradePlanBuilderTest {
 
         assertThat(plan.action()).isEqualTo(TradePlanType.WATCH);
         assertThat(plan.suggestedMargin()).isZero();
-        assertThat(plan.riskList()).anyMatch(reason -> reason.contains("total_score_below_65"));
+        assertThat(plan.riskList()).anyMatch(reason -> reason.contains("total_score_below_60"));
     }
 
     @Test

@@ -14,9 +14,9 @@ class AgentPropertiesProviderTest {
     }
 
     @Test
-    void minimumOrderBookDepthDefaultsToTwentyThousandUsdt() {
+    void minimumOrderBookDepthDefaultsToFiveThousandUsdt() {
         AgentProperties properties = new AgentProperties();
 
-        assertThat(properties.market().minDepthUsdt()).isEqualByComparingTo("20000");
+        assertThat(properties.market().minDepthUsdt()).isEqualByComparingTo("5000");
     }
 }

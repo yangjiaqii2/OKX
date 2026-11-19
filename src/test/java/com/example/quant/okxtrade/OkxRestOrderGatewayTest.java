@@ -25,6 +25,25 @@ import org.junit.jupiter.api.Test;
 
 class OkxRestOrderGatewayTest {
     @Test
+    void hedgeAmendValidatesTheActualLegAndOmitsLocalSideFromTheWire() {
+        OkxRestClient client = mock(OkxRestClient.class);
+        var shortPosition = new PositionSummary("BTC-USDT-SWAP", "short", "3", BigDecimal.TEN,
+                BigDecimal.ZERO, BigDecimal.ONE, BigDecimal.ONE, "cross", BigDecimal.TEN,
+                BigDecimal.ZERO, BigDecimal.TEN, BigDecimal.ONE, "OKX_DEMO", "MANAGED", "LOCAL_FILLS");
+        var gateway = gateway(client, new TradingReadinessService(), TradingMode.DEMO, List.of(shortPosition));
+        var context = TradingOperationContext.of(TradingOperationType.AMEND_PROTECTION, "alice", "order", "plan");
+        var amend = Map.of("instId", "BTC-USDT-SWAP", "posSide", "short", "algoClOrdId", "stop123",
+                "reqId", "amend123", "newSlTriggerPx", "10", "newSz", "3");
+        AuthUserContext.runAs("alice", () -> gateway.amendAlgoOrder(amend, context.withDirection("short")));
+        var wire = new LinkedHashMap<>(amend);
+        wire.remove("posSide");
+        verify(client).privatePost("/api/v5/trade/amend-algos", wire);
+        assertThatThrownBy(() -> AuthUserContext.runAs("alice", () ->
+                gateway.amendAlgoOrder(amend, context.withDirection("long"))))
+                .hasMessageContaining("POSITION_DIRECTION_CHANGED");
+    }
+
+    @Test
     void fallsBackToHistoricalFillsWhenRecentWindowIsEmpty() {
         OkxRestClient client = mock(OkxRestClient.class);
         OkxRestOrderGateway gateway = new OkxRestOrderGateway(client);

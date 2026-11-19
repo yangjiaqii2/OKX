@@ -250,7 +250,7 @@ class AutoTradeLifecycleServiceTest {
         PendingOrderEntity persisted = PendingOrderEntity.from(order);
         PendingOrderRepository repository = mock(PendingOrderRepository.class);
         when(repository.findAll()).thenReturn(List.of(persisted));
-        when(repository.save(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(repository.saveAndFlush(any(PendingOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         PendingOrderService restoredService = new PendingOrderService(120, repository);
         PendingOrder restored = restoredService.get(order.id());
         LifecycleGateway gateway = new LifecycleGateway();
@@ -526,12 +526,19 @@ class AutoTradeLifecycleServiceTest {
         PendingOrder order = autoOrder(pendingOrderService, budgetService,
                 samplePlan("BTC-USDT-SWAP", TradePlanType.OPEN_LONG));
         order.markSubmitted(Instant.parse("2026-06-18T00:00:00Z"), "entry-ord-1");
-        LifecycleGateway gateway = new LifecycleGateway();
+        MutablePositionSnapshotService positions = new MutablePositionSnapshotService(
+                position("BTC-USDT-SWAP", "long", "4", new BigDecimal("100")));
+        LifecycleGateway gateway = new LifecycleGateway() {
+            @Override
+            public JsonNode cancelOrder(Map<String, String> payload) {
+                accFillSz = new BigDecimal("7");
+                positions.replace(position("BTC-USDT-SWAP", "long", "7", new BigDecimal("100")));
+                return super.cancelOrder(payload);
+            }
+        };
         gateway.orderState = "partially_filled";
         gateway.accFillSz = new BigDecimal("4");
         gateway.avgPx = new BigDecimal("100");
-        MutablePositionSnapshotService positions = new MutablePositionSnapshotService(
-                position("BTC-USDT-SWAP", "long", "4", new BigDecimal("100")));
         AutoTradeLifecycleService service = new AutoTradeLifecycleService(
                 pendingOrderService, budgetService, properties, gateway, positions);
 
@@ -539,10 +546,11 @@ class AutoTradeLifecycleServiceTest {
         assertThat(gateway.algoPayloads).extracting(payload -> payload.get("sz"))
                 .containsExactly("4", "1", "1", "2");
 
-        gateway.accFillSz = new BigDecimal("7");
-        positions.replace(position("BTC-USDT-SWAP", "long", "7", new BigDecimal("100")));
+        service = new AutoTradeLifecycleService(
+                pendingOrderService, budgetService, properties, gateway, positions);
 
-        service.runOnce(Instant.parse("2026-06-18T00:02:00Z"));
+        service.runOnce(Instant.parse("2026-06-18T00:11:00Z"));
+        assertThat(gateway.cancelPayload).containsEntry("clOrdId", order.clientOrderId());
 
         assertThat(gateway.algoPayloads).extracting(payload -> payload.get("sz"))
                 .containsExactly("4", "1", "1", "2", "7", "1", "1", "1");

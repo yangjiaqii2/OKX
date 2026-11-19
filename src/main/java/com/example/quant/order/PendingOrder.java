@@ -42,7 +42,10 @@ public class PendingOrder {
     private final BigDecimal volume24h;
     private final UUID tradePlanId;
     private final String confirmToken;
-    private OrderStatus status;
+    private volatile OrderStatus status;
+    private Long persistedVersion;
+    Long persistedVersion() { return persistedVersion; }
+    void persistedVersion(Long version) { persistedVersion = version; }
     private boolean userConfirmed;
     private Instant confirmedAt;
     private Instant submittedAt;
@@ -165,6 +168,17 @@ public class PendingOrder {
         this.canonicalPlanJson = CanonicalPlanJsonCodec.write(plan);
         changed();
     }
+
+    synchronized void bindCanonicalExecution(CanonicalExecutablePlan plan, BigDecimal baseSize) {
+        String snapshot = CanonicalPlanJsonCodec.write(plan);
+        this.size = baseSize;
+        this.executableContractQuantity = plan.entry().executableContractQuantity();
+        this.executableStopLossAmount = plan.risk().executableStopLossAmount();
+        this.canonicalExecutablePlan = plan;
+        this.canonicalPlanJson = snapshot;
+        changed();
+    }
+
     public BigDecimal marginAmount() { return marginAmount; }
     public UUID budgetReservationId() { return budgetReservationId; }
     public String budgetAllocationJson() { return budgetAllocationJson; }

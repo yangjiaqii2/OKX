@@ -16,6 +16,7 @@ import {
 } from '@mui/material';
 import { FormEvent, useState } from 'react';
 import { useLogin, useNotify } from 'react-admin';
+import { colors, elevation, safeArea } from '../designTokens';
 
 export function LoginPage() {
   const login = useLogin();
@@ -54,13 +55,14 @@ export function LoginPage() {
     <Box
       sx={{
         minHeight: '100dvh',
-        bgcolor: '#0f141b',
+        bgcolor: 'background.default',
+        backgroundImage: `radial-gradient(ellipse at 15% 0%, ${colors.primarySoft}, transparent 68%)`,
         display: 'grid',
         placeItems: 'center',
-        px: 2,
-        py: 4,
-        position: 'relative',
-        overflow: 'hidden',
+        pt: `calc(24px + ${safeArea.top})`,
+        pb: `calc(24px + ${safeArea.bottom})`,
+        pl: `calc(16px + ${safeArea.left})`,
+        pr: `calc(16px + ${safeArea.right})`,
       }}
     >
       <Paper
@@ -68,42 +70,45 @@ export function LoginPage() {
         onSubmit={(event) => void submit(event)}
         sx={{
           width: '100%',
-          maxWidth: 860,
+          maxWidth: 880,
           display: 'grid',
-          gridTemplateColumns: { xs: '1fr', md: '0.9fr 1.1fr' },
+          gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'minmax(0, 1fr) minmax(0, 1fr)' },
           overflow: 'hidden',
-          borderRadius: 2,
-          border: '1px solid rgba(148, 163, 184, 0.18)',
-          bgcolor: 'rgba(17, 24, 39, 0.96)',
-          boxShadow: '0 24px 80px rgba(0, 0, 0, 0.36)',
-          zIndex: 1,
+          border: 1,
+          borderColor: 'divider',
+          bgcolor: 'background.paper',
+          boxShadow: elevation.overlay,
+          overflowWrap: 'anywhere',
         }}
       >
         <Stack
-          spacing={2.25}
+          spacing={3}
           sx={{
-            p: { xs: 3, md: 4 },
-            borderRight: { md: '1px solid rgba(148, 163, 184, 0.14)' },
-            bgcolor: 'rgba(15, 23, 42, 0.72)',
+            p: { xs: 3, md: 5 },
+            borderRight: { md: 1 },
+            borderBottom: { xs: 1, md: 0 },
+            borderColor: 'divider',
+            bgcolor: colors.primarySoft,
+            justifyContent: 'center',
           }}
         >
-          <Stack direction="row" spacing={1.25} alignItems="center">
+          <Stack direction="row" spacing={1.5} alignItems="center">
             <Box
               sx={{
                 width: 40,
                 height: 40,
-                borderRadius: 1.25,
+                borderRadius: 1,
                 display: 'grid',
                 placeItems: 'center',
-                bgcolor: 'rgba(20, 184, 166, 0.14)',
-                color: 'primary.main',
-                border: '1px solid rgba(20, 184, 166, 0.28)',
+                bgcolor: 'primary.main',
+                color: 'primary.contrastText',
+                flexShrink: 0,
               }}
             >
               <LockIcon fontSize="small" />
             </Box>
             <Box>
-              <Typography variant="h5" fontWeight={900} sx={{ letterSpacing: 0 }}>
+              <Typography variant="h5">
                 Quant Desk
               </Typography>
               <Typography variant="body2" color="text.secondary">
@@ -113,7 +118,7 @@ export function LoginPage() {
           </Stack>
 
           <Box>
-            <Typography variant="h4" fontWeight={950} sx={{ mb: 1, letterSpacing: 0 }}>
+            <Typography variant="h4" sx={{ mb: 1, fontSize: { xs: '1.375rem', md: '1.75rem' } }}>
               登录后管理交易系统
             </Typography>
             <Typography color="text.secondary" sx={{ lineHeight: 1.7 }}>
@@ -122,9 +127,9 @@ export function LoginPage() {
           </Box>
         </Stack>
 
-        <Stack spacing={2.25} sx={{ p: { xs: 3, md: 4 } }}>
+        <Stack spacing={3} sx={{ p: { xs: 3, md: 5 } }}>
           <Box>
-            <Typography variant="h5" fontWeight={900} sx={{ letterSpacing: 0 }}>
+            <Typography component="h1" variant="h5">
               用户登录
             </Typography>
             <Typography variant="body2" color="text.secondary">
@@ -168,7 +173,7 @@ export function LoginPage() {
             size="large"
             startIcon={submitting ? <CircularProgress size={16} color="inherit" /> : <LoginIcon />}
             disabled={submitting}
-            sx={{ minHeight: 46, width: { xs: '100%', sm: 'auto' } }}
+            sx={{ minHeight: 48 }}
           >
             {submitting ? '登录中...' : '登录'}
           </Button>

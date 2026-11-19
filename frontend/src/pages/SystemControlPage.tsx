@@ -9,6 +9,7 @@ import {
   CardContent,
   Chip,
   Divider,
+  InputAdornment,
   Stack,
   TextField,
   ToggleButton,
@@ -172,11 +173,10 @@ export function SystemControlPage() {
 
   return (
     <PageShell title="系统控制" maxWidth={980}>
-      <Stack spacing={2.5} maxWidth={900}>
+      <Stack spacing={3}>
         <PageHeader
           title="系统控制"
           subtitle="集中放置影响交易流程的系统级动作。"
-          eyebrow="Control Room"
         />
         <Alert severity="warning">紧急停止不会删除数据，但会切换后端运行状态。实盘环境下请先确认当前OKX未留有未处理订单。</Alert>
         <Card>
@@ -245,7 +245,9 @@ export function SystemControlPage() {
                   disabled={submitting || Boolean(status.autoTradeEnabled)}
                   inputProps={{ inputMode: 'decimal', min: 0, max: autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT' ? 100 : undefined, step: '0.01' }}
                   sx={{ width: { xs: 1, sm: 220 } }}
-                  InputProps={{ endAdornment: <Typography variant="caption" color="text.secondary">{autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT' ? '%' : 'USDT'}</Typography> }}
+                  InputProps={{
+                    endAdornment: <InputAdornment position="end">{autoTradeBudgetMode === 'AVAILABLE_BALANCE_PERCENT' ? '%' : 'USDT'}</InputAdornment>,
+                  }}
                 />
                 <ToggleButtonGroup
                   size="small"
@@ -291,7 +293,7 @@ export function SystemControlPage() {
                     disabled={submitting || Boolean(status.autoTradeEnabled)}
                     inputProps={{ inputMode: 'numeric', min: 60, max: 100, step: 1 }}
                     sx={{ width: { xs: 1, sm: 150 } }}
-                    InputProps={{ endAdornment: <Typography variant="caption" color="text.secondary">分</Typography> }}
+                    InputProps={{ endAdornment: <InputAdornment position="end">分</InputAdornment> }}
                   />
                 ) : null}
                 <TextField
@@ -302,7 +304,7 @@ export function SystemControlPage() {
                   disabled={submitting || Boolean(status.autoTradeEnabled)}
                   inputProps={{ inputMode: 'numeric', min: 1, max: 20, step: 1 }}
                   sx={{ width: { xs: 1, sm: 130 } }}
-                  InputProps={{ endAdornment: <Typography variant="caption" color="text.secondary">x</Typography> }}
+                  InputProps={{ endAdornment: <InputAdornment position="end">x</InputAdornment> }}
                 />
                 <Button
                   startIcon={<SmartToyIcon />}
@@ -330,6 +332,7 @@ export function SystemControlPage() {
         <Confirm
           isOpen={emergencyOpen}
           title="触发紧急停止"
+          confirmColor="warning"
           content="确认后后端会切换到紧急停止状态。请先确认当前 OKX 没有未处理订单。"
           confirm="紧急停止"
           cancel="返回"

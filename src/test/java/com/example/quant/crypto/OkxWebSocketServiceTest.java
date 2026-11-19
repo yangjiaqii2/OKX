@@ -34,6 +34,18 @@ import org.junit.jupiter.api.Test;
 
 class OkxWebSocketServiceTest {
     @Test
+    void connectionCannotClearStartupBlockOrItsReason() {
+        TradingReadinessService ready = new TradingReadinessService();
+        ready.updateConnection(TradingEngineState.READY, "CONNECTED");
+        assertThat(ready.ready()).isFalse();
+        ready.updateStartup(TradingEngineState.BLOCKED, "PREFLIGHT_FAILED");
+        ready.updateConnection(TradingEngineState.DEGRADED, "DISCONNECTED");
+        ready.updateConnection(TradingEngineState.READY, "RECONNECTED");
+        assertThat(ready.snapshot().reason()).isEqualTo("PREFLIGHT_FAILED");
+        assertThat(ready.ready()).isFalse();
+    }
+
+    @Test
     void demoModeConnectsOnlyToOfficialDemoPrivateEndpoint() {
         AtomicReference<URI> uri = new AtomicReference<>();
         AtomicReference<WebSocket.Listener> listener = new AtomicReference<>();
@@ -105,6 +117,7 @@ class OkxWebSocketServiceTest {
         WebSocket socket = socket();
         MutableClock clock = new MutableClock(Instant.parse("2026-08-09T12:00:00Z"));
         TradingReadinessService readiness = new TradingReadinessService();
+        readiness.updateStartup(TradingEngineState.DEGRADED, "PRIVATE_WS_RECONCILIATION_PENDING");
         OkxWebSocketService service = service((target, nextListener) -> {
             connects.incrementAndGet();
             listener.set(nextListener);

@@ -65,14 +65,11 @@ class V2SelectionScoreDirectionalTest {
     }
 
     @Test
-    @DisplayName("relativeStrength：做空分不是 100 减去做多分")
-    void relativeStrengthShortScoreIsNotAnArithmeticInversionOfLongScore() {
-        BigDecimal longScore = dimension(relativeStrengthCandidate(DirectionBias.BULLISH, "5"),
-                V2ScoreDimension.RELATIVE_STRENGTH);
-        BigDecimal shortScore = dimension(relativeStrengthCandidate(DirectionBias.BEARISH, "5"),
-                V2ScoreDimension.RELATIVE_STRENGTH);
-
-        assertThat(shortScore).isNotEqualByComparingTo(BigDecimal.valueOf(100).subtract(longScore));
+    void neutralRelativePerformanceScoresFiftyForBothDirections() {
+        for (DirectionBias direction : List.of(DirectionBias.BULLISH, DirectionBias.BEARISH)) {
+            assertThat(dimension(relativeStrengthCandidate(direction, "0"), V2ScoreDimension.RELATIVE_STRENGTH))
+                    .isEqualByComparingTo("50");
+        }
     }
 
     @Test
@@ -275,6 +272,15 @@ class V2SelectionScoreDirectionalTest {
         BigDecimal score = CALC.calculate(candidate).dimensionScores().get(dimension);
         assertThat(score).as("维度 %s 必须参与评分", dimension).isNotNull();
         return score;
+    }
+
+    @Test
+    void missingScoreCannotOutrankAScoredCandidateInEitherDirection() {
+        var scored = breakoutCandidate(DirectionBias.BULLISH, "-2", "NEAR_ATH", "Z-USDT-SWAP");
+        var missing = breakoutCandidate(DirectionBias.BEARISH, "-2", "NEAR_ATH", "A-USDT-SWAP");
+        var snapshot = java.util.Map.of(scored.instId(), CALC.calculate(scored));
+        assertThat(V2SelectionScoreCalculator.compareForRanking(scored, missing, snapshot)).isNegative();
+        assertThat(V2SelectionScoreCalculator.compareForRanking(missing, scored, snapshot)).isPositive();
     }
 
     private static ContractCandidate relativeStrengthCandidate(DirectionBias direction, String rs) {

@@ -9,19 +9,23 @@ import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/**
- * 交易机会导向选币 — 深度分析名额分配。
- *
- * <p>硬过滤已经保证流动性 / 市值 / 数据质量合格。本层只负责"把有限的深度分析名额分配给谁"，
- * 不做任何行情判断，也不改变名额总量。要证明的性质：
- * <ul>
- *   <li>静态名单上，成交额排名靠后但硬过滤合格的候选，会被确定性轮换覆盖；</li>
- *   <li>该覆盖上界在名单增删、成交额排序变化、进程重启时不再成立；</li>
- *   <li>任何一轮分配都不突破 {@code deepAnalysisLimit}；</li>
- *   <li>相同输入 + 相同游标 → 完全相同的输出（确定性、可回放）。</li>
- * </ul>
- */
 class DeepAnalysisTargetAllocatorTest {
+
+    private static class Rounds {
+        final DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        final java.util.Map<String, DeepAnalysisTargetAllocator.Visit> history = new java.util.HashMap<>();
+        long time = 1;
+        DeepAnalysisTargetAllocator.Allocation allocate(List<String> ranked, int limit, int rotation) {
+            return allocate(ranked, limit, rotation, Set.of());
+        }
+        DeepAnalysisTargetAllocator.Allocation allocate(List<String> ranked, int limit, int rotation, Set<String> pins) {
+            return allocator.allocate(ranked, limit, rotation, pins, history, time);
+        }
+        void commit(DeepAnalysisTargetAllocator.Allocation allocation) {
+            for (String id : allocation.instIds()) history.put(id, new DeepAnalysisTargetAllocator.Visit(time, time));
+            time++;
+        }
+    }
 
     private static List<String> ranked(int count) {
         List<String> out = new ArrayList<>(count);
@@ -35,7 +39,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("静态名单上，成交额排名靠后的合格候选在有界轮数内会被轮换覆盖")
     void lowTurnoverQualifiedCandidateIsCoveredWithinBoundedRounds() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         String tailLast = passed.get(99);
         int headSize = 30 - 6;
@@ -64,7 +68,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("静态名单上，轮换在有界轮数内覆盖全部合格候选")
     void rotationCoversEveryQualifiedCandidateWithoutGaps() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
         Set<String> seen = new LinkedHashSet<>();
 
         int rounds = (100 - (30 - 6) + 6 - 1) / 6;
@@ -81,7 +85,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("任何一轮分配都不突破 deepAnalysisLimit，且不产生重复标的")
     void allocationNeverExceedsDeepAnalysisLimitAndHasNoDuplicates() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         for (int round = 0; round < 40; round++) {
             DeepAnalysisTargetAllocator.Allocation allocation = allocator.allocate(passed, 30, 6);
@@ -98,7 +102,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("成交额头部名额保持不变：每轮都包含成交额最高的候选")
     void volumeHeadIsAlwaysRetained() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         for (int round = 0; round < 25; round++) {
             DeepAnalysisTargetAllocator.Allocation allocation = allocator.allocate(passed, 30, 6);
@@ -113,7 +117,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("合格候选数量不超过上限时全部分析，不启用轮换")
     void everyCandidateIsAnalyzedWhenPassedFitsWithinLimit() {
         List<String> passed = ranked(12);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         DeepAnalysisTargetAllocator.Allocation allocation = allocator.allocate(passed, 30, 6);
 
@@ -122,11 +126,11 @@ class DeepAnalysisTargetAllocatorTest {
     }
 
     @Test
-    @DisplayName("确定性：相同输入与相同游标状态产生完全相同的分配序列")
+    @DisplayName("确定性：相同输入与相同覆盖记录产生完全相同的分配序列")
     void identicalInputAndCursorProduceIdenticalAllocationSequence() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator left = new DeepAnalysisTargetAllocator();
-        DeepAnalysisTargetAllocator right = new DeepAnalysisTargetAllocator();
+        Rounds left = new Rounds();
+        Rounds right = new Rounds();
 
         for (int round = 0; round < 20; round++) {
             DeepAnalysisTargetAllocator.Allocation leftAllocation = left.allocate(passed, 30, 6);
@@ -139,10 +143,10 @@ class DeepAnalysisTargetAllocatorTest {
     }
 
     @Test
-    @DisplayName("未 commit 的分配不推进游标：扫描超时中断不会跳过未分析的候选")
+    @DisplayName("尚未记录的分配不改变覆盖历史：扫描超时中断不会跳过未分析的候选")
     void allocationWithoutCommitDoesNotAdvanceCursor() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         DeepAnalysisTargetAllocator.Allocation first = allocator.allocate(passed, 30, 6);
         DeepAnalysisTargetAllocator.Allocation retry = allocator.allocate(passed, 30, 6);
@@ -159,7 +163,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("轮换配额为 0 时退化为纯成交额截断（旧行为可完整复现）")
     void zeroRotationQuotaReproducesPureTurnoverTruncation() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         DeepAnalysisTargetAllocator.Allocation allocation = allocator.allocate(passed, 30, 0);
 
@@ -171,7 +175,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("轮换配额被限制为不得吃光成交额头部名额")
     void rotationQuotaIsClampedSoTheVolumeHeadNeverBecomesEmpty() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         DeepAnalysisTargetAllocator.Allocation allocation = allocator.allocate(passed, 30, 999);
 
@@ -189,7 +193,7 @@ class DeepAnalysisTargetAllocatorTest {
     void pinnedInstIdIsAllocatedEveryRoundRegardlessOfTurnoverRank() {
         List<String> passed = ranked(100);
         String pinned = passed.get(95);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         for (int round = 0; round < 12; round++) {
             DeepAnalysisTargetAllocator.Allocation allocation =
@@ -206,7 +210,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("固定名额从总量内扣，不扩大 deepAnalysisLimit，请求预算不变")
     void pinnedSlotsAreTakenFromTheSameLimitAndNeverExpandIt() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         Set<String> pinned = new LinkedHashSet<>(List.of(passed.get(70), passed.get(80), passed.get(90)));
         DeepAnalysisTargetAllocator.Allocation allocation = allocator.allocate(passed, 30, 6, pinned);
@@ -221,7 +225,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("固定名额不会与成交额头部或轮换名额重复占用")
     void pinnedInstIdAlreadyInTurnoverHeadIsNotDoubleCounted() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         DeepAnalysisTargetAllocator.Allocation allocation =
                 allocator.allocate(passed, 30, 6, Set.of(passed.get(0)));
@@ -235,7 +239,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("不在硬过滤通过名单内的等待合约拿不到名额：本层不绕过资格判定")
     void pinnedInstIdOutsideThePassedUniverseIsNotForcedIn() {
         List<String> passed = ranked(40);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         DeepAnalysisTargetAllocator.Allocation allocation =
                 allocator.allocate(passed, 30, 6, Set.of("GONE-USDT-SWAP"));
@@ -249,7 +253,7 @@ class DeepAnalysisTargetAllocatorTest {
     @DisplayName("固定名额多于总量时仍然被总量截断，绝不突破请求预算")
     void pinnedCountExceedingLimitIsStillTruncatedToLimit() {
         List<String> passed = ranked(100);
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
 
         Set<String> pinned = new LinkedHashSet<>(passed.subList(50, 100));
         DeepAnalysisTargetAllocator.Allocation allocation = allocator.allocate(passed, 30, 6, pinned);
@@ -259,52 +263,33 @@ class DeepAnalysisTargetAllocatorTest {
     }
 
     @Test
-    @DisplayName("进程重启使游标归零：持续排在尾部的币可以一直进不了分析窗口")
-    void processRestartResetsCursorSoAStableTailCoinCanBeMissedIndefinitely() {
-        List<String> passed = ranked(100);
-        String tailLast = passed.get(99);
-
-        for (int round = 0; round < 40; round++) {
-            DeepAnalysisTargetAllocator restarted = new DeepAnalysisTargetAllocator();
-            DeepAnalysisTargetAllocator.Allocation allocation = restarted.allocate(passed, 30, 6);
-            assertThat(allocation.instIds())
-                    .as("第 %d 轮：新进程游标从 0 开始，轮换窗口永远是尾部前 6 个，末位币进不去", round)
-                    .doesNotContain(tailLast);
+    void restoredHistoryCovers229WithinElevenRoundsEvenWhenTailOrderChanges() {
+        List<String> passed = ranked(229);
+        var history = new java.util.HashMap<String, DeepAnalysisTargetAllocator.Visit>();
+        for (int round = 1; round <= 11; round++) {
+            java.util.Collections.rotate(passed.subList(10, passed.size()), 17);
+            var allocation = new DeepAnalysisTargetAllocator().allocate(passed, 30, 20, Set.of(), history, round);
+            for (String id : allocation.instIds()) {
+                history.put(id, new DeepAnalysisTargetAllocator.Visit(round, round));
+            }
         }
+        assertThat(history.keySet()).containsExactlyInAnyOrderElementsOf(passed);
     }
 
     @Test
-    @DisplayName("成交额排序每轮变化时，可以把同一个币一直挡在轮换窗口之外")
-    void turnoverReorderingCanKeepACoinOutOfTheRotationWindowIndefinitely() {
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
-        String victim = "VICTIM-USDT-SWAP";
-        int simulatedCursor = 0;
-
-        for (int round = 0; round < 30; round++) {
-            int tailSize = 76;
-            int dodge = Math.floorMod(simulatedCursor + 6, tailSize);
-            List<String> passed = new ArrayList<>();
-            for (int i = 0; i < 24; i++) {
-                passed.add("HEAD" + i + "-USDT-SWAP");
-            }
-            int filler = 0;
-            for (int t = 0; t < tailSize; t++) {
-                passed.add(t == dodge ? victim : "TAIL" + (filler++) + "-USDT-SWAP");
-            }
-
-            DeepAnalysisTargetAllocator.Allocation allocation = allocator.allocate(passed, 30, 6);
-            assertThat(allocation.instIds())
-                    .as("第 %d 轮：victim 被放在本轮窗口之后的下标，index-cursor 看不到它", round)
-                    .doesNotContain(victim);
-            allocator.commit(allocation);
-            simulatedCursor = allocation.nextCursor();
-        }
+    void failedTargetYieldsDuringCooldownAndBecomesEligibleForRetry() {
+        var allocator = new DeepAnalysisTargetAllocator();
+        var history = java.util.Map.of("B", new DeepAnalysisTargetAllocator.Visit(1000, 0),
+                "C", new DeepAnalysisTargetAllocator.Visit(900, 900));
+        var ranked = List.of("A", "B", "C");
+        assertThat(allocator.allocate(ranked, 2, 1, Set.of(), history, 1001).instIds()).containsExactly("A", "C");
+        assertThat(allocator.allocate(ranked, 2, 1, Set.of(), history, 301000).instIds()).containsExactly("A", "B");
     }
 
     @Test
     @DisplayName("尾部因新币进入而变长后，按原名单算出的覆盖上界不再够用")
     void growingTheTailMakesTheOriginalCoverageBoundInsufficient() {
-        DeepAnalysisTargetAllocator allocator = new DeepAnalysisTargetAllocator();
+        Rounds allocator = new Rounds();
         String victim = "VICTIM-USDT-SWAP";
         int originalBound = (76 + 6 - 1) / 6;
 
@@ -341,8 +326,8 @@ class DeepAnalysisTargetAllocatorTest {
     void emptyPinnedSetReproducesTheExistingAllocation() {
         List<String> passed = ranked(100);
 
-        DeepAnalysisTargetAllocator legacy = new DeepAnalysisTargetAllocator();
-        DeepAnalysisTargetAllocator withPinned = new DeepAnalysisTargetAllocator();
+        Rounds legacy = new Rounds();
+        Rounds withPinned = new Rounds();
 
         for (int round = 0; round < 5; round++) {
             DeepAnalysisTargetAllocator.Allocation a = legacy.allocate(passed, 30, 6);

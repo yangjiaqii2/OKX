@@ -165,17 +165,21 @@ public class ContractMarketScanTask {
                         java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO,
                         "duplicate_or_missing_closed_candle", Instant.now());
             } else {
-                if (scanResult.v2Scores().isEmpty()) {
-                    autoTrade = strategyDecisionService == null
-                            ? autoTradeService.evaluateAndExecute(decisionBatch.candidates())
-                            : autoTradeService.evaluateAndExecute(
-                                    decisionBatch.candidates(), decisionBatch.clientOrderIds());
-                } else {
-                    autoTrade = strategyDecisionService == null
-                            ? autoTradeService.evaluateAndExecute(
-                                    decisionBatch.candidates(), Map.of(), scanResult.v2Scores())
-                            : autoTradeService.evaluateAndExecute(
-                                    decisionBatch.candidates(), decisionBatch.clientOrderIds(), scanResult.v2Scores());
+                String coverage = coverageSummary(report);
+                try (var scope = org.slf4j.MDC.putCloseable("scanCoverage", coverage);
+                     var scanScope = org.slf4j.MDC.putCloseable("coverageScanId", scanId)) {
+                    if (scanResult.v2Scores().isEmpty()) {
+                        autoTrade = strategyDecisionService == null
+                                ? autoTradeService.evaluateAndExecute(decisionBatch.candidates())
+                                : autoTradeService.evaluateAndExecute(
+                                        decisionBatch.candidates(), decisionBatch.clientOrderIds());
+                    } else {
+                        autoTrade = strategyDecisionService == null
+                                ? autoTradeService.evaluateAndExecute(
+                                        decisionBatch.candidates(), Map.of(), scanResult.v2Scores())
+                                : autoTradeService.evaluateAndExecute(
+                                        decisionBatch.candidates(), decisionBatch.clientOrderIds(), scanResult.v2Scores());
+                    }
                 }
             }
             completeDecisions(decisionBatch.claims(), autoTrade, Instant.now());
@@ -289,6 +293,17 @@ public class ContractMarketScanTask {
         }
         message.append(", lockReleased=true");
         return message.toString();
+    }
+
+    private static String coverageSummary(ScanRunReport report) {
+        if (report == null || report.diagnostics() == null) return "";
+        var diagnostics = report.diagnostics();
+        var stages = diagnostics.funnel().stages();
+        if (!stages.containsKey("analyzed_signals")) return "";
+        return "初筛合格 " + report.hardFilterPassed() + "，近30分钟已覆盖 " + stages.get("analyzed_last_30m")
+                + "，本轮分析 " + stages.get("analyzed_signals")
+                + "，补充数据完整 " + report.deepAnalysisCompleted()
+                + "，轮换名额 " + stages.get("rotation_targets") + "，可交易类型信号 " + diagnostics.signalPassedCount();
     }
 
     private void recordShadowSelections(String scanId, List<ContractCandidate> candidates) {

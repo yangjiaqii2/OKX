@@ -57,6 +57,9 @@ public final class ContractTradeGate {
             reasons.add("unsupported_instrument");
             return reasons;
         }
+        if (candidate.signalType() == ContractSignalType.WAIT_RECLAIM) {
+            reasons.add("short_term_reclaim_unconfirmed");
+        }
         if (candidate.lastPrice() == null || candidate.lastPrice().signum() <= 0) reasons.add("invalid_last_price");
         if (candidate.volume24h() == null || candidate.volume24h().signum() <= 0) reasons.add("invalid_turnover");
         if (candidate.fundingRate() == null) reasons.add("funding_unavailable");

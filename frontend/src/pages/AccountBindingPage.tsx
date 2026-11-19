@@ -13,14 +13,15 @@ import {
   InputAdornment,
   Stack,
   TextField,
-  Typography,
 } from '@mui/material';
 import { FormEvent, useEffect, useState } from 'react';
-import { Confirm, Loading, useNotify } from 'react-admin';
+import { Confirm, useNotify } from 'react-admin';
 import { getAuthUser } from '../api/auth';
 import { quantApi } from '../api/quantApi';
+import { PanelState } from '../components/PanelState';
+import { panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
-import { MetricCard } from '../components/MetricCard';
+import { TradeMetricCard } from '../components/TradeMetricCard';
 import { StatusChip } from '../components/StatusChip';
 
 type BindingStatus = {
@@ -34,7 +35,7 @@ type VerificationResult = {
   mode?: string;
   message?: string;
   equity?: string | number;
-  availableBalance?: string | number;
+  availableBalance?: string | number | null;
 };
 
 const emptyForm = {
@@ -87,6 +88,7 @@ export function AccountBindingPage() {
 
   async function verify() {
     setSubmitting(true);
+    setVerification(null);
     try {
       const result = (await quantApi.verifyOkxAccount()) as VerificationResult;
       setVerification(result);
@@ -117,29 +119,28 @@ export function AccountBindingPage() {
   }
 
   if (loading) {
-    return <Loading />;
+    return <PageShell title="账号绑定" maxWidth={1040}><PanelState loading sx={panel} /></PageShell>;
   }
 
   return (
     <PageShell title="账号绑定" maxWidth={1040}>
-      <Stack spacing={2.5} maxWidth={980}>
+      <Stack spacing={3}>
         <PageHeader
           title="OKX账号绑定"
           subtitle={`当前绑定对象：${username}。API Key会保存到后端数据库并按登录用户隔离；Secret和Passphrase不会回显。绑定后请立即验证接口，确认读取权限、交易权限和IP白名单正确。`}
-          eyebrow="Credential Vault"
           status={<StatusChip value={Boolean(status.bound)} />}
         />
 
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' },
+            gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(3, minmax(0, 1fr))' },
             gap: 2,
           }}
         >
-          <MetricCard label="绑定状态" value={<StatusChip value={Boolean(status.bound)} />} />
-          <MetricCard label="API Key" value={status.maskedApiKey || '-'} helper="Secret和Passphrase不会回显" />
-          <MetricCard
+          <TradeMetricCard label="绑定状态" value={<StatusChip value={Boolean(status.bound)} />} />
+          <TradeMetricCard label="API Key" value={status.maskedApiKey || '-'} helper="Secret和Passphrase不会回显" />
+          <TradeMetricCard
             label="交易模式"
             value={status.tradingMode === 'LIVE' ? 'LIVE · 真实资金' : status.tradingMode === 'DEMO' ? 'DEMO · 模拟交易' : 'DISABLED · 已关闭'}
             helper="交易请求严格按后端单一 TradingMode 执行"
@@ -149,7 +150,7 @@ export function AccountBindingPage() {
         {verification && (
           <Alert severity={verification.ok ? 'success' : 'error'}>
             {verification.message}
-            {verification.ok ? ` 可用余额：${String(verification.availableBalance ?? '-')}` : ''}
+            {verification.ok ? ` 可用余额：${verification.availableBalance ?? '不可用'}` : ''}
           </Alert>
         )}
         <Alert severity="warning">
@@ -229,6 +230,7 @@ export function AccountBindingPage() {
           title="解绑 OKX 账号"
           content="解绑后前端不会再显示当前 OKX API 绑定状态，私有交易接口需要重新绑定后才能验证。"
           confirm="解绑"
+          confirmColor="warning"
           cancel="返回"
           onConfirm={() => void unbind()}
           onClose={() => setUnbindOpen(false)}

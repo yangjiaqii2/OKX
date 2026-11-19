@@ -13,7 +13,7 @@ public interface CandidateFutureOutcomeRepository extends JpaRepository<Candidat
     List<CandidateFutureOutcomeEntity> findByStatusInAndMaturityAtLessThanEqual(
             Collection<String> statuses, Instant maturityAt);
 
-    String CONTROL_SIGNALS = "('NEUTRAL','NO_TRADE','WAIT_OVERHEATED','WAIT_OVERSOLD')";
+    String CONTROL_SIGNALS = "('NEUTRAL','NO_TRADE','WAIT_OVERHEATED','WAIT_OVERSOLD','WAIT_RECLAIM')";
 
     String DUE_COHORT = """
             with control_cohort as (

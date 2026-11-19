@@ -169,7 +169,9 @@ public class OkxRestOrderGateway implements OkxOrderGateway {
         log.info("POST OKX /api/v5/trade/order-algo instId={} side={} posSide={} ordType={} sz={} clOrdId={}",
                 payload.get("instId"), payload.get("side"), payload.get("posSide"), payload.get("ordType"),
                 payload.get("sz"), payload.getOrDefault("algoClOrdId", payload.getOrDefault("clOrdId", "")));
-        return okxRestClient.privatePost("/api/v5/trade/order-algo", payload);
+        var wire = new java.util.LinkedHashMap<>(payload);
+        if ("long".equals(wire.get("posSide")) || "short".equals(wire.get("posSide"))) wire.remove("reduceOnly");
+        return okxRestClient.privatePost("/api/v5/trade/order-algo", wire);
     }
 
     @Override
@@ -200,7 +202,9 @@ public class OkxRestOrderGateway implements OkxOrderGateway {
                 payload.get("instId"), payload.getOrDefault("algoId", ""),
                 payload.getOrDefault("algoClOrdId", ""), payload.getOrDefault("newSlTriggerPx", ""),
                 payload.getOrDefault("reqId", ""));
-        return okxRestClient.privatePost("/api/v5/trade/amend-algos", payload);
+        var wire = new java.util.LinkedHashMap<>(payload);
+        wire.remove("posSide");
+        return okxRestClient.privatePost("/api/v5/trade/amend-algos", wire);
     }
 
     @Override

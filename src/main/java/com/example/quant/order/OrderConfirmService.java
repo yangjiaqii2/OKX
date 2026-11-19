@@ -56,6 +56,8 @@ public class OrderConfirmService {
     private final AutoTradeBudgetService budgetService;
     private final Clock clock;
     private DailyRiskService dailyRiskService;
+    @Autowired
+    private com.example.quant.agent.exit.NetProfitExitPolicy exitCosts;
     private OkxInstrumentRulesProvider instrumentRulesProvider;
     private CanonicalPlanCompiler canonicalPlanCompiler;
 
@@ -143,190 +145,245 @@ public class OrderConfirmService {
 
     public OrderExecutionResult resolveUnknownSubmit(UUID orderId) {
         PendingOrder order = pendingOrderService.get(orderId);
-        if (order.status() != OrderStatus.UNKNOWN_SUBMIT_STATUS) {
-            return OrderExecutionResult.rejected("订单不是待恢复的UNKNOWN提交状态");
+        synchronized (order) {
+            if (order.status() != OrderStatus.UNKNOWN_SUBMIT_STATUS) {
+                return OrderExecutionResult.rejected("订单不是待恢复的UNKNOWN提交状态");
+            }
+            if (order.requiresLegacyAccountingReconciliation()) {
+                return OrderExecutionResult.unknown("历史受理订单需要先核对预算与每日风险记账，不能仅凭ACK恢复入场");
+            }
+            OrderExecutionResult recovered = okxTradeAdapter.recoverUnknownSubmitStatus(order);
+            if (recovered.submitted()) {
+                order.markSubmitted(clock.instant(), recovered.externalOrderId());
+                return recovered;
+            }
+            if (recovered.message() != null
+                    && recovered.message().contains("OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT")) {
+                String owner = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
+                order.markRejected(recovered.message() + "; EXPLICIT_EXCHANGE_NOT_FOUND_RESOLUTION");
+                releaseBudget(order, "UNKNOWN_SUBMIT_EXCHANGE_NOT_FOUND");
+                releaseDailyRiskClaim(owner, order);
+                return OrderExecutionResult.rejected(order.rejectReason());
+            }
+            return OrderExecutionResult.unknown(recovered.message());
         }
-        if (order.requiresLegacyAccountingReconciliation()) {
-            return OrderExecutionResult.unknown("历史受理订单需要先核对预算与每日风险记账，不能仅凭ACK恢复入场");
-        }
-        OrderExecutionResult recovered = okxTradeAdapter.recoverUnknownSubmitStatus(order);
-        if (recovered.submitted()) {
-            order.markSubmitted(clock.instant(), recovered.externalOrderId());
-            return recovered;
-        }
-        if (recovered.message() != null
-                && recovered.message().contains("OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT")) {
-            String owner = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
-            order.markRejected(recovered.message() + "; EXPLICIT_EXCHANGE_NOT_FOUND_RESOLUTION");
-            releaseBudget(order, "UNKNOWN_SUBMIT_EXCHANGE_NOT_FOUND");
-            releaseDailyRiskClaim(owner, order);
-            return OrderExecutionResult.rejected(order.rejectReason());
-        }
-        return OrderExecutionResult.unknown(recovered.message());
     }
 
     private OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount, ContractRiskRequest providedRiskRequest,
                                          boolean autoFixedMargin) {
         PendingOrder order = pendingOrderService.get(orderId);
-        Instant now = clock.instant();
-        log.info("Confirm order requested id={} instId={} status={} marginAmount={}",
-                order.id(), order.instId(), order.status(), marginAmount);
-        if (!confirmable(order, autoFixedMargin)) {
-            log.warn("Confirm order rejected id={} instId={} reason=status_not_allowed status={}",
-                    order.id(), order.instId(), order.status());
-            return OrderExecutionResult.rejected("订单状态不允许确认");
-        }
-        if (order.isExpired(now)) {
-            order.markExpired();
-            log.warn("Confirm order rejected id={} instId={} reason=expired expireAt={} now={}",
-                    order.id(), order.instId(), order.expireAt(), now);
-            releaseBudget(order, "ORDER_EXPIRED");
-            return OrderExecutionResult.rejected("待确认订单已过期");
-        }
-        OrderExecutionResult stopped = rejectStoppedAutoTrade(order, autoFixedMargin);
-        if (stopped != null) {
-            return stopped;
-        }
-        if (noRiskAutoMode(autoFixedMargin)) {
-            String reason = "Shadow 模式禁止创建或提交自动订单";
-            order.markRejected(reason);
-            releaseBudget(order, "SHADOW_MODE");
-            log.warn("Confirm order rejected id={} instId={} reason=shadow_mode_no_exchange_write",
-                    order.id(), order.instId());
-            return OrderExecutionResult.rejected(reason);
-        }
-        if (!order.transitionFromAny(OrderStatus.CONFIRMING, OrderStatus.PENDING_CONFIRM, OrderStatus.BUDGET_RESERVED)) {
-            log.warn("Confirm order rejected id={} instId={} reason=confirming_or_submitted status={}",
-                    order.id(), order.instId(), order.status());
-            return OrderExecutionResult.rejected("订单状态不允许重复确认");
-        }
-        BigDecimal effectiveMargin = autoFixedMargin && order.marginAmount() != null && order.marginAmount().signum() > 0
-                ? order.marginAmount()
-                : marginAmount;
-        if (autoFixedMargin && order.budgetReservationId() != null
-                && budgetService != null
-                && !budgetService.isReserved(order.budgetReservationId(), order.id())) {
-            order.markRejected("自动交易预算未处于RESERVED状态");
-            log.warn("Confirm order rejected id={} instId={} reason=budget_not_reserved reservationId={}",
-                    order.id(), order.instId(), order.budgetReservationId());
-            return OrderExecutionResult.rejected("自动交易预算未预占用或已释放");
-        }
-        try {
-            order.applyMarginAmount(effectiveMargin);
-            normalizeExecutableQuantity(order);
-        } catch (IllegalArgumentException ex) {
-            log.warn("Confirm order rejected id={} instId={} reason={}", order.id(), order.instId(), ex.getMessage());
-            releaseBudget(order, "MARGIN_INVALID");
-            return OrderExecutionResult.rejected(ex.getMessage());
-        }
-        OrderBookLiquiditySnapshot liquidity = currentLiquidity(order);
-        String liquidityDenyReason = hardLiquidityDenyReason(order, liquidity, autoFixedMargin);
-        if (!liquidityDenyReason.isBlank()) {
-            String reason = "实时订单簿流动性不足：" + liquidityDenyReason;
-            rejectBeforeSubmit(order, reason, autoFixedMargin, "LIQUIDITY_REJECTED");
-            log.warn("Confirm order rejected by live liquidity id={} instId={} spreadBps={} bidDepth={} askDepth={} reason={}",
-                    order.id(), order.instId(), liquidity.spreadBps(), liquidity.bidDepthUsdt(),
-                    liquidity.askDepthUsdt(), liquidityDenyReason);
-            return OrderExecutionResult.rejected(reason);
-        }
-        if (!autoFixedMargin) {
-            adjustMarginByDepth(order, liquidity);
-        }
-        ContractRiskRequest riskRequest = providedRiskRequest == null
-                ? riskRequestFor(order, order.marginAmount(), liquidity, autoFixedMargin)
-                : providedRiskRequest.withSuggestedMargin(order.marginAmount());
-        RiskCheckResult risk = riskService.check(riskRequest);
-        if (!risk.passed() && autoFixedMargin && canRetryWithLowerLeverage(order, risk)) {
-            int adjustedLeverage = risk.adjustedLeverage();
-            order.adjustLeverage(adjustedLeverage);
-            log.warn("Auto confirm lowered leverage by dynamic risk cap id={} instId={} adjustedLeverage={} marginAmount={} size={}",
-                    order.id(), order.instId(), adjustedLeverage, order.marginAmount(), order.size());
-            riskRequest = riskRequestFor(order, order.marginAmount(), liquidity, true);
-            risk = riskService.check(riskRequest);
-        }
-        if (!risk.passed()) {
-            rejectBeforeSubmit(order, risk.rejectReason(), autoFixedMargin, "RISK_REJECTED");
-            log.warn("Confirm order rejected by risk id={} instId={} reason={} riskLevel={}",
-                    order.id(), order.instId(), risk.rejectReason(), risk.riskLevel());
-            return OrderExecutionResult.rejected(risk.rejectReason());
-        }
-        OrderExecutionResult canonicalResult = compileAndBindCanonicalPlan(order);
-        if (canonicalResult != null) {
-            rejectBeforeSubmit(order, canonicalResult.message(), autoFixedMargin, "CANONICAL_PLAN_REJECTED");
-            log.warn("Confirm order rejected by canonical plan compiler id={} instId={} reason={}",
-                    order.id(), order.instId(), canonicalResult.message());
-            return canonicalResult;
-        }
-        stopped = rejectStoppedAutoTrade(order, autoFixedMargin);
-        if (stopped != null) {
-            return stopped;
-        }
-        String owner = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
-        if (dailyRiskService != null) {
-            DailyRiskService.Decision dailyRisk;
+        synchronized (order) {
+            Instant now = clock.instant();
+            log.info("Confirm order requested id={} instId={} status={} marginAmount={}",
+                    order.id(), order.instId(), order.status(), marginAmount);
+            if (!confirmable(order, autoFixedMargin)) {
+                log.warn("Confirm order rejected id={} instId={} reason=status_not_allowed status={}",
+                        order.id(), order.instId(), order.status());
+                return OrderExecutionResult.rejected("订单状态不允许确认");
+            }
+            if (order.isExpired(now)) {
+                order.markExpired();
+                log.warn("Confirm order rejected id={} instId={} reason=expired expireAt={} now={}",
+                        order.id(), order.instId(), order.expireAt(), now);
+                releaseBudget(order, "ORDER_EXPIRED");
+                return OrderExecutionResult.rejected("待确认订单已过期");
+            }
+            OrderExecutionResult stopped = rejectStoppedAutoTrade(order, autoFixedMargin);
+            if (stopped != null) {
+                return stopped;
+            }
+            if (noRiskAutoMode(autoFixedMargin)) {
+                String reason = "Shadow 模式禁止创建或提交自动订单";
+                order.markRejected(reason);
+                releaseBudget(order, "SHADOW_MODE");
+                log.warn("Confirm order rejected id={} instId={} reason=shadow_mode_no_exchange_write",
+                        order.id(), order.instId());
+                return OrderExecutionResult.rejected(reason);
+            }
+            if (!order.transitionFromAny(OrderStatus.CONFIRMING, OrderStatus.PENDING_CONFIRM, OrderStatus.BUDGET_RESERVED)) {
+                log.warn("Confirm order rejected id={} instId={} reason=confirming_or_submitted status={}",
+                        order.id(), order.instId(), order.status());
+                return OrderExecutionResult.rejected("订单状态不允许重复确认");
+            }
+            BigDecimal effectiveMargin = autoFixedMargin && order.marginAmount() != null && order.marginAmount().signum() > 0
+                    ? order.marginAmount()
+                    : marginAmount;
+            if (autoFixedMargin && order.budgetReservationId() != null
+                    && budgetService != null
+                    && !budgetService.isReserved(order.budgetReservationId(), order.id())) {
+                order.markRejected("自动交易预算未处于RESERVED状态");
+                log.warn("Confirm order rejected id={} instId={} reason=budget_not_reserved reservationId={}",
+                        order.id(), order.instId(), order.budgetReservationId());
+                return OrderExecutionResult.rejected("自动交易预算未预占用或已释放");
+            }
             try {
-                dailyRisk = dailyRiskService.claimEntry(owner, order.id().toString(), riskRequest.accountEquity(), now);
+                order.applyMarginAmount(effectiveMargin);
+                normalizeExecutableQuantity(order);
+            } catch (IllegalArgumentException ex) {
+                log.warn("Confirm order rejected id={} instId={} reason={}", order.id(), order.instId(), ex.getMessage());
+                releaseBudget(order, "MARGIN_INVALID");
+                return OrderExecutionResult.rejected(ex.getMessage());
+            }
+            OrderBookLiquiditySnapshot liquidity = currentLiquidity(order);
+            String liquidityDenyReason = hardLiquidityDenyReason(order, liquidity, autoFixedMargin);
+            if (!liquidityDenyReason.isBlank()) {
+                String reason = "实时订单簿流动性不足：" + liquidityDenyReason;
+                rejectBeforeSubmit(order, reason, autoFixedMargin, "LIQUIDITY_REJECTED");
+                log.warn("Confirm order rejected by live liquidity id={} instId={} spreadBps={} bidDepth={} askDepth={} reason={}",
+                        order.id(), order.instId(), liquidity.spreadBps(), liquidity.bidDepthUsdt(),
+                        liquidity.askDepthUsdt(), liquidityDenyReason);
+                return OrderExecutionResult.rejected(reason);
+            }
+            if (!autoFixedMargin) {
+                adjustMarginByDepth(order, liquidity);
+            }
+            AccountSummary account = accountSnapshot();
+            if (accountSnapshotService != null) {
+                BigDecimal available = account == null ? null : account.availableBalance();
+                boolean verified = account != null && ("OKX_REAL".equals(account.mode()) || "OKX_DEMO".equals(account.mode()));
+                if (!verified || available == null || available.compareTo(order.marginAmount()) < 0) {
+                    String reason = !verified || available == null ? "OKX 可用余额不可用" : "OKX 可用余额不足以支付订单保证金";
+                    rejectBeforeSubmit(order, reason, autoFixedMargin, "ACCOUNT_AVAILABLE_BALANCE_REJECTED");
+                    log.warn("Confirm order rejected by account balance id={} instId={} marginAmount={} availableBalance={} mode={}",
+                            order.id(), order.instId(), order.marginAmount(), available, account == null ? "NONE" : account.mode());
+                    return OrderExecutionResult.rejected(reason);
+                }
+            }
+            ContractRiskRequest riskRequest = providedRiskRequest == null
+                    ? riskRequestFor(order, order.marginAmount(), liquidity, autoFixedMargin, account)
+                    : providedRiskRequest.withSuggestedMargin(order.marginAmount());
+            RiskCheckResult risk = riskService.check(riskRequest);
+            if (!risk.passed() && autoFixedMargin && canRetryWithLowerLeverage(order, risk)) {
+                int adjustedLeverage = risk.adjustedLeverage();
+                try {
+                    order.adjustLeverage(adjustedLeverage);
+                    normalizeExecutableQuantity(order);
+                } catch (IllegalArgumentException ex) {
+                    rejectBeforeSubmit(order, ex.getMessage(), true, "MARGIN_INVALID");
+                    return OrderExecutionResult.rejected(ex.getMessage());
+                }
+                log.warn("Auto confirm lowered leverage by dynamic risk cap id={} instId={} adjustedLeverage={} marginAmount={} size={}",
+                        order.id(), order.instId(), adjustedLeverage, order.marginAmount(), order.size());
+                riskRequest = riskRequestFor(order, order.marginAmount(), liquidity, true, account);
+                risk = riskService.check(riskRequest);
+            }
+            if (!risk.passed()) {
+                rejectBeforeSubmit(order, risk.rejectReason(), autoFixedMargin, "RISK_REJECTED");
+                log.warn("Confirm order rejected by risk id={} instId={} reason={} riskLevel={}",
+                        order.id(), order.instId(), risk.rejectReason(), risk.riskLevel());
+                return OrderExecutionResult.rejected(risk.rejectReason());
+            }
+            OrderExecutionResult canonicalResult = compileAndBindCanonicalPlan(order, autoFixedMargin);
+            if (canonicalResult != null) {
+                rejectBeforeSubmit(order, canonicalResult.message(), autoFixedMargin, "CANONICAL_PLAN_REJECTED");
+                log.warn("Confirm order rejected by canonical plan compiler id={} instId={} reason={}",
+                        order.id(), order.instId(), canonicalResult.message());
+                return canonicalResult;
+            }
+            stopped = rejectStoppedAutoTrade(order, autoFixedMargin);
+            if (stopped != null) {
+                return stopped;
+            }
+            String owner = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
+            if (dailyRiskService != null) {
+                DailyRiskService.Decision dailyRisk;
+                try {
+                    if (autoFixedMargin) {
+                        AgentProperties limits = agentProperties == null ? new AgentProperties() : agentProperties;
+                        var rates = exitCosts.feeRates(order.instId());
+                        BigDecimal openFee = order.price().multiply(order.size()).multiply(rates.taker().max(rates.maker()));
+                        if (account == null || account.availableBalance() == null
+                                || account.availableBalance().compareTo(order.marginAmount().add(openFee)) < 0) {
+                            rejectBeforeSubmit(order, "ACCOUNT_OPEN_FEE_BUFFER_INSUFFICIENT", true, "COST_GATE");
+                            return OrderExecutionResult.rejected("ACCOUNT_OPEN_FEE_BUFFER_INSUFFICIENT");
+                        }
+                        BigDecimal fees = rates.roundTrip();
+                        BigDecimal costs = fees.max(percentRate(limits.profitProtection().roundTripFeePct()))
+                                .add(percentRate(limits.profitProtection().estimatedSlippagePct()))
+                                .add(limits.market().maxFundingAbs());
+                        // Both fills pay on traded notional; use the largest planned notional.
+                        BigDecimal maxPrice = order.price().max(order.stopLossPrice()).max(order.takeProfitPrice());
+                        BigDecimal costBudget = maxPrice.multiply(order.size()).multiply(costs);
+                        BigDecimal weightedMove = order.canonicalExecutablePlan().takeProfitLegs().stream()
+                                .map(leg -> leg.executableTargetPrice().subtract(order.price()).abs()
+                                        .multiply(leg.executableContractQuantity()))
+                                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                                .divide(order.canonicalExecutablePlan().entry().executableContractQuantity(),
+                                        java.math.MathContext.DECIMAL128);
+                        BigDecimal reward = weightedMove.multiply(order.size());
+                        if (!limits.lifecycle().isNetProfitExitEnabled()) reward = reward.subtract(costBudget);
+                        BigDecimal loss = order.canonicalExecutablePlan().risk().executableStopLossAmount().add(costBudget);
+                        if (reward.compareTo(loss.multiply(riskRequest.minRiskRewardRatio())) < 0) {
+                            rejectBeforeSubmit(order, "NET_RISK_REWARD_AFTER_COSTS_TOO_LOW", true, "COST_GATE");
+                            return OrderExecutionResult.rejected("NET_RISK_REWARD_AFTER_COSTS_TOO_LOW");
+                        }
+                        dailyRisk = dailyRiskService.claimAutomaticEntry(owner, order.id().toString(),
+                                riskRequest.accountEquity(), now, loss);
+                    } else {
+                        dailyRisk = dailyRiskService.claimEntry(owner, order.id().toString(), riskRequest.accountEquity(), now);
+                    }
+                } catch (RuntimeException ex) {
+                    dailyRisk = new DailyRiskService.Decision(false, "DAILY_RISK_STATE_UNAVAILABLE");
+                }
+                if (!dailyRisk.allowed()) {
+                    rejectBeforeSubmit(order, dailyRisk.reason(), autoFixedMargin, "DAILY_RISK_REJECTED");
+                    log.warn("Confirm order rejected by daily risk id={} instId={} reason={}",
+                            order.id(), order.instId(), dailyRisk.reason());
+                    return OrderExecutionResult.rejected(dailyRisk.reason());
+                }
+            }
+            order.markConfirmed(now);
+            order.transition(OrderStatus.CONFIRMED, OrderStatus.SUBMITTING);
+            log.info("Risk passed, submitting OKX order id={} instId={} side={} posSide={} ordType={} tdMode={} size={} px={}",
+                    order.id(), order.instId(), order.side(), order.posSide(), order.orderType(), order.tdMode(),
+                    order.size(), order.price());
+            OrderExecutionResult acceptedResult = null;
+            try {
+                OrderExecutionResult result = okxTradeAdapter.placeOrder(order);
+                if (result.submitted()) acceptedResult = result;
+                if (result.submitted()) {
+                    order.markSubmitted(clock.instant(), result.externalOrderId());
+                    if (result.filled()) {
+                        markBudgetUsed(order);
+                    }
+                    if (tradePlanRecordService != null && order.tradePlanId() != null) {
+                        tradePlanRecordService.markOrderSubmitted(order.tradePlanId(), result.externalOrderId());
+                    }
+                    log.info("OKX order submitted id={} instId={} externalOrderId={} message={}",
+                            order.id(), order.instId(), result.externalOrderId(), result.message());
+                } else if (result.unknown()) {
+                    throw new OrderSubmitStatusUnknownException(result.message());
+                } else {
+                    order.markRejected(result.message());
+                    releaseBudget(order, "OKX_REJECTED");
+                    releaseDailyRiskClaim(owner, order);
+                    log.warn("OKX order was not submitted id={} instId={} message={}",
+                            order.id(), order.instId(), result.message());
+                }
+                return result;
             } catch (RuntimeException ex) {
-                dailyRisk = new DailyRiskService.Decision(false, "DAILY_RISK_STATE_UNAVAILABLE");
-            }
-            if (!dailyRisk.allowed()) {
-                rejectBeforeSubmit(order, dailyRisk.reason(), autoFixedMargin, "DAILY_RISK_REJECTED");
-                log.warn("Confirm order rejected by daily risk id={} instId={} reason={}",
-                        order.id(), order.instId(), dailyRisk.reason());
-                return OrderExecutionResult.rejected(dailyRisk.reason());
-            }
-        }
-        order.markConfirmed(now);
-        order.transition(OrderStatus.CONFIRMED, OrderStatus.SUBMITTING);
-        log.info("Risk passed, submitting OKX order id={} instId={} side={} posSide={} ordType={} tdMode={} size={} px={}",
-                order.id(), order.instId(), order.side(), order.posSide(), order.orderType(), order.tdMode(),
-                order.size(), order.price());
-        OrderExecutionResult acceptedResult = null;
-        try {
-            OrderExecutionResult result = okxTradeAdapter.placeOrder(order);
-            if (result.submitted()) acceptedResult = result;
-            if (result.submitted()) {
-                order.markSubmitted(clock.instant(), result.externalOrderId());
-                if (result.filled()) {
-                    markBudgetUsed(order);
+                if (acceptedResult != null) {
+                    // markSubmitted assigns ACK facts before its persistence callback.
+                    // A failed callback leaves durable SUBMITTING to reconcile on restart.
+                    log.error("OKX_ACK_LOCAL_PERSISTENCE_FAILED id={} instId={} ordId={}",
+                            order.id(), order.instId(), acceptedResult.externalOrderId(), ex);
+                    return acceptedResult;
                 }
-                if (tradePlanRecordService != null && order.tradePlanId() != null) {
-                    tradePlanRecordService.markOrderSubmitted(order.tradePlanId(), result.externalOrderId());
+                if (ex instanceof OrderNotSubmittedException || ex instanceof OkxApiRejectedException) {
+                    order.markRejected(ex.getMessage());
+                    releaseBudget(order, ex instanceof OrderNotSubmittedException ? "PRE_ORDER_SETUP_FAILED" : "OKX_REJECTED");
+                    releaseDailyRiskClaim(owner, order);
+                    log.error("OKX order definitively failed id={} instId={}", order.id(), order.instId(), ex);
+                    throw ex;
                 }
-                log.info("OKX order submitted id={} instId={} externalOrderId={} message={}",
-                        order.id(), order.instId(), result.externalOrderId(), result.message());
-            } else if (result.unknown()) {
-                throw new OrderSubmitStatusUnknownException(result.message());
-            } else {
-                order.markRejected(result.message());
-                releaseBudget(order, "OKX_REJECTED");
-                releaseDailyRiskClaim(owner, order);
-                log.warn("OKX order was not submitted id={} instId={} message={}",
-                        order.id(), order.instId(), result.message());
+                try {
+                    order.markUnknownSubmitStatus(ex.getMessage());
+                } catch (RuntimeException persistenceFailure) {
+                    ex.addSuppressed(persistenceFailure);
+                }
+                // Do not release the reservation or risk claim after an uncertain send.
+                throw new OrderSubmitStatusUnknownException(ex.getMessage(), ex);
             }
-            return result;
-        } catch (RuntimeException ex) {
-            if (acceptedResult != null) {
-                // markSubmitted assigns ACK facts before its persistence callback.
-                // A failed callback leaves durable SUBMITTING to reconcile on restart.
-                log.error("OKX_ACK_LOCAL_PERSISTENCE_FAILED id={} instId={} ordId={}",
-                        order.id(), order.instId(), acceptedResult.externalOrderId(), ex);
-                return acceptedResult;
-            }
-            if (ex instanceof OrderNotSubmittedException || ex instanceof OkxApiRejectedException) {
-                order.markRejected(ex.getMessage());
-                releaseBudget(order, ex instanceof OrderNotSubmittedException ? "PRE_ORDER_SETUP_FAILED" : "OKX_REJECTED");
-                releaseDailyRiskClaim(owner, order);
-                log.error("OKX order definitively failed id={} instId={}", order.id(), order.instId(), ex);
-                throw ex;
-            }
-            try {
-                order.markUnknownSubmitStatus(ex.getMessage());
-            } catch (RuntimeException persistenceFailure) {
-                ex.addSuppressed(persistenceFailure);
-            }
-            // Do not release the reservation or risk claim after an uncertain send.
-            throw new OrderSubmitStatusUnknownException(ex.getMessage(), ex);
         }
     }
 
@@ -336,14 +393,17 @@ public class OrderConfirmService {
         order.captureIntendedBaseQuantity();
         BigDecimal contracts = rules.normalizeEntrySize(order.size(), order.price());
         if (contracts.signum() <= 0) throw new IllegalArgumentException("最终合约数量低于最小下单量");
-        BigDecimal base = rules.contractValueInQuoteCurrencyForAudit()
-                ? contracts.multiply(rules.contractValue()).divide(order.price(), 16, RoundingMode.DOWN)
-                : contracts.multiply(rules.contractValue());
-        order.replaceExecutableSize(base);
+        order.replaceExecutableSize(baseQuantity(contracts, order.price(), rules));
         order.setExecutableContractQuantity(contracts);
     }
 
-    private OrderExecutionResult compileAndBindCanonicalPlan(PendingOrder order) {
+    private static BigDecimal baseQuantity(BigDecimal contracts, BigDecimal price, OkxInstrumentRules rules) {
+        BigDecimal faceValue = contracts.multiply(rules.contractValue());
+        return rules.contractValueInQuoteCurrencyForAudit()
+                ? faceValue.divide(price, 16, RoundingMode.DOWN) : faceValue;
+    }
+
+    private OrderExecutionResult compileAndBindCanonicalPlan(PendingOrder order, boolean automatic) {
         if (canonicalPlanCompiler == null) {
             return null;
         }
@@ -359,19 +419,30 @@ public class OrderConfirmService {
                     configured.takeProfit().tp2Ratio(),
                     configured.takeProfit().tp3Ratio(),
                     "trade-plan-v1");
-            CanonicalExecutablePlan compiled = canonicalPlanCompiler.compile(intent, rules);
+            if (automatic && configured.lifecycle().isNetProfitExitEnabled()) {
+                intent = com.example.quant.agent.exit.NetProfitExitPolicy.plan(intent);
+            }
+            CanonicalExecutablePlan compiled = automatic
+                    ? canonicalPlanCompiler.compileAutomaticEntry(intent, rules)
+                    : canonicalPlanCompiler.compile(intent, rules);
             log.info("Canonical plan shadow compile id={} instId={} status={} divergenceTypes={}",
                     order.id(), order.instId(), compiled.status(), CanonicalPlanShadow.divergences(order, compiled));
-            order.setCanonicalPlanSnapshot(compiled);
-            if (tradePlanRecordService != null && order.tradePlanId() != null) {
-                tradePlanRecordService.recordCanonicalPlan(order.tradePlanId(), compiled, order.canonicalPlanJson());
+            boolean riskSized = automatic && compiled.accepted()
+                    && compiled.decisions().contains(CanonicalPlanCompiler.ENTRY_SIZE_REDUCED_TO_RISK_BUDGET);
+            if (!riskSized) {
+                order.setCanonicalPlanSnapshot(compiled);
+                recordCanonicalPlan(order, compiled);
             }
             if (!compiled.accepted()) {
                 return OrderExecutionResult.rejected("CANONICAL_PLAN_REJECTED: "
                         + String.join(",", compiled.decisions()));
             }
-            if (order.executableContractQuantity() == null
-                    || order.executableContractQuantity().compareTo(compiled.entry().executableContractQuantity()) != 0) {
+            BigDecimal compiledContracts = compiled.entry().executableContractQuantity();
+            BigDecimal currentContracts = order.executableContractQuantity();
+            BigDecimal expectedContracts = riskSized
+                    ? rules.normalizeEntrySize(order.intendedBaseQuantity(), order.price()) : compiledContracts;
+            if (currentContracts == null || currentContracts.compareTo(expectedContracts) != 0
+                    || (riskSized && compiledContracts.compareTo(currentContracts) >= 0)) {
                 return OrderExecutionResult.rejected("CANONICAL_PLAN_RISK_MISMATCH: executable quantity differs");
             }
             BigDecimal canonicalStopLossAmount = compiled.risk().executableStopLossAmount();
@@ -385,8 +456,12 @@ public class OrderConfirmService {
             // at scale 8; on low-priced contracts that gap is a rounding
             // artifact of tick-sized magnitude, not a change of risk. A genuine
             // recomputation drift is still rejected via the relative bound.
-            if (order.executableStopLossAmount() != null) {
-                BigDecimal baseline = order.executableStopLossAmount();
+            BigDecimal executableSize = riskSized ? baseQuantity(compiledContracts, order.price(), rules) : order.size();
+            BigDecimal baseline = riskSized
+                    ? order.price().subtract(order.stopLossPrice()).abs().multiply(executableSize)
+                            .setScale(4, RoundingMode.HALF_UP)
+                    : order.executableStopLossAmount();
+            if (baseline != null) {
                 BigDecimal drift = baseline.signum() == 0
                         ? canonicalStopLossAmount.abs()
                         : canonicalStopLossAmount.subtract(baseline).abs()
@@ -402,10 +477,24 @@ public class OrderConfirmService {
                             order.id(), order.instId(), baseline, canonicalStopLossAmount, drift);
                 }
             }
-            order.setExecutableStopLossAmount(canonicalStopLossAmount);
+            if (riskSized) {
+                order.bindCanonicalExecution(compiled, executableSize);
+                recordCanonicalPlan(order, compiled);
+                log.info("Automatic entry resized to risk budget id={} instId={} originalContracts={} executableContracts={} executableLoss={} riskBudget={}",
+                        order.id(), order.instId(), currentContracts, compiledContracts,
+                        canonicalStopLossAmount, compiled.risk().riskBudget());
+            } else {
+                order.setExecutableStopLossAmount(canonicalStopLossAmount);
+            }
             return null;
         } catch (RuntimeException ex) {
             return OrderExecutionResult.rejected("CANONICAL_PLAN_COMPILATION_FAILED: " + ex.getMessage());
+        }
+    }
+
+    private void recordCanonicalPlan(PendingOrder order, CanonicalExecutablePlan compiled) {
+        if (tradePlanRecordService != null && order.tradePlanId() != null) {
+            tradePlanRecordService.recordCanonicalPlan(order.tradePlanId(), compiled, order.canonicalPlanJson());
         }
     }
 
@@ -472,7 +561,8 @@ public class OrderConfirmService {
     }
 
     private ContractRiskRequest riskRequestFor(PendingOrder order, BigDecimal marginAmount,
-                                               OrderBookLiquiditySnapshot liquidity, boolean autoPipelineValidated) {
+                                               OrderBookLiquiditySnapshot liquidity, boolean autoPipelineValidated,
+                                               AccountSummary account) {
         ContractRiskRequest defaults = ContractRiskRequest.safeDefaults();
         boolean measuredMarketData = orderBookLiquidityService == null
                 ? defaults.websocketConnected()
@@ -482,12 +572,11 @@ public class OrderConfirmService {
                 : measuredMarketData
                 ? Math.max(0, Duration.between(liquidity.createdAt(), clock.instant()).toMillis())
                 : Long.MAX_VALUE;
-        AccountSummary account = accountSnapshot();
-        BigDecimal accountEquity = account.equity().signum() > 0
-                ? account.equity()
-                : account.availableBalance().signum() > 0
-                ? account.availableBalance()
-                : defaults.accountEquity();
+        BigDecimal accountEquity = defaults.accountEquity();
+        if (account != null) {
+            accountEquity = account.equity() != null && account.equity().signum() > 0
+                    ? account.equity() : account.availableBalance();
+        }
         BigDecimal maxSingleMarginRate = agentProperties == null
                 ? defaults.maxSingleMarginRate()
                 : percentRate(agentProperties.risk().maxSingleMarginPercent());
@@ -533,9 +622,14 @@ public class OrderConfirmService {
 
     private AccountSummary accountSnapshot() {
         if (accountSnapshotService == null) {
-            return new AccountSummary(BigDecimal.ZERO, BigDecimal.ZERO, "DEFAULT", "");
+            return null;
         }
-        return accountSnapshotService.summary();
+        try {
+            return accountSnapshotService.summary();
+        } catch (RuntimeException ex) {
+            log.warn("Confirm order account snapshot unavailable errorType={}", ex.getClass().getSimpleName());
+            return null;
+        }
     }
 
     private static BigDecimal percentRate(BigDecimal percent) {

@@ -15,6 +15,7 @@ public class SmartEntryModeResolver {
     private static final Set<ContractSignalType> DEFAULT_MARKET_SIGNAL_TYPES =
             Set.of(ContractSignalType.STRONG_LONG, ContractSignalType.TREND_SHORT);
     private static final Set<ContractSignalType> NO_ENTRY_SIGNAL_TYPES = Set.of(
+            ContractSignalType.WAIT_RECLAIM,
             ContractSignalType.WAIT_OVERHEATED,
             ContractSignalType.WAIT_OVERSOLD,
             ContractSignalType.NEUTRAL,

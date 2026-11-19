@@ -163,6 +163,19 @@ class OkxContractScannerScanControlTest {
     }
 
     @Test
+    void partialRoundCountsFinishedSignalBehindBlockedFirstTargetWithoutDeliveringOrders() {
+        StubProvider provider = new StubProvider();
+        provider.snapshot("S0", qualitySnapshot("S0"));
+        provider.snapshot("A", qualitySnapshot("A"));
+        var tickers = List.of(ticker("S0-USDT-SWAP", 800_000_000L), ticker("A-USDT-SWAP", 700_000_000L));
+        var scanner = fixtureWithClient(provider, new BlockingCandleClient(tickers), defaultProps()).scanner;
+        Instant start = Instant.now();
+        assertThat(scanner.scan(ScanContext.forTest("slow-first", start, start.plusSeconds(2)))).isEmpty();
+        assertThat(scanner.lastScanReport().status()).isEqualTo(ScanRunStatus.PARTIAL_TIMEOUT);
+        assertThat(scanner.lastDiagnostics().funnel().stages()).containsEntry("analyzed_signals", 1);
+    }
+
+    @Test
     void deadlineStopsFurtherDeepAnalysis() {
         StubProvider provider = new StubProvider();
         List<Map<String, Object>> tickers = new ArrayList<>();

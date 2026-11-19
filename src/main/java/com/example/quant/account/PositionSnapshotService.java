@@ -37,8 +37,8 @@ public class PositionSnapshotService {
             JsonNode data = okxRestClient.privateGet("/api/v5/account/positions?instType=SWAP").path("data");
             List<PositionSummary> positions = new ArrayList<>();
             for (JsonNode item : data) {
-                BigDecimal initialMargin = decimal(item, "imr");
-                BigDecimal margin = effectiveMargin(decimal(item, "margin"), initialMargin);
+                BigDecimal initialMargin = nullableDecimal(item, "imr");
+                BigDecimal margin = effectiveMargin(nullableDecimal(item, "margin"), initialMargin);
                 String instId = item.path("instId").asText();
                 String posSide = item.path("posSide").asText();
                 OwnershipState state = ownership(instId, posSide);
@@ -83,19 +83,21 @@ public class PositionSnapshotService {
     }
 
     private static BigDecimal decimal(JsonNode node, String field) {
-        String value = node.path(field).asText("0");
-        if (value == null || value.isBlank()) {
-            return BigDecimal.ZERO;
-        }
+        BigDecimal value = nullableDecimal(node, field);
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    private static BigDecimal nullableDecimal(JsonNode node, String field) {
+        String value = node.path(field).asText("");
         try {
             return new BigDecimal(value);
         } catch (NumberFormatException ex) {
-            return BigDecimal.ZERO;
+            return null;
         }
     }
 
     private static BigDecimal effectiveMargin(BigDecimal margin, BigDecimal initialMargin) {
-        return margin.signum() > 0 ? margin : initialMargin;
+        return margin != null && (margin.signum() > 0 || initialMargin == null) ? margin : initialMargin;
     }
 
     private record OwnershipState(String ownership, String reason) { }

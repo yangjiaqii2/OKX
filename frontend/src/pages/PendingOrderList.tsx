@@ -1,3 +1,5 @@
+import { PanelState } from '../components/PanelState';
+import { ScrollableTable } from '../components/ScrollableTable';
 import CancelIcon from '@mui/icons-material/Cancel';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -6,13 +8,12 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
   InputAdornment,
   Stack,
-  Table,
   TableBody,
   TableCell,
-  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -21,12 +22,12 @@ import {
 import { Confirm, useNotify } from 'react-admin';
 import { useEffect, useMemo, useState } from 'react';
 import { quantApi } from '../api/quantApi';
-import { compactGlass, glassCard } from '../components/glass';
+import { insetPanel, panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PendingOrderReviewDialog } from '../components/PendingOrderReviewDialog';
 import { StatusChip } from '../components/StatusChip';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
-import { formatAction, formatLeverage, formatPrice, formatSide } from '../formatters';
+import { directionTone, formatAction, formatLeverage, formatPrice, formatSide } from '../formatters';
 
 type PendingOrderState = {
   risk?: Record<string, unknown>;
@@ -87,7 +88,7 @@ const PendingOrderActions = ({
   }
 
   return (
-    <Stack direction="row" gap={0.75} justifyContent="flex-end">
+    <Stack direction="row" gap={1} justifyContent="flex-end">
       <Button
         size="small"
         variant="contained"
@@ -186,14 +187,14 @@ export function PendingOrderList() {
         <PageHeader
           title="待确认订单"
           subtitle="这里是 OKX 订单提交前的人工审核台。确认前必须填写保证金并复核方向、杠杆、止损和止盈。"
-          eyebrow="Order Review"
-          actions={
+          filters={
             <>
               <TextField
                 size="small"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="搜索合约、方向、状态"
+                inputProps={{ 'aria-label': '搜索合约、方向、状态' }}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
@@ -201,7 +202,7 @@ export function PendingOrderList() {
                     </InputAdornment>
                   ),
                 }}
-                sx={{ minWidth: { xs: 1, sm: 240 } }}
+                sx={{ width: { xs: 1, sm: 240 } }}
               />
               <Button
                 variant="outlined"
@@ -224,56 +225,52 @@ export function PendingOrderList() {
 
         {error ? <Alert severity="error">{error}</Alert> : null}
 
-        <Box sx={{ ...glassCard }}>
+        <Box sx={{ ...panel }}>
           {loading ? (
-            <Box sx={{ minHeight: 260, display: 'grid', placeItems: 'center' }}>
-              <CircularProgress size={28} />
-            </Box>
+            <PanelState loading />
           ) : filtered.length === 0 ? (
-            <Box sx={{ minHeight: 220, display: 'grid', placeItems: 'center', p: 3 }}>
-              <Typography color="text.secondary">当前没有匹配的待确认订单。</Typography>
-            </Box>
+            <PanelState>当前没有匹配的待确认订单。</PanelState>
           ) : (
-            <TableContainer>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>合约</TableCell>
-                    <TableCell>动作</TableCell>
-                    <TableCell>方向</TableCell>
-                    <TableCell align="right">价格</TableCell>
-                    <TableCell align="right">杠杆</TableCell>
-                    <TableCell align="right">止损</TableCell>
-                    <TableCell align="right">止盈</TableCell>
-                    <TableCell>状态</TableCell>
-                    <TableCell align="right">操作</TableCell>
+            <ScrollableTable label="待确认订单">
+              <TableHead>
+                <TableRow>
+                  <TableCell>合约</TableCell>
+                  <TableCell>动作</TableCell>
+                  <TableCell>方向</TableCell>
+                  <TableCell align="right">价格</TableCell>
+                  <TableCell align="right">杠杆</TableCell>
+                  <TableCell align="right">止损</TableCell>
+                  <TableCell align="right">止盈</TableCell>
+                  <TableCell>状态</TableCell>
+                  <TableCell align="right">操作</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filtered.map((order) => (
+                  <TableRow key={String(order.id)} hover>
+                    <TableCell sx={{ fontWeight: 900 }}>{String(order.instId ?? '-')}</TableCell>
+                    <TableCell>{formatAction(order.action)}</TableCell>
+                    <TableCell>
+                      <Chip size="small" color={directionTone(order.side)} label={formatSide(order.side) + ' / ' + formatSide(order.posSide)} />
+                    </TableCell>
+                    <TableCell align="right">{formatPrice(order.price)}</TableCell>
+                    <TableCell align="right">{formatLeverage(order.leverage)}</TableCell>
+                    <TableCell align="right">{formatPrice(order.stopLossPrice)}</TableCell>
+                    <TableCell align="right">{formatPrice(order.takeProfitPrice)}</TableCell>
+                    <TableCell>
+                      <StatusChip value={String(order.status ?? '-')} />
+                    </TableCell>
+                    <TableCell align="right">
+                      <PendingOrderActions record={order} tradingMode={state.tradingMode} onChanged={() => void load(true)} />
+                    </TableCell>
                   </TableRow>
-                </TableHead>
-                <TableBody>
-                  {filtered.map((order) => (
-                    <TableRow key={String(order.id)} hover>
-                      <TableCell sx={{ fontWeight: 900 }}>{String(order.instId ?? '-')}</TableCell>
-                      <TableCell>{formatAction(order.action)}</TableCell>
-                      <TableCell>{`${formatSide(order.side)} / ${formatSide(order.posSide)}`}</TableCell>
-                      <TableCell align="right">{formatPrice(order.price)}</TableCell>
-                      <TableCell align="right">{formatLeverage(order.leverage)}</TableCell>
-                      <TableCell align="right">{formatPrice(order.stopLossPrice)}</TableCell>
-                      <TableCell align="right">{formatPrice(order.takeProfitPrice)}</TableCell>
-                      <TableCell>
-                        <StatusChip value={String(order.status ?? '-')} />
-                      </TableCell>
-                      <TableCell align="right">
-                        <PendingOrderActions record={order} tradingMode={state.tradingMode} onChanged={() => void load(true)} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                ))}
+              </TableBody>
+            </ScrollableTable>
           )}
         </Box>
 
-        <Box sx={{ ...compactGlass, borderRadius: 1, p: 1.25 }}>
+        <Box sx={{ ...insetPanel, borderRadius: 1, p: 1.5 }}>
           <Typography variant="caption" color="text.secondary">
             显示 {filtered.length} / {state.orders.length} 条待确认订单。
           </Typography>

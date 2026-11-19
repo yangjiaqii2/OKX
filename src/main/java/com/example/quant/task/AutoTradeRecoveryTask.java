@@ -189,47 +189,49 @@ public class AutoTradeRecoveryTask {
         int recoveredUnknownSubmits = 0;
         boolean exchangeSynchronized = syncCurrentOkxOrders();
         for (PendingOrder order : pendingOrderService.allOrders()) {
-            // CONFIRMING is persisted before risk checks and before any exchange call.
-            // A restart in this state can therefore safely resume from the existing reservation.
-            if (order.status() == OrderStatus.CONFIRMING) {
-                order.transition(OrderStatus.CONFIRMING, OrderStatus.BUDGET_RESERVED);
-            }
-            if (order.status() == OrderStatus.CONFIRMED) {
-                order.transition(OrderStatus.CONFIRMED, OrderStatus.BUDGET_RESERVED);
-            }
-            if (isReservablePendingStatus(order.status()) && order.isExpired(now)) {
-                order.markExpired();
-                expiredOrders++;
-                releasedReservations += releaseReservedBudget(order, "PENDING_ORDER_EXPIRED");
-                log.warn("AutoTrade recovery expired pending order: symbol={}, pendingOrderId={}, reservationId={}",
-                        order.instId(), order.id(), order.budgetReservationId());
-                continue;
-            }
-            if (RELEASE_RESERVED_STATUSES.contains(order.status())) {
-                releasedReservations += releaseReservedBudget(order, "PENDING_ORDER_" + order.status());
-                continue;
-            }
-            if (order.status() == OrderStatus.CLOSED) {
-                releasedReservations += releaseAnyBudget(order, "POSITION_CLOSED");
-                continue;
-            }
-            if (order.status() == OrderStatus.SUBMITTING) {
-                order.markUnknownSubmitStatus("APPLICATION_RESTARTED_DURING_SUBMIT; reconcile by clOrdId="
-                        + order.clientOrderId());
-            }
-            if (order.status() == OrderStatus.UNKNOWN_SUBMIT_STATUS) {
-                RecoveryDecision decision = recoverUnknownSubmit(order, now);
-                recoveredUnknownSubmits += decision.recovered();
-                releasedReservations += decision.released();
-                attentionRequired += decision.attentionRequired();
-                continue;
-            }
-            if (order.status() == OrderStatus.PROTECTION_FAILED
-                    || order.status() == OrderStatus.PROTECTION_REPLAN_REQUIRED
-                    || order.status() == OrderStatus.PROTECTION_RULES_STALE
-                    || order.status() == OrderStatus.EMERGENCY_ATTENTION_REQUIRED
-            ) {
-                attentionRequired++;
+        synchronized (order) {
+                // CONFIRMING is persisted before risk checks and before any exchange call.
+                // A restart in this state can therefore safely resume from the existing reservation.
+                if (order.status() == OrderStatus.CONFIRMING) {
+                    order.transition(OrderStatus.CONFIRMING, OrderStatus.BUDGET_RESERVED);
+                }
+                if (order.status() == OrderStatus.CONFIRMED) {
+                    order.transition(OrderStatus.CONFIRMED, OrderStatus.BUDGET_RESERVED);
+                }
+                if (isReservablePendingStatus(order.status()) && order.isExpired(now)) {
+                    order.markExpired();
+                    expiredOrders++;
+                    releasedReservations += releaseReservedBudget(order, "PENDING_ORDER_EXPIRED");
+                    log.warn("AutoTrade recovery expired pending order: symbol={}, pendingOrderId={}, reservationId={}",
+                            order.instId(), order.id(), order.budgetReservationId());
+                    continue;
+                }
+                if (RELEASE_RESERVED_STATUSES.contains(order.status())) {
+                    releasedReservations += releaseReservedBudget(order, "PENDING_ORDER_" + order.status());
+                    continue;
+                }
+                if (order.status() == OrderStatus.CLOSED) {
+                    releasedReservations += releaseAnyBudget(order, "POSITION_CLOSED");
+                    continue;
+                }
+                if (order.status() == OrderStatus.SUBMITTING) {
+                    order.markUnknownSubmitStatus("APPLICATION_RESTARTED_DURING_SUBMIT; reconcile by clOrdId="
+                            + order.clientOrderId());
+                }
+                if (order.status() == OrderStatus.UNKNOWN_SUBMIT_STATUS) {
+                    RecoveryDecision decision = recoverUnknownSubmit(order, now);
+                    recoveredUnknownSubmits += decision.recovered();
+                    releasedReservations += decision.released();
+                    attentionRequired += decision.attentionRequired();
+                    continue;
+                }
+                if (order.status() == OrderStatus.PROTECTION_FAILED
+                        || order.status() == OrderStatus.PROTECTION_REPLAN_REQUIRED
+                        || order.status() == OrderStatus.PROTECTION_RULES_STALE
+                        || order.status() == OrderStatus.EMERGENCY_ATTENTION_REQUIRED
+                ) {
+                    attentionRequired++;
+                }
             }
         }
         if (lifecycleService != null) {

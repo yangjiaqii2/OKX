@@ -73,20 +73,20 @@ public final class V2SelectionScoreCalculator {
         Map<String, V2SelectionScoreResult> scores = scoreSnapshot == null ? Map.of() : scoreSnapshot;
         V2SelectionScoreResult leftResult = scores.get(left.instId());
         V2SelectionScoreResult rightResult = scores.get(right.instId());
-        int score = Comparator.nullsLast(BigDecimal::compareTo)
-                .compare(rankingScore(rightResult), rankingScore(leftResult));
+        int score = Comparator.<BigDecimal>nullsLast(Comparator.reverseOrder())
+                .compare(rankingScore(leftResult), rankingScore(rightResult));
         if (score != 0) return score;
-        score = Comparator.nullsLast(BigDecimal::compareTo)
-                .compare(normalizedScore(rightResult), normalizedScore(leftResult));
+        score = Comparator.<BigDecimal>nullsLast(Comparator.reverseOrder())
+                .compare(normalizedScore(leftResult), normalizedScore(rightResult));
         if (score != 0) return score;
-        score = Comparator.nullsLast(BigDecimal::compareTo)
-                .compare(availableWeight(rightResult), availableWeight(leftResult));
+        score = Comparator.<BigDecimal>nullsLast(Comparator.reverseOrder())
+                .compare(availableWeight(leftResult), availableWeight(rightResult));
         if (score != 0) return score;
-        score = Comparator.nullsLast(BigDecimal::compareTo).compare(right.finalRankScore(), left.finalRankScore());
+        score = Comparator.<BigDecimal>nullsLast(Comparator.reverseOrder()).compare(left.finalRankScore(), right.finalRankScore());
         if (score != 0) return score;
         score = Integer.compare(right.score(), left.score());
         if (score != 0) return score;
-        score = Comparator.nullsLast(BigDecimal::compareTo).compare(right.volume24h(), left.volume24h());
+        score = Comparator.<BigDecimal>nullsLast(Comparator.reverseOrder()).compare(left.volume24h(), right.volume24h());
         if (score != 0) return score;
         return String.valueOf(left.instId()).compareTo(String.valueOf(right.instId()));
     }
@@ -174,8 +174,7 @@ public final class V2SelectionScoreCalculator {
         }
         BigDecimal sum = rs.rs1h().add(rs.rs4h()).add(rs.rs24h());
         BigDecimal directional = c.trendDirection() == DirectionBias.BEARISH ? sum.negate() : sum;
-        return java.util.Optional.of(BigDecimal.valueOf(50)
-                .add(linear(directional, BigDecimal.valueOf(-30), BigDecimal.valueOf(30), 50)));
+        return java.util.Optional.of(boundedLinear(directional, BigDecimal.valueOf(-30), BigDecimal.valueOf(30), 100));
     }
 
     private java.util.Optional<BigDecimal> marketStructure(ContractCandidate c) {

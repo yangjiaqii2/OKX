@@ -68,6 +68,34 @@ class DailyRiskServiceTest {
                 .isEqualTo(1);
     }
 
+    @Test
+    void switchingContractsAndDirectionCannotBypassAccountLossControlsAfterRestart() {
+        Fixture fixture = new Fixture();
+        fixture.properties.risk().setMaxConsecutiveLosses(2);
+        Instant start = Instant.parse("2026-08-10T00:00:00Z");
+        BigDecimal equity = BigDecimal.valueOf(1000);
+        DailyRiskService first = fixture.service();
+        assertThat(first.claimAutomaticEntry("alice", "BTC-LONG", equity, start, BigDecimal.TEN).allowed()).isTrue();
+        first.recordReconciledOutcome("alice", "BTC-LONG", new BigDecimal("-0.10"), start.plusSeconds(10));
+        DailyRiskService restarted = fixture.service();
+        assertThat(restarted.checkRound("alice", equity, start.plusSeconds(20)).reason()).isEqualTo("LOSS_COOLDOWN_ACTIVE");
+        assertThat(restarted.claimAutomaticEntry("alice", "ETH-SHORT", equity, start.plusSeconds(1900), BigDecimal.TEN).allowed()).isTrue();
+        restarted.recordReconciledOutcome("alice", "ETH-SHORT", new BigDecimal("-2"), start.plusSeconds(2000));
+        assertThat(fixture.service().checkRound("alice", equity, start.plusSeconds(4000)).reason())
+                .isEqualTo("MAX_CONSECUTIVE_LOSSES_REACHED");
+        assertThat(fixture.service().checkRound("bob", equity, start.plusSeconds(4000)).allowed()).isTrue();
+    }
+
+    @Test
+    void nextTradeCannotConsumeMoreThanRemainingDailyLossBudget() {
+        Fixture fixture = new Fixture();
+        fixture.properties.risk().setMaxDailyLossPercent(BigDecimal.valueOf(3));
+        fixture.ledgerSummary = summary("-25");
+        var decision = fixture.service().claimAutomaticEntry("alice", "ETH-SHORT", BigDecimal.valueOf(1000),
+                Instant.parse("2026-08-10T00:00:00Z"), BigDecimal.TEN);
+        assertThat(decision.reason()).isEqualTo("MAX_DAILY_LOSS_REACHED");
+    }
+
     private static LedgerPnlService.Summary summary(String today) {
         BigDecimal value = new BigDecimal(today);
         return new LedgerPnlService.Summary(value, BigDecimal.ZERO, BigDecimal.ZERO, value, value,

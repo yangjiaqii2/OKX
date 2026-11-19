@@ -19,7 +19,6 @@ import {
   Paper,
   Select,
   Stack,
-  Table,
   TableBody,
   TableCell,
   TableHead,
@@ -31,6 +30,10 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { clearAuthSession, getAuthRole, getAuthUser } from '../api/auth';
 import { quantFetch } from '../api/http';
+import { PageHeader, PageShell } from '../components/PageShell';
+import { PanelState } from '../components/PanelState';
+import { ScrollableTable } from '../components/ScrollableTable';
+import { panel } from '../components/surfaces';
 
 type AuthRole = 'ADMIN' | 'USER';
 
@@ -134,21 +137,14 @@ export function SecurityPage() {
   }
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1180 }}>
-      <Stack spacing={2.5}>
-        <Box>
-          <Typography variant="h4" fontWeight={950} sx={{ letterSpacing: 0 }}>
-            账号安全
-          </Typography>
-          <Typography color="text.secondary">
-            管理控制台登录用户、密码和账号启停状态。
-          </Typography>
-        </Box>
+    <PageShell title="账号安全" maxWidth={1180}>
+      <Stack spacing={3}>
+        <PageHeader title="账号安全" subtitle="管理控制台登录用户、密码和账号启停状态。" />
 
         <Paper
           component="form"
           onSubmit={(event) => void submitPassword(event)}
-          sx={{ p: 2.5, borderRadius: 2, border: '1px solid rgba(148, 163, 184, 0.14)' }}
+          sx={{ ...panel, p: { xs: 2, sm: 3 } }}
         >
           <Stack spacing={2}>
             <Stack direction="row" spacing={1} alignItems="center">
@@ -160,7 +156,7 @@ export function SecurityPage() {
                 </Typography>
               </Box>
             </Stack>
-            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} gap={2}>
               <TextField
                 required
                 label="旧密码"
@@ -168,7 +164,7 @@ export function SecurityPage() {
                 value={passwordForm.oldPassword}
                 autoComplete="current-password"
                 onChange={(event) => setPasswordForm((current) => ({ ...current, oldPassword: event.target.value }))}
-                sx={{ flex: 1 }}
+                sx={{ flex: 1, minWidth: 0 }}
               />
               <TextField
                 required
@@ -177,7 +173,7 @@ export function SecurityPage() {
                 value={passwordForm.newPassword}
                 autoComplete="new-password"
                 onChange={(event) => setPasswordForm((current) => ({ ...current, newPassword: event.target.value }))}
-                sx={{ flex: 1 }}
+                sx={{ flex: 1, minWidth: 0 }}
               />
               <TextField
                 required
@@ -186,7 +182,7 @@ export function SecurityPage() {
                 value={passwordForm.confirmPassword}
                 autoComplete="new-password"
                 onChange={(event) => setPasswordForm((current) => ({ ...current, confirmPassword: event.target.value }))}
-                sx={{ flex: 1 }}
+                sx={{ flex: 1, minWidth: 0 }}
               />
             </Stack>
             <Box>
@@ -207,7 +203,7 @@ export function SecurityPage() {
           <Paper
             component="form"
             onSubmit={(event) => void submitCreateUser(event)}
-            sx={{ p: 2.5, borderRadius: 2, border: '1px solid rgba(148, 163, 184, 0.14)' }}
+            sx={{ ...panel, p: { xs: 2, sm: 3 } }}
           >
             <Stack spacing={2}>
               <Stack direction="row" spacing={1} alignItems="center">
@@ -222,7 +218,7 @@ export function SecurityPage() {
               <Box
                 sx={{
                   display: 'grid',
-                  gridTemplateColumns: { xs: '1fr', md: 'minmax(260px, 1.2fr) minmax(320px, 1.4fr) 180px' },
+                  gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(2, minmax(0, 1fr))', lg: 'minmax(0, 1fr) minmax(0, 1fr) minmax(120px, .5fr)' },
                   gap: 1.5,
                   alignItems: 'start',
                 }}
@@ -234,13 +230,7 @@ export function SecurityPage() {
                   value={createForm.username}
                   autoComplete="off"
                   onChange={(event) => setCreateForm((current) => ({ ...current, username: event.target.value }))}
-                  sx={{
-                    minWidth: 0,
-                    '& .MuiInputBase-input': {
-                      minHeight: 28,
-                      fontSize: 16,
-                    },
-                  }}
+                  sx={{ minWidth: 0 }}
                 />
                 <TextField
                   required
@@ -250,13 +240,7 @@ export function SecurityPage() {
                   value={createForm.password}
                   autoComplete="new-password"
                   onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))}
-                  sx={{
-                    minWidth: 0,
-                    '& .MuiInputBase-input': {
-                      minHeight: 28,
-                      fontSize: 16,
-                    },
-                  }}
+                  sx={{ minWidth: 0 }}
                   InputProps={{
                     endAdornment: (
                       <InputAdornment position="end">
@@ -294,7 +278,7 @@ export function SecurityPage() {
         )}
 
         {isAdmin && (
-          <Paper sx={{ p: 2.5, borderRadius: 2, border: '1px solid rgba(148, 163, 184, 0.14)' }}>
+          <Paper sx={{ ...panel, p: { xs: 2, sm: 3 } }}>
             <Stack spacing={2}>
               <Stack direction="row" spacing={1} alignItems="center">
                 <AdminPanelSettingsIcon color="primary" />
@@ -305,8 +289,8 @@ export function SecurityPage() {
                   </Typography>
                 </Box>
               </Stack>
-              <Box sx={{ width: '100%', overflowX: 'auto' }}>
-                <Table size="small" sx={{ minWidth: 620 }}>
+              {loadingUsers && users.length === 0 ? <PanelState loading /> : users.length === 0 ? <PanelState>暂无用户。</PanelState> : (
+                <ScrollableTable label="用户列表">
                   <TableHead>
                     <TableRow>
                       <TableCell>用户名</TableCell>
@@ -344,13 +328,13 @@ export function SecurityPage() {
                       </TableRow>
                     ))}
                   </TableBody>
-                </Table>
-              </Box>
+                </ScrollableTable>
+              )}
             </Stack>
           </Paper>
         )}
       </Stack>
-    </Box>
+    </PageShell>
   );
 }
 

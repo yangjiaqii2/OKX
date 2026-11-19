@@ -35,12 +35,18 @@ class OkxContractScannerTest {
                 null, null, null, null, true, "", Instant.EPOCH);
         var news = ContractNewsRiskAnalysis.low();
         var type = ContractSignalType.PULLBACK_LONG;
-        assertThat(ContractSignalAnalyzer.action(type, 64, "READY", news)).isEqualTo("WAIT_CONFIRM");
+        assertThat(ContractSignalAnalyzer.action(type, 59, "READY", news)).isEqualTo("WAIT_CONFIRM");
         assertThat(scanner.adjustedAction(type, "READY", 69, news, book, new BigDecimal("69")))
                 .isEqualTo("AUTO_TRADE_ALLOWED");
         assertThat(scanner.adjustedAction(type, "NOT_READY", 69, news, book, new BigDecimal("69")))
                 .isEqualTo("WAIT_CONFIRM");
-        assertThat(scanner.adjustedAction(type, "READY", 69, news, book, new BigDecimal("60")))
+        assertThat(scanner.adjustedAction(type, "READY", 60, news, book, new BigDecimal("60")))
+                .isEqualTo("AUTO_TRADE_ALLOWED");
+        assertThat(scanner.adjustedAction(type, "READY", 59, news, book, new BigDecimal("60")))
+                .isEqualTo("WAIT_CONFIRM");
+        assertThat(scanner.adjustedAction(type, "READY", 69, news, book, new BigDecimal("59.99")))
+                .isEqualTo("WAIT");
+        assertThat(scanner.adjustedAction(ContractSignalType.NEUTRAL, "READY", 71, news, book, new BigDecimal("60")))
                 .isEqualTo("WAIT");
     }
 
@@ -65,6 +71,7 @@ class OkxContractScannerTest {
 
         List<ContractCandidate> candidates = scanner.scan();
 
+        assertThat(client.fundingCalls.values()).isNotEmpty().containsOnly(1);
         assertThat(candidates).hasSize(10);
         assertThat(candidates.get(0).instId()).isEqualTo("TREND-USDT-SWAP");
         assertThat(candidates.get(0).volume24h()).isLessThan(candidates.stream()
@@ -190,7 +197,9 @@ class OkxContractScannerTest {
                 timedCandle(start.plusSeconds(5 * 60), "101", "102"),
                 timedCandle(start, "100", "101"),
                 timedCandle(start.plusSeconds(10 * 60), "102", "103"),
+                timedCandle(start.plusSeconds(5 * 60), "101", "102"),
                 timedCandle(start.plusSeconds(20 * 60), "104", "105"),
+                timedCandle(start.plusSeconds(30 * 60), "105", "106"),
                 timedCandle(start.plusSeconds(30 * 60), "106", "107"),
                 timedCandle(start.plusSeconds(35 * 60), "107", "108")
         );
@@ -251,6 +260,7 @@ class OkxContractScannerTest {
 
     private static final class FakeOkxRestClient extends OkxRestClient {
         private final ObjectMapper objectMapper = new ObjectMapper();
+        private final java.util.Map<String, Integer> fundingCalls = new java.util.HashMap<>();
         private final boolean failFundingRate;
         private final long dormantTurnover;
 
@@ -284,6 +294,7 @@ class OkxContractScannerTest {
                             """);
                 }
                 if (requestPath.startsWith("/api/v5/public/funding-rate")) {
+                    fundingCalls.merge(requestPath, 1, Integer::sum);
                     if (failFundingRate) {
                         throw new IllegalStateException("funding rate unavailable");
                     }

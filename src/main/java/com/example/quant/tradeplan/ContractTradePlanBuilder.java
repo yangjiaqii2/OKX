@@ -698,7 +698,7 @@ public class ContractTradePlanBuilder {
                 必须输出严格JSON，不要Markdown，不要解释。
                 系统已经确定方向、入场、止损、止盈、杠杆和仓位；你不能修改这些字段。
                 若发现风险或证据不足，输出WAIT；否则原样确认系统方向。
-                禁止为WAIT_OVERHEATED、WAIT_OVERSOLD、NEUTRAL、NO_TRADE、新闻HIGH/CRITICAL候选输出开仓。
+                禁止为WAIT_RECLAIM、WAIT_OVERHEATED、WAIT_OVERSOLD、NEUTRAL、NO_TRADE、新闻HIGH/CRITICAL候选输出开仓。
                 输出字段：
                 action: OPEN_LONG | OPEN_SHORT | WAIT
                 reasonList: string[]

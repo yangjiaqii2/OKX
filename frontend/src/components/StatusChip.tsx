@@ -39,20 +39,6 @@ export function StatusChip({ value }: StatusChipProps) {
   const color = colorMap[text] ?? 'default';
 
   const label = text === 'BULLISH' || text === 'BEARISH' || text === 'NEUTRAL' ? formatTrend(text) : formatStatus(text);
-  
-  return (
-    <Chip 
-      size="small" 
-      label={label} 
-      color={color} 
-      variant="filled"
-      sx={{ 
-        fontWeight: 700, 
-        fontSize: '0.75rem',
-        letterSpacing: 0,
-        height: 24,
-        maxWidth: '100%',
-      }} 
-    />
-  );
+
+  return <Chip size="small" color={color} label={label} />;
 }

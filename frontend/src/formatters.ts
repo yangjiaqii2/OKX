@@ -1,3 +1,4 @@
+import { colors } from './designTokens';
 import type { ReactNode } from 'react';
 import { createElement } from 'react';
 
@@ -31,8 +32,6 @@ export function formatAction(value: unknown) {
 export function formatOpenDirection(
   action: unknown,
   posSide: unknown,
-  aiDirection?: unknown,
-  trendDirection?: unknown,
 ) {
   const actionText = String(action ?? '').toUpperCase();
   if (actionText.includes('LONG')) return '多';
@@ -42,16 +41,14 @@ export function formatOpenDirection(
   if (sideText === 'long' || sideText === 'buy') return '多';
   if (sideText === 'short' || sideText === 'sell') return '空';
 
-  const bias = String(aiDirection ?? trendDirection ?? '').toUpperCase();
-  if (bias === 'BULLISH') return '多';
-  if (bias === 'BEARISH') return '空';
   return '-';
 }
 
 export function formatSignalType(value: unknown) {
   const text = String(value ?? '');
   const map: Record<string, string> = {
-    STRONG_LONG: '强势做多',
+    STRONG_LONG: '20m 强势偏多',
+    WAIT_RECLAIM: '冲高回落，等待确认',
     PULLBACK_LONG: '回调做多',
     WAIT_OVERHEATED: '过热等待',
     REVERSAL_SHORT: '反转做空',
@@ -61,6 +58,12 @@ export function formatSignalType(value: unknown) {
     NO_TRADE: '不交易',
   };
   return map[text] ?? formatAutoTradeEnum(text || '-');
+}
+
+export function formatScanAction(action: unknown, reason: unknown) {
+  if (action) return formatSignalType(action);
+  const recordedAction = String(reason ?? '').match(/\bcandidate_action_not_auto_trade_allowed_([A-Z_]+)\b/);
+  return recordedAction ? formatSignalType(recordedAction[1]) : '未记录';
 }
 
 export function formatDecisionSource(value: unknown) {
@@ -170,6 +173,9 @@ export function formatStatus(value: unknown) {
 const autoTradeReasonLabels: Record<string, string> = {
   no_candidate_passed_auto_gate: '没有候选通过自动交易门槛',
   no_order_submitted: '没有提交订单',
+  CANONICAL_PLAN_REJECTED: '订单确认时交易计划被拒绝',
+  EXECUTABLE_RISK_EXCEEDS_RISK_BUDGET: '按交易所价格和数量计算的止损金额超过风险预算',
+  NET_RISK_REWARD_AFTER_COSTS_TOO_LOW: '扣除交易成本后盈亏比不足',
   backtest_gate_required_but_not_available: '需要回测通过，但当前没有可用回测结果',
   market_environment_high_risk: '市场环境风险较高',
   news_risk_critical: '重大新闻风险，禁止交易',
@@ -195,8 +201,11 @@ const autoTradeReasonLabels: Record<string, string> = {
   pre_confirm_refresh_failed: '下单前行情刷新失败',
   okx_submit_status_unknown: 'OKX订单提交结果未知',
   local_active_entry_order: '已有本地入场订单：',
-  SYMBOL_ALREADY_IN_FLIGHT: '该合约已有进行中的自动交易请求',
-  symbol_already_in_flight: '该合约已有进行中的自动交易请求',
+  SYMBOL_ALREADY_HELD: '已有该合约持仓',
+  SYMBOL_ENTRY_LOCKED: '该合约入场请求已锁定',
+  short_term_reclaim_unconfirmed: '5m 回落结构尚未收复',
+  SYMBOL_ALREADY_IN_FLIGHT: '该合约已有持仓或入场请求',
+  symbol_already_in_flight: '该合约已有持仓或入场请求',
   okx_current_active_order: 'OKX已有该合约的活动订单',
   okx_current_orders_unavailable: 'OKX当前订单同步不可用',
   position_snapshot_unavailable: '持仓快照不可用',
@@ -231,7 +240,8 @@ const autoTradeEnumLabels: Record<string, string> = {
   BEARISH: '空头',
   CHOPPY: '震荡',
   UNKNOWN: '未知',
-  STRONG_LONG: '强势做多',
+  STRONG_LONG: '20m 强势偏多',
+  WAIT_RECLAIM: '冲高回落，等待确认',
   PULLBACK_LONG: '回调做多',
   REVERSAL_SHORT: '反转做空',
   TREND_SHORT: '趋势做空',
@@ -333,6 +343,18 @@ export function formatPercent(value: unknown, digits = 2) {
   return `${sign}${number.toFixed(digits)}%`;
 }
 
+export function directionTone(value: unknown): 'success' | 'error' | 'default' {
+  const direction = String(value ?? '').toLowerCase();
+  if (direction === 'buy' || direction === 'long' || direction === 'bullish') return 'success';
+  if (direction === 'sell' || direction === 'short' || direction === 'bearish') return 'error';
+  return 'default';
+}
+
+export function pnlColor(value: unknown) {
+  const number = Number(value);
+  return number > 0 ? colors.success : number < 0 ? colors.error : colors.muted;
+}
+
 export function formatPercentWithColor(value: unknown, digits = 2): ReactNode {
   if (isMissing(value)) return '-';
   const number = Number(value);
@@ -340,10 +362,10 @@ export function formatPercentWithColor(value: unknown, digits = 2): ReactNode {
     return '-';
   }
   const sign = number > 0 ? '+' : '';
-  const color = number > 0 ? '#22c55e' : number < 0 ? '#ef4444' : '#94a3b8';
+  const color = pnlColor(number);
   return createElement(
     'span',
-    { style: { color, fontWeight: 600, fontFamily: '"JetBrains Mono", monospace' } },
+    { style: { color, fontWeight: 650 } },
     `${sign}${number.toFixed(digits)}%`,
   );
 }

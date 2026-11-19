@@ -169,6 +169,9 @@ public class AutoTradeService {
         this.waitingEntryIntentService = waitingEntryIntentService;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.example.quant.risk.DailyRiskService dailyRisk;
+
     public AutoTradeResult evaluateAndExecute(List<ContractCandidate> candidates) {
         return evaluateAndExecute(candidates, Map.of(), Map.of());
     }
@@ -211,7 +214,7 @@ public class AutoTradeService {
             if (!executionLockAcquired) {
                 log.warn("AutoTrade skipped: reason=AUTO_TRADE_EXECUTION_ALREADY_RUNNING");
                 return recordAndReturn(AutoTradeResult.skipped("AUTO_TRADE_EXECUTION_ALREADY_RUNNING"),
-                        candidateCount, topCandidate(safeCandidates).orElse(null));
+                        candidateCount, topCandidate(safeCandidates, safeV2Scores).orElse(null));
             }
         }
         String scanId = UUID.randomUUID().toString();
@@ -220,12 +223,12 @@ public class AutoTradeService {
             boolean noRiskMode = riskMode != null && riskMode.noRisk();
             int noRiskMinScore = noRiskMinScore();
             if (noRiskMode) {
-                return evaluateShadow(safeCandidates, candidateCount, scanId, noRiskMinScore);
+                return evaluateShadow(safeCandidates, candidateCount, scanId, noRiskMinScore, safeV2Scores);
             }
             pruneInFlightOrders();
             OkxCurrentOrderSyncService.SyncResult currentOrderSyncResult = syncCurrentOrders();
             if (currentOrderSyncResult.failed()) {
-                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
+                ContractCandidate top = topCandidate(safeCandidates, safeV2Scores).orElse(null);
                 log.warn("AutoTrade round stopped scanId={} stage=OKX_CURRENT_ORDER_SYNC reason={} fallback=false",
                         scanId, currentOrderSyncResult.errorMessage());
                 return recordAndReturn(AutoTradeResult.skipped("okx_current_orders_unavailable: "
@@ -241,14 +244,14 @@ public class AutoTradeService {
                         scanId, unresolved.id(), unresolved.instId(), unresolved.status(), unresolved.clientOrderId());
                 return recordAndReturn(AutoTradeResult.skipped("unresolved_local_submit: pendingOrderId="
                         + unresolved.id() + ", status=" + unresolved.status()), candidateCount,
-                        topCandidate(safeCandidates).orElse(null));
+                        topCandidate(safeCandidates, safeV2Scores).orElse(null));
             }
             Set<String> localActiveEntryInstIds = tradeOrderRecordService.activeEntryInstIds();
             List<PositionSummary> positions;
             try {
                 positions = new ArrayList<>(activePositions());
             } catch (RuntimeException ex) {
-                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
+                ContractCandidate top = topCandidate(safeCandidates, safeV2Scores).orElse(null);
                 log.warn("AutoTrade round stopped scanId={} stage=POSITION_SNAPSHOT reason={} fallback=false",
                         scanId, ex.getMessage());
                 return recordAndReturn(AutoTradeResult.skipped("position_snapshot_unavailable: " + ex.getMessage()),
@@ -267,7 +270,7 @@ public class AutoTradeService {
             CorrelationExposureGuard exposureGuard = new CorrelationExposureGuard(agentProperties);
             FailureReasonClassifier failureReasonClassifier = new FailureReasonClassifier(agentProperties);
             PreConfirmRefreshService preConfirmRefreshService = new PreConfirmRefreshService(agentProperties);
-            ContractCandidate topForPolicy = topCandidate(safeCandidates).orElse(null);
+            ContractCandidate topForPolicy = topCandidate(safeCandidates, safeV2Scores).orElse(null);
             String marketRegime = positionQualityPolicy.marketRegimeFor(topForPolicy);
             int dynamicMaxPositions = topForPolicy == null
                     ? maxOpenPositions()
@@ -287,7 +290,7 @@ public class AutoTradeService {
                     positionQualityPolicy.minFinalRankScoreFor(openOrPendingCount, topForPolicy),
                     riskMode);
             if (capacity <= 0) {
-                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
+                ContractCandidate top = topCandidate(safeCandidates, safeV2Scores).orElse(null);
                 log.warn("AutoTrade round stopped scanId={} stage=POSITION_CAPACITY reason=capacity_full fallback=false", scanId);
                 return recordAndReturn(AutoTradeResult.skipped("position_capacity_full: held="
                                 + heldInstIds.size() + ", okxCurrentOrders=" + okxCurrentOrderInstIds.size()
@@ -299,7 +302,7 @@ public class AutoTradeService {
             }
             int refillNeeded = Math.min(targetOpenPositions(), dynamicMaxPositions) - openOrPendingCount;
             if (refillNeeded <= 0) {
-                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
+                ContractCandidate top = topCandidate(safeCandidates, safeV2Scores).orElse(null);
                 log.warn("AutoTrade round stopped scanId={} stage=POSITION_TARGET reason=target_satisfied fallback=false", scanId);
                 return recordAndReturn(AutoTradeResult.skipped("position_target_satisfied: held="
                                 + heldInstIds.size() + ", okxCurrentOrders=" + okxCurrentOrderInstIds.size()
@@ -320,7 +323,11 @@ public class AutoTradeService {
                         account == null ? null : account.availableBalance(),
                         account == null ? "ACCOUNT_SNAPSHOT_EMPTY" : account.message());
                 return recordAndReturn(AutoTradeResult.skipped("account_available_balance_unavailable"),
-                        candidateCount, topCandidate(safeCandidates).orElse(null));
+                        candidateCount, topCandidate(safeCandidates, safeV2Scores).orElse(null));
+            }
+            if (dailyRisk != null) {
+                var decision = dailyRisk.checkRound(currentOwner(), effectiveEquity(accountAtRoundStart.orElseThrow()), Instant.now());
+                if (!decision.allowed()) return recordAndReturn(AutoTradeResult.skipped(decision.reason()), candidateCount, null);
             }
             BigDecimal totalBudgetUsdt = autoTradeTotalBudgetUsdt(accountAvailableAtRoundStart.orElseThrow());
             if (totalBudgetUsdt == null || totalBudgetUsdt.signum() <= 0) {
@@ -380,7 +387,7 @@ public class AutoTradeService {
                 String clientOrderId = selected == null ? null : stableDecisionIds.get(selected.instId());
                 if (waitingEntryIntentService == null || selected == null || clientOrderId == null) {
                     return recordAndReturn(AutoTradeResult.skipped("ai_primary_wait"), candidateCount,
-                            selected == null ? topCandidate(safeCandidates).orElse(null) : selected, selection);
+                            selected == null ? topCandidate(safeCandidates, safeV2Scores).orElse(null) : selected, selection);
                 }
                 WaitingEntryIntentService.Intent intent = waitingEntryIntentService.createOrGet(
                         owner, "AUTO_CONTRACT_V1", selected, selection, clientOrderId, Instant.now());
@@ -398,15 +405,13 @@ public class AutoTradeService {
             }
             List<AutoTradeResult> executedResults = new ArrayList<>();
             Set<String> attemptedSymbols = new LinkedHashSet<>();
-            String lastAttemptSkipReason = null;
-            String firstConfirmRejectionReason = null;
+            Map<String, String> skipReasonsBySymbol = new LinkedHashMap<>();
             for (ContractCandidate candidate : orderedCandidates) {
                 if (executedResults.size() >= targetExecutions) {
                     break;
                 }
                 if (!attemptedSymbols.add(candidate.instId())) {
-                    lastAttemptSkipReason = "SYMBOL_ALREADY_IN_FLIGHT";
-                    log.warn("AutoTrade candidate skipped scanId={} symbol={} reason=SYMBOL_ALREADY_IN_FLIGHT classification={} fallback=true",
+                    log.warn("AutoTrade candidate skipped scanId={} symbol={} reason=DUPLICATE_ROUND_CANDIDATE classification={} fallback=true",
                             scanId, candidate.instId(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
                     continue;
                 }
@@ -415,14 +420,16 @@ public class AutoTradeService {
                         || localActiveEntryInstIds.contains(candidate.instId())
                         || (agentProperties.concurrency().symbolLockEnabled()
                         && inFlightUntilByInstId.containsKey(candidate.instId()))) {
-                    lastAttemptSkipReason = localActiveEntryInstIds.contains(candidate.instId())
+                    String reason = localActiveEntryInstIds.contains(candidate.instId())
                             ? "local_active_entry_order:" + candidate.instId()
                             : okxCurrentOrderInstIds.contains(candidate.instId())
                             ? "okx_current_active_order"
-                            : "SYMBOL_ALREADY_IN_FLIGHT";
-                    recordCandidateSkipped(candidate, lastAttemptSkipReason);
+                            : heldInstIds.contains(candidate.instId()) ? "SYMBOL_ALREADY_HELD"
+                            : "SYMBOL_ENTRY_LOCKED";
+                    skipReasonsBySymbol.put(candidate.instId(), reason);
+                    recordCandidateSkipped(candidate, reason);
                     log.warn("AutoTrade candidate skipped scanId={} symbol={} reason={} classification={} fallback=true",
-                            scanId, candidate.instId(), lastAttemptSkipReason,
+                            scanId, candidate.instId(), reason,
                             FailureClassification.NEXT_CANDIDATE_ALLOWED);
                     continue;
                 }
@@ -431,7 +438,7 @@ public class AutoTradeService {
                         && selection.rankedCandidates().stream().anyMatch(item -> item.instId().equals(candidate.instId()));
                 String hardNewsBlockReason = hardNewsBlockReason(candidate);
                 if (hardNewsBlockReason != null) {
-                    lastAttemptSkipReason = hardNewsBlockReason;
+                    skipReasonsBySymbol.put(candidate.instId(), hardNewsBlockReason);
                     recordCandidateSkipped(candidate, hardNewsBlockReason);
                     log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=NEWS_RISK reason={} classification={} fallback=true",
                             scanId, candidate.instId(), hardNewsBlockReason, FailureClassification.NEXT_CANDIDATE_ALLOWED);
@@ -443,7 +450,7 @@ public class AutoTradeService {
                         candidate
                 );
                 if (!qualityDecision.allowed() && !aiPrimaryCandidate) {
-                    lastAttemptSkipReason = qualityDecision.reason();
+                    skipReasonsBySymbol.put(candidate.instId(), qualityDecision.reason());
                     recordCandidateSkipped(candidate, qualityDecision.reason());
                     log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=POSITION_QUALITY reason={} classification={} fallback=true",
                             scanId, candidate.instId(), qualityDecision.reason(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
@@ -452,7 +459,7 @@ public class AutoTradeService {
                 CorrelationExposureGuard.ExposureDecision exposureDecision = exposureGuard.evaluate(
                         positions, candidate, aiPrimaryCandidate ? selectionFor(candidate, selection).direction() : candidate.trendDirection());
                 if (!exposureDecision.allowed()) {
-                    lastAttemptSkipReason = exposureDecision.reason();
+                    skipReasonsBySymbol.put(candidate.instId(), exposureDecision.reason());
                     recordCandidateSkipped(candidate, exposureDecision.reason());
                     log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=EXPOSURE reason={} classification={} fallback=true",
                             scanId, candidate.instId(), exposureDecision.reason(), FailureClassification.NEXT_CANDIDATE_ALLOWED);
@@ -460,8 +467,9 @@ public class AutoTradeService {
                 }
                 List<String> autoGateReasons = aiPrimaryCandidate ? aiHardGate(candidate) : autoGate(candidate);
                 if (!autoGateReasons.isEmpty()) {
-                    lastAttemptSkipReason = String.join(",", autoGateReasons);
-                    recordCandidateSkipped(candidate, lastAttemptSkipReason);
+                    String reason = String.join(",", autoGateReasons);
+                    skipReasonsBySymbol.put(candidate.instId(), reason);
+                    recordCandidateSkipped(candidate, reason);
                     continue;
                 }
                 markInFlight(candidate.instId());
@@ -478,7 +486,7 @@ public class AutoTradeService {
                                 jevDecisionTimestamp);
                         if (!liveRefresh.passed()) {
                             String reason = String.join(",", liveRefresh.reasons());
-                            lastAttemptSkipReason = reason;
+                            skipReasonsBySymbol.put(candidate.instId(), reason);
                             recordCandidateSkipped(candidate, reason);
                             inFlightUntilByInstId.remove(candidate.instId());
                             log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=LIVE_MARKET_REFRESH reason={} classification={} fallback=true",
@@ -498,7 +506,7 @@ public class AutoTradeService {
                     if (plan.action() == com.example.quant.tradeplan.TradePlanType.WATCH
                             || "NO_ENTRY".equals(plan.orderType())) {
                         String reason = "智能入场或计划输出为观察，不提交OKX";
-                        lastAttemptSkipReason = reason;
+                        skipReasonsBySymbol.put(candidate.instId(), reason);
                         recordCandidateSkipped(candidate, reason);
                         inFlightUntilByInstId.remove(candidate.instId());
                         log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=PLAN reason={} classification={} fallback=true",
@@ -508,7 +516,7 @@ public class AutoTradeService {
                     PreConfirmRefreshResult refreshResult = preConfirmRefreshService.check(planningCandidate, plan);
                     if (!refreshResult.passed()) {
                         String reason = String.join(",", refreshResult.reasons());
-                        lastAttemptSkipReason = reason;
+                        skipReasonsBySymbol.put(candidate.instId(), reason);
                         recordCandidateSkipped(candidate, reason);
                         inFlightUntilByInstId.remove(candidate.instId());
                         log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=PRE_CONFIRM_REFRESH reason={} classification={} fallback=true",
@@ -520,7 +528,7 @@ public class AutoTradeService {
                     BigDecimal maxMarginForCandidate = plan.suggestedMargin();
                     if (maxMarginForCandidate == null || maxMarginForCandidate.signum() <= 0) {
                         String reason = "PLAN_RISK_MARGIN_UNAVAILABLE";
-                        lastAttemptSkipReason = reason;
+                        skipReasonsBySymbol.put(candidate.instId(), reason);
                         recordCandidateSkipped(candidate, reason);
                         inFlightUntilByInstId.remove(candidate.instId());
                         continue;
@@ -530,6 +538,16 @@ public class AutoTradeService {
                             .max(BigDecimal.ZERO);
                     maxMarginForCandidate = min(min(maxMarginForCandidate, availableForThisRound),
                             accountSingleMarginCap);
+                    BigDecimal costRate = percentRate(stopLossPct(plan)
+                            .add(agentProperties.profitProtection().roundTripFeePct())
+                            .add(agentProperties.profitProtection().estimatedSlippagePct()))
+                            .add(candidate.fundingRate() == null ? agentProperties.market().maxFundingAbs() : candidate.fundingRate().abs());
+                    BigDecimal riskBudget = effectiveEquity(accountAtRoundStart.orElseThrow())
+                            .multiply(percentRate(agentProperties.risk().singleTradeRiskPercent()));
+                    if (costRate.signum() > 0 && plan.suggestedLeverage() > 0) {
+                        maxMarginForCandidate = maxMarginForCandidate.min(riskBudget.divide(
+                                costRate.multiply(BigDecimal.valueOf(plan.suggestedLeverage())), 8, RoundingMode.DOWN));
+                    }
                     BudgetAllocation allocation = budgetService.allocate(new BudgetAllocationRequest(
                             totalBudgetUsdt,
                             budgetService.usedBudget(),
@@ -546,7 +564,7 @@ public class AutoTradeService {
                     orderMarginUsdt = allocation.finalOrderMarginUsdt();
                     if (orderMarginUsdt.compareTo(agentProperties.budget().minOrderMarginUsdt()) < 0) {
                         String reason = "CANDIDATE_BUDGET_ALLOCATION_TOO_LOW_" + orderMarginUsdt;
-                        lastAttemptSkipReason = reason;
+                        skipReasonsBySymbol.put(candidate.instId(), reason);
                         recordCandidateSkipped(candidate, reason);
                         inFlightUntilByInstId.remove(candidate.instId());
                         log.warn("AutoTrade attempt skipped scanId={} symbol={} stage=BUDGET_ALLOCATION reason={} classification={} fallback=true totalBudget={} usedBudget={} reservedBudget={} remainingBudget={} slotIndex={} slotBudget={} accountAvailableRoundStart={} maxMarginForCandidate={}",
@@ -563,7 +581,7 @@ public class AutoTradeService {
                             orderMarginUsdt, totalBudgetUsdt);
                     if (!reservation.reserved()) {
                         String reason = reservation.reason();
-                        lastAttemptSkipReason = reason;
+                        skipReasonsBySymbol.put(candidate.instId(), reason);
                         recordCandidateSkipped(candidate, reason);
                         inFlightUntilByInstId.remove(candidate.instId());
                         FailureClassification classification = failureReasonClassifier.classify("BUDGET_RESERVE", reason);
@@ -612,6 +630,9 @@ public class AutoTradeService {
                     completeTriggeredIntent(triggeredIntent, WaitingEntryIntentStatus.RECONCILING, unknown);
                     recordExecution(unknown, candidateCount, candidate, selection);
                     return unknown;
+                } catch (org.springframework.dao.OptimisticLockingFailureException stale) {
+                    return recordAndReturn(AutoTradeResult.failed("ORDER_STATE_CHANGED_RECONCILIATION_REQUIRED"),
+                            candidateCount, candidate, selection);
                 } catch (RuntimeException ex) {
                     inFlightUntilByInstId.remove(candidate.instId());
                     if (reservation != null) {
@@ -624,7 +645,7 @@ public class AutoTradeService {
                             scanId, candidate.instId(), ex.getMessage(), classification,
                             classification == FailureClassification.NEXT_CANDIDATE_ALLOWED);
                     if (classification == FailureClassification.NEXT_CANDIDATE_ALLOWED) {
-                        lastAttemptSkipReason = ex.getMessage();
+                        skipReasonsBySymbol.put(candidate.instId(), ex.getMessage());
                         continue;
                     }
                     return recordAndReturn(AutoTradeResult.failed(ex.getMessage()), candidateCount, candidate, selection);
@@ -652,9 +673,6 @@ public class AutoTradeService {
                 }
                 log.warn("Auto trade rejected after plan scanId={} instId={} tradePlanId={} reason={}",
                         scanId, plan.instId(), plan.id(), result.message());
-                if (firstConfirmRejectionReason == null) {
-                    firstConfirmRejectionReason = result.message();
-                }
                 AutoTradeResult rejectedIntentResult = new AutoTradeResult(
                         "REJECTED", plan.instId(), plan.id().toString(), order.id().toString(), null,
                         plan.action().name(), order.posSide(), order.leverage(), orderMarginUsdt,
@@ -671,7 +689,7 @@ public class AutoTradeService {
                         scanId, candidate.instId(), result.message(), classification,
                         classification == FailureClassification.NEXT_CANDIDATE_ALLOWED);
                 if (classification == FailureClassification.NEXT_CANDIDATE_ALLOWED) {
-                    lastAttemptSkipReason = result.message();
+                    skipReasonsBySymbol.put(candidate.instId(), result.message());
                     continue;
                 }
                 AutoTradeResult rejected = new AutoTradeResult("REJECTED", plan.instId(), plan.id().toString(),
@@ -684,7 +702,7 @@ public class AutoTradeService {
                         "auto_refill_submitted=" + executedResults.size() + ", stopped_by_rejection=" + result.message());
             }
             if (executedResults.isEmpty()) {
-                ContractCandidate top = topCandidate(safeCandidates).orElse(null);
+                ContractCandidate top = topCandidate(safeCandidates, safeV2Scores).orElse(null);
                 boolean aiPrimary = selection != null
                         && selection.source() == ContractSelectionDecision.DecisionSource.AI_PRIMARY;
                 ContractCandidate recordedCandidate = aiPrimary
@@ -693,15 +711,20 @@ public class AutoTradeService {
                                 .findFirst().orElse(top)
                         : top;
                 String message = aiPrimary ? "no_order_submitted" : "no_candidate_passed_auto_gate";
-                String displayedReason = firstConfirmRejectionReason == null
-                        ? lastAttemptSkipReason : firstConfirmRejectionReason;
-                if (displayedReason != null && !displayedReason.isBlank()) {
-                    message = message + ": " + displayedReason;
-                }
-                if (!aiPrimary && top != null) {
-                    List<String> reasons = autoGate(top);
+                if (recordedCandidate != null) {
+                    Set<String> reasons = new LinkedHashSet<>();
+                    String attemptReason = skipReasonsBySymbol.get(recordedCandidate.instId());
+                    if (attemptReason != null && !attemptReason.isBlank()) {
+                        reasons.add(attemptReason);
+                    }
+                    if (!aiPrimary) {
+                        List<String> gateReasons = autoGate(recordedCandidate);
+                        if (!gateReasons.isEmpty()) {
+                            reasons.add(String.join(",", gateReasons));
+                        }
+                    }
                     if (!reasons.isEmpty()) {
-                        message = message + ": " + String.join(",", reasons);
+                        message = message + ": " + String.join(": ", reasons);
                     }
                 }
                 return recordAndReturn(AutoTradeResult.skipped(message), candidateCount, recordedCandidate, selection);
@@ -732,12 +755,13 @@ public class AutoTradeService {
     }
 
     private AutoTradeResult evaluateShadow(List<ContractCandidate> candidates, int candidateCount,
-                                           String scanId, int minScore) {
+                                           String scanId, int minScore, Map<String, V2SelectionScoreResult> scores) {
         int recorded = 0;
         ContractCandidate lastRecorded = null;
         String lastSkipReason = null;
         for (ContractCandidate candidate : candidates.stream()
-                .sorted(Comparator.comparing(AutoTradeService::displayedScore).reversed())
+                .sorted(scores.isEmpty() ? Comparator.comparing(AutoTradeService::displayedScore).reversed()
+                        : (left, right) -> V2SelectionScoreCalculator.compareForRanking(left, right, scores))
                 .limit(Math.max(1, agentProperties.ranking().maxAutoTradeFallbackRank()))
                 .toList()) {
             String newsBlock = hardNewsBlockReason(candidate);
@@ -758,7 +782,7 @@ public class AutoTradeService {
         log.info("AutoTrade Shadow round completed scanId={} candidateCount={} recorded={} minScore={}",
                 scanId, candidateCount, recorded, minScore);
         return recordAndReturn(AutoTradeResult.skipped(message), candidateCount,
-                lastRecorded == null ? topCandidate(candidates).orElse(null) : lastRecorded);
+                lastRecorded == null ? topCandidate(candidates, scores).orElse(null) : lastRecorded);
     }
 
     private void recordExecution(AutoTradeResult result, int candidateCount, ContractCandidate candidate) {
@@ -1064,7 +1088,16 @@ public class AutoTradeService {
         return Math.min(maxOpenPositions(), configuredTarget);
     }
 
-    private static Optional<ContractCandidate> topCandidate(List<ContractCandidate> candidates) {
+    static Optional<ContractCandidate> topCandidate(List<ContractCandidate> candidates,
+                                                    Map<String, V2SelectionScoreResult> scores) {
+        // Scanner delivery order already includes readiness tiers and the pinned candidate.
+        if (!scores.isEmpty()) {
+            var firstScored = candidates.stream().filter(candidate -> {
+                var score = scores.get(candidate.instId());
+                return score != null && score.rankingScore() != null;
+            }).findFirst();
+            if (firstScored.isPresent()) return firstScored;
+        }
         return candidates.stream().max(Comparator.comparing(ContractCandidate::finalRankScore)
                 .thenComparing(ContractCandidate::score)
                 .thenComparing(ContractCandidate::volume24h, Comparator.nullsLast(Comparator.naturalOrder())));

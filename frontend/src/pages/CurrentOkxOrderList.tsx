@@ -1,12 +1,14 @@
+import { PanelState } from '../components/PanelState';
+import { ScrollableTable } from '../components/ScrollableTable';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import { Alert, Box, Button, CircularProgress, Stack, Tab, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tabs, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, CircularProgress, Stack, Tab, TableBody, TableCell, TableHead, TableRow, Tabs } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
-import { glassCard } from '../components/glass';
+import { panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { StatusChip } from '../components/StatusChip';
-import { formatPrice, formatSide } from '../formatters';
+import { directionTone, formatPrice, formatSide } from '../formatters';
 
 type OrderRow = Record<string, unknown>;
 
@@ -57,7 +59,6 @@ export function CurrentOkxOrderList() {
         <PageHeader
           title="当前委托/保护单"
           subtitle={`普通委托 ${normalOrders.length} 条，保护单 ${algoOrders.length} 条`}
-          eyebrow="OKX Live Orders"
           actions={
             <Button
               variant="outlined"
@@ -73,56 +74,56 @@ export function CurrentOkxOrderList() {
 
         {availabilityMessage ? <Alert severity="warning">{availabilityMessage}</Alert> : null}
 
-        <Box sx={{ ...glassCard }}>
+        <Box sx={{ ...panel }}>
           <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ px: 1 }}>
             <Tab label="普通委托" />
             <Tab label="保护单" />
           </Tabs>
           {loading ? (
-            <Box sx={{ minHeight: 220, display: 'grid', placeItems: 'center' }}>
-              <CircularProgress size={28} />
-            </Box>
+            <PanelState loading />
           ) : rows.length === 0 ? (
-            <Box sx={{ minHeight: 180, display: 'grid', placeItems: 'center', p: 3 }}>
-              <Typography color="text.secondary">暂无记录。</Typography>
-            </Box>
+            <PanelState>暂无记录。</PanelState>
           ) : (
-            <TableContainer>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>合约</TableCell>
-                    <TableCell>ID</TableCell>
-                    <TableCell>角色</TableCell>
-                    <TableCell>方向</TableCell>
-                    <TableCell>类型</TableCell>
-                    <TableCell align="right">数量</TableCell>
-                    <TableCell align="right">价格</TableCell>
-                    <TableCell align="right">触发价</TableCell>
-                    <TableCell>状态</TableCell>
-                    <TableCell>创建时间</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {rows.map((row, index) => (
-                    <TableRow key={String(row.ordId ?? row.algoId ?? index)} hover>
+            <ScrollableTable label="当前委托/保护单">
+              <TableHead>
+                <TableRow>
+                  <TableCell>合约</TableCell>
+                  <TableCell>ID</TableCell>
+                  <TableCell>角色</TableCell>
+                  <TableCell>方向</TableCell>
+                  <TableCell>类型</TableCell>
+                  <TableCell align="right">数量</TableCell>
+                  <TableCell align="right">价格</TableCell>
+                  <TableCell align="right">触发价</TableCell>
+                  <TableCell>状态</TableCell>
+                  <TableCell>创建时间</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {rows.map((row, index) => {
+                  const orderId = [row.ordId, row.algoId, row.clOrdId, row.algoClOrdId]
+                    .find((value) => value != null && String(value).trim() !== '');
+                  return (
+                    <TableRow key={String(orderId ?? index)} hover>
                       <TableCell sx={{ fontWeight: 900 }}>{String(row.instId ?? '-')}</TableCell>
-                      <TableCell sx={{ fontFamily: '"JetBrains Mono", monospace', maxWidth: 160, overflowWrap: 'anywhere' }}>
-                        {String(row.ordId ?? row.algoId ?? row.clOrdId ?? row.algoClOrdId ?? '-')}
+                      <TableCell sx={{ maxWidth: 160, overflowWrap: 'anywhere' }}>
+                        {String(orderId ?? '—')}
                       </TableCell>
                       <TableCell>{String(row.role ?? '-')}</TableCell>
-                      <TableCell>{formatSide(row.side)} / {formatSide(row.posSide)}</TableCell>
+                      <TableCell>
+                        <Chip size="small" color={directionTone(row.side)} label={formatSide(row.side) + ' / ' + formatSide(row.posSide)} />
+                      </TableCell>
                       <TableCell>{formatSide(row.ordType)}</TableCell>
                       <TableCell align="right">{formatPrice(row.size)}</TableCell>
-                      <TableCell align="right">{formatPrice(row.price)}</TableCell>
-                      <TableCell align="right">{formatPrice(row.triggerPrice)}</TableCell>
+                      <TableCell align="right">{Number(row.price) > 0 && String(row.ordType).toLowerCase() !== 'market' ? formatPrice(row.price) : '—'}</TableCell>
+                      <TableCell align="right">{Number(row.triggerPrice) > 0 ? formatPrice(row.triggerPrice) : '—'}</TableCell>
                       <TableCell><StatusChip value={String(row.status ?? '-')} /></TableCell>
                       <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatTime(row.createdAt)}</TableCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                  );
+                })}
+              </TableBody>
+            </ScrollableTable>
           )}
         </Box>
       </Stack>

@@ -1,9 +1,11 @@
 import RefreshIcon from '@mui/icons-material/Refresh';
-import { Alert, Box, Button, CircularProgress, Stack } from '@mui/material';
+import { Alert, Button, Stack } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
 import { ClosePositionDialog } from '../components/ClosePositionDialog';
+import { PanelState } from '../components/PanelState';
+import { panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PositionSnapshotTable, positionKey } from '../components/PositionSnapshotTable';
 
@@ -31,11 +33,11 @@ export function PositionsPage() {
     finally { setClosing(''); }
   }
   return <PageShell title="当前持仓"><Stack spacing={2}>
-    <PageHeader title="当前持仓" eyebrow="Exchange Positions" subtitle="OKX 是真实资金仓位权威；UNMANAGED 不会自动归属策略。"
+    <PageHeader title="当前持仓" subtitle="OKX 是真实资金仓位权威；UNMANAGED 不会自动归属策略。"
       actions={<Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => void load()}>刷新</Button>} />
     {error && <Alert severity="error">{error}</Alert>}
     {positions.some((p) => p.ownership === 'UNMANAGED') && <Alert severity="error">检测到外部/未管理仓位，冲突自动交易将被阻断。</Alert>}
-    {loading ? <Box sx={{ py: 8, display: 'grid', placeItems: 'center' }}><CircularProgress size={28} /></Box>
+    {loading ? <PanelState loading sx={panel} />
       : <PositionSnapshotTable positions={positions} closingKey={closing} onClosePosition={setSelected} />}
   </Stack><ClosePositionDialog open={Boolean(selected)} position={selected} loading={Boolean(closing)}
     onCancel={() => setSelected(null)} onConfirm={() => void close()} /></PageShell>;

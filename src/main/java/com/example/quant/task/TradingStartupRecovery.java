@@ -67,27 +67,27 @@ public class TradingStartupRecovery {
             legacyActive = 1;
         }
         if (legacyActive > 0) {
-            readiness.update(TradingEngineState.BLOCKED, "LEGACY_ACTIVE_LIFECYCLE_REQUIRES_FLAT_V34_BOUNDARY");
+            readiness.updateStartup(TradingEngineState.BLOCKED, "LEGACY_ACTIVE_LIFECYCLE_REQUIRES_FLAT_V34_BOUNDARY");
             return;
         }
         try {
             if (recoveryTask.unresolvedPendingOrderCount() > 0
                     || recoveryTask.unresolvedCloseIntentCount() > 0) {
-                readiness.update(TradingEngineState.BLOCKED,
+                readiness.updateStartup(TradingEngineState.BLOCKED,
                         "V34_DEPLOYMENT_REQUIRES_NO_UNRESOLVED_LIFECYCLE");
                 return;
             }
         } catch (RuntimeException ex) {
-            readiness.update(TradingEngineState.BLOCKED, "V34_DEPLOYMENT_DB_PREFLIGHT_FAILED");
+            readiness.updateStartup(TradingEngineState.BLOCKED, "V34_DEPLOYMENT_DB_PREFLIGHT_FAILED");
             return;
         }
-        readiness.update(TradingEngineState.RECOVERING,
+        readiness.updateStartup(TradingEngineState.RECOVERING,
                 explicitOwner ? "ACCOUNT_BOUND_RECONCILIATION" : "STARTUP_RECONCILIATION");
         try {
             AutoTradeRecoveryTask.RecoveryResult result = explicitOwner
                     ? recoveryTask.runOnceForOwner(owner) : recoveryTask.runOnce();
             if (!result.exchangeSynchronized() || result.attentionRequired() > 0) {
-                readiness.update(TradingEngineState.BLOCKED,
+                readiness.updateStartup(TradingEngineState.BLOCKED,
                         !result.exchangeSynchronized() ? "EXCHANGE_RECONCILIATION_FAILED"
                                 : "MANUAL_RECONCILIATION_REQUIRED");
                 return;
@@ -95,24 +95,24 @@ public class TradingStartupRecovery {
             if (exchangeReconciliation != null) {
                 OkxRuntimeReconciliationService.Result exchangeResult = exchangeReconciliation.reconcile(owner);
                 if (!exchangeResult.ready()) {
-                    readiness.update(TradingEngineState.BLOCKED, exchangeResult.reason());
+                    readiness.updateStartup(TradingEngineState.BLOCKED, exchangeResult.reason());
                     return;
                 }
                 OkxRuntimeReconciliationService.SafetyReport safety = exchangeReconciliation.startupSafety(owner);
                 if (safety == null || !safety.ready()) {
-                    readiness.update(TradingEngineState.BLOCKED,
+                    readiness.updateStartup(TradingEngineState.BLOCKED,
                             safety == null ? "EXCHANGE_PREFLIGHT_UNAVAILABLE" : safety.reason());
                     return;
                 }
             }
             if (trading != null && trading.mode().writesEnabled()) {
-                readiness.update(TradingEngineState.DEGRADED, "PRIVATE_WS_RECONCILIATION_PENDING");
+                readiness.updateStartup(TradingEngineState.DEGRADED, "PRIVATE_WS_RECONCILIATION_PENDING");
             } else {
-                readiness.update(TradingEngineState.READY,
+                readiness.updateStartup(TradingEngineState.READY,
                         explicitOwner ? "ACCOUNT_BOUND_RECONCILIATION_COMPLETE" : "STARTUP_RECONCILIATION_COMPLETE");
             }
         } catch (RuntimeException ex) {
-            readiness.update(TradingEngineState.BLOCKED,
+            readiness.updateStartup(TradingEngineState.BLOCKED,
                     explicitOwner ? "ACCOUNT_BOUND_RECOVERY_FAILED" : "STARTUP_RECOVERY_FAILED");
         }
     }

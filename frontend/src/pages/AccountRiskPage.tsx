@@ -1,10 +1,12 @@
 import { Alert, Box, Card, CardContent, Stack, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Loading, useNotify } from 'react-admin';
+import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
+import { hasAccountBalance } from '../displayData';
 import { ClosePositionDialog } from '../components/ClosePositionDialog';
-import { compactGlass } from '../components/glass';
+import { PanelState } from '../components/PanelState';
+import { insetPanel, panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PositionSnapshotTable, positionKey } from '../components/PositionSnapshotTable';
 import { StatusChip } from '../components/StatusChip';
@@ -18,7 +20,7 @@ export function AccountRiskPage() {
   const [account, setAccount] = useState<Record<string, unknown>>({});
   const [risk, setRisk] = useState<Record<string, unknown>>({});
   const [positions, setPositions] = useState<Record<string, unknown>[]>([]);
-  const [orders, setOrders] = useState<Record<string, unknown>[]>([]);
+  const [pendingCount, setPendingCount] = useState<number | null>(null);
   const [positionError, setPositionError] = useState('');
   const [closeDialogPosition, setCloseDialogPosition] = useState<Record<string, unknown> | null>(null);
   const [closingKey, setClosingKey] = useState('');
@@ -26,28 +28,26 @@ export function AccountRiskPage() {
   async function load() {
     setLoading(true);
     setPositionError('');
-    try {
-      const [accountData, riskData, orderData] = await Promise.all([
-        quantApi.accountSummary(),
-        quantApi.riskStatus(),
-        quantApi.pendingOrders(),
-      ]);
-      setAccount(accountData as Record<string, unknown>);
-      setRisk(riskData as Record<string, unknown>);
-      setOrders(Array.isArray(orderData) ? (orderData as Record<string, unknown>[]) : []);
-    } catch (error) {
+    const [accountResult, riskResult, orderResult, positionResult] = await Promise.allSettled([
+      quantApi.accountSummary(),
+      quantApi.riskStatus(),
+      quantApi.pendingOrders(),
+      quantApi.positions(),
+    ]);
+    setAccount(accountResult.status === 'fulfilled' ? (accountResult.value as Record<string, unknown> | null) ?? {} : {});
+    setRisk(riskResult.status === 'fulfilled' ? (riskResult.value as Record<string, unknown> | null) ?? {} : {});
+    setPendingCount(orderResult.status === 'fulfilled' && Array.isArray(orderResult.value) ? orderResult.value.length : null);
+    setPositions(positionResult.status === 'fulfilled' && Array.isArray(positionResult.value) ? positionResult.value : []);
+    if (positionResult.status === 'rejected') {
+      const error = positionResult.reason;
+      setPositionError(error instanceof Error ? error.message : '持仓接口调用失败');
+    }
+    const failed = [accountResult, riskResult, orderResult].find((result) => result.status === 'rejected');
+    if (failed) {
+      const error = failed.reason;
       notify(error instanceof Error ? error.message : '加载账户与风控失败', { type: 'error' });
     }
-
-    try {
-      const positionData = await quantApi.positions();
-      setPositions(Array.isArray(positionData) ? (positionData as Record<string, unknown>[]) : []);
-    } catch (error) {
-      setPositions([]);
-      setPositionError(error instanceof Error ? error.message : '持仓接口调用失败');
-    } finally {
-      setLoading(false);
-    }
+    setLoading(false);
   }
 
   async function confirmClosePosition() {
@@ -77,11 +77,13 @@ export function AccountRiskPage() {
   }, []);
 
   if (loading) {
-    return <Loading />;
+    return <PageShell title="账户与风控"><PanelState loading sx={panel} /></PageShell>;
   }
 
   const accountMode = String(account.mode ?? '-');
   const accountMessage = String(account.message ?? '');
+  const balanceAvailable = hasAccountBalance(accountMode);
+  const availableBalance = account.availableBalance;
 
   return (
     <PageShell title="账户与风控">
@@ -89,7 +91,6 @@ export function AccountRiskPage() {
         <PageHeader
           title="账户与风控"
           subtitle="集中查看 OKX 账户总览、可用余额、持仓快照和风控拦截原因。自动交易使用可用余额。"
-          eyebrow="Risk Desk"
           status={<StatusChip value={accountMode} />}
           onRefresh={() => void load()}
         />
@@ -101,18 +102,18 @@ export function AccountRiskPage() {
         {accountMode === 'OKX_EMPTY' && <Alert severity="info">OKX已返回成功响应，但账户余额数据为空。</Alert>}
         {positionError && <Alert severity="error">OKX持仓接口调用失败：{positionError}</Alert>}
 
-        <TradingStatusStrip risk={risk} account={account} pendingCount={orders.length} />
+        <TradingStatusStrip risk={risk} account={account} pendingCount={pendingCount} />
 
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: '1fr', md: 'repeat(4, minmax(0, 1fr))' },
+            gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(4, minmax(0, 1fr))' },
             gap: 2,
           }}
         >
           <TradeMetricCard label="账户模式" value={formatStatus(accountMode)} helper={accountMessage || undefined} />
-          <TradeMetricCard label="账户总览" value={formatUSDT(account.equity)} helper="OKX账户全部资金参考" />
-          <TradeMetricCard label="可用余额" value={formatUSDT(account.availableBalance)} helper="自动交易实际使用" />
+          <TradeMetricCard label="账户总览" value={balanceAvailable ? formatUSDT(account.equity) : '不可用'} helper="OKX账户全部资金参考" />
+          <TradeMetricCard label="可用余额" value={balanceAvailable && availableBalance != null ? formatUSDT(availableBalance) : '不可用'} helper="自动交易实际使用" />
           <TradeMetricCard
             label="风控"
             value={<StatusChip value={risk.passed as boolean | undefined} />}
@@ -121,7 +122,7 @@ export function AccountRiskPage() {
           />
         </Box>
 
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '0.85fr 1.15fr' }, gap: 2 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'minmax(0, 0.85fr) minmax(0, 1.15fr)' }, gap: 2 }}>
           <Card>
             <CardContent>
               <Stack spacing={1.5}>
@@ -171,12 +172,12 @@ function RiskRule({ label, value }: { label: string; value: ReactNode }) {
       justifyContent="space-between"
       alignItems="center"
       gap={2}
-      sx={{ ...compactGlass, borderRadius: 1, p: 1.15 }}
+      sx={{ ...insetPanel, p: 1 }}
     >
-      <Typography color="text.secondary" variant="body2">
+      <Typography color="text.secondary" variant="body2" sx={{ flexShrink: 0 }}>
         {label}
       </Typography>
-      <Typography component="div" fontWeight={800} sx={{ fontFamily: '"JetBrains Mono", monospace', textAlign: 'right' }}>
+      <Typography component="div" fontWeight={800} sx={{ textAlign: 'right' }}>
         {value}
       </Typography>
     </Stack>

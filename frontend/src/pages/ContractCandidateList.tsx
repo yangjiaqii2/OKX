@@ -3,6 +3,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import OutputIcon from '@mui/icons-material/Output';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
+import ShowChartIcon from '@mui/icons-material/ShowChart';
 import SortIcon from '@mui/icons-material/Sort';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
@@ -10,6 +11,7 @@ import {
   Alert,
   Box,
   Button,
+  ButtonBase,
   Chip,
   CircularProgress,
   Dialog,
@@ -25,13 +27,15 @@ import {
 } from '@mui/material';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNotify } from 'react-admin';
+import { colors } from '../designTokens';
+import { PanelState } from '../components/PanelState';
 import { quantApi } from '../api/quantApi';
 import { ClosePositionDialog } from '../components/ClosePositionDialog';
-import { compactGlass, glassCard, interactiveGlass } from '../components/glass';
+import { insetPanel, panel, interactivePanel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { positionKey } from '../components/PositionSnapshotTable';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
-import { formatLeverage, formatNumber, formatPercent, formatPrice, formatSide, formatTrend, formatUSDT, formatVolume } from '../formatters';
+import { directionTone, formatLeverage, formatNumber, formatPercent, formatPrice, formatSide, formatTrend, formatUSDT, formatVolume, pnlColor } from '../formatters';
 
 type ContractCandidate = Record<string, unknown>;
 type PositionRow = Record<string, unknown>;
@@ -227,18 +231,18 @@ export function ContractCandidateList() {
 
   return (
     <PageShell title="合约机会">
-      <Stack spacing={2.25}>
+      <Stack spacing={2}>
         <PageHeader
           title="AI 合约机会"
           subtitle={`${lastUpdatedAt ? `行情刷新 ${lastUpdatedAt.toLocaleTimeString()}` : '行情准备中'}${refreshing ? ' · 更新中' : ''}`}
-          eyebrow="Market Scanner"
-          actions={
+          filters={
             <>
             <TextField
               size="small"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索合约"
+                inputProps={{ 'aria-label': '搜索合约' }}
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
@@ -246,7 +250,7 @@ export function ContractCandidateList() {
                   </InputAdornment>
                 ),
               }}
-              sx={{ minWidth: { xs: 1, sm: 220 } }}
+              sx={{ width: { xs: 1, sm: 220 } }}
             />
             <Button
               variant="outlined"
@@ -305,13 +309,14 @@ export function ContractCandidateList() {
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: '1fr', md: '1.1fr 0.9fr 0.9fr' },
+            gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' },
             gap: 1.5,
+            '& > :last-child': { gridColumn: { xs: '1 / -1', sm: 'auto' } },
           }}
         >
           <MarketStat label="准入候选" value={contracts.length} helper={`当前持仓 ${heldContracts.length}`} />
           <MarketStat label="最高分候选" value={String(top?.instId ?? '--')} helper={`${formatTrend(top?.trendDirection)} · ${formatNumber(top?.score, 0)}分`} />
-          <MarketStat label="持仓浮盈亏" value={formatUSDT(totalPnl)} helper="OKX未实现盈亏" />
+          <MarketStat label="持仓浮盈亏" value={formatUSDT(totalPnl)} helper="OKX未实现盈亏" color={pnlColor(totalPnl)} />
         </Box>
 
         <Alert severity="info">
@@ -326,16 +331,15 @@ export function ContractCandidateList() {
         </Alert>
 
         {loading ? (
-          <Box sx={{ ...glassCard, py: 8, display: 'grid', placeItems: 'center', borderRadius: 1 }}>
-            <CircularProgress size={28} />
-          </Box>
+          <PanelState loading sx={panel} />
         ) : (
           <Box
             sx={{
               display: 'grid',
               gridTemplateColumns: {
                 xs: '1fr',
-                md: 'repeat(2, minmax(0, 1fr))',
+                sm: 'repeat(2, minmax(0, 1fr))',
+                lg: 'repeat(3, minmax(0, 1fr))',
                 xl: 'repeat(4, minmax(0, 1fr))',
               },
               gap: 1.5,
@@ -354,9 +358,7 @@ export function ContractCandidateList() {
               />
             ))}
             {filtered.length === 0 && (
-              <Box sx={{ ...glassCard, p: 2, borderRadius: 1, color: 'text.secondary' }}>
-                当前没有满足数据准入条件的合约候选。
-              </Box>
+              <PanelState sx={{ ...panel, gridColumn: '1 / -1' }}>当前没有满足数据准入条件的合约候选。</PanelState>
             )}
           </Box>
         )}
@@ -393,98 +395,43 @@ function ContractCard({
   const change = Number(contract.changePercent24h);
   const position = contract.position ?? {};
   const held = Boolean(contract.position);
-  const pnl = Number(position.unrealizedPnl ?? 0);
-  const positive = held ? pnl >= 0 : change >= 0;
-  const TrendIcon = positive ? TrendingUpIcon : TrendingDownIcon;
+  const tone = directionTone(held ? position.posSide : contract.trendDirection);
   const trendText = held ? formatSide(position.posSide) : formatTrend(contract.trendDirection);
-  const trendColor = positive ? '#00E676' : '#FF3B30';
+  const ChangeIcon = change > 0 ? TrendingUpIcon : TrendingDownIcon;
 
   return (
-    <Box
-      role="button"
-      tabIndex={0}
-      onClick={onOpenChart}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          onOpenChart();
-        }
-      }}
-      sx={{
-        ...glassCard,
-        ...interactiveGlass,
-        width: '100%',
-        textAlign: 'left',
-        p: 1.5,
-        border: `1px solid ${positive ? 'rgba(34, 197, 94, 0.34)' : 'rgba(239, 68, 68, 0.34)'}`,
-        borderLeft: `4px solid ${trendColor}`,
-        borderRadius: 1,
-        background: '#111827',
-        color: 'text.primary',
-        cursor: 'pointer',
-        '&:hover': {
-          borderColor: positive ? 'rgba(34, 197, 94, 0.52)' : 'rgba(239, 68, 68, 0.52)',
-        },
-      }}
-    >
-      <Stack spacing={1.25}>
+    <Box component="article" sx={{ ...panel, ...interactivePanel, position: 'relative', p: 2 }}>
+      <ButtonBase
+        aria-label={`${String(contract.instId ?? '--')} K线图`}
+        onClick={onOpenChart}
+        disableRipple
+        sx={{ position: 'absolute', inset: 0, zIndex: 1, borderRadius: 1 }}
+      />
+      <Stack spacing={2}>
         <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={1}>
           <Box minWidth={0}>
-            <Stack direction="row" alignItems="center" spacing={0.75}>
-              <Chip size="small" label={`#${rank}`} sx={{ height: 22 }} />
-              <Typography fontWeight={900} noWrap>
+            <Stack direction="row" alignItems="center" gap={1}>
+              <Chip size="small" label={`#${rank}`} sx={{ flexShrink: 0 }} />
+              <Typography fontWeight={750} sx={{ overflowWrap: 'anywhere' }}>
                 {String(contract.instId ?? '--')}
               </Typography>
             </Stack>
             <Chip
               size="small"
-              icon={<TrendIcon />}
+              icon={tone === 'success' ? <TrendingUpIcon /> : tone === 'error' ? <TrendingDownIcon /> : undefined}
               label={trendText}
-              sx={{
-                mt: 0.75,
-                height: 22,
-                color: trendColor,
-                borderColor: `${trendColor}66`,
-                bgcolor: positive ? 'rgba(34, 197, 94, 0.10)' : 'rgba(239, 68, 68, 0.10)',
-                '& .MuiChip-icon': { color: trendColor, fontSize: 14 },
-              }}
+              color={tone}
+              sx={{ mt: 1 }}
               variant="outlined"
             />
           </Box>
-          <Stack direction="row" gap={0.75} flexWrap="wrap" justifyContent="flex-end">
-            {held && <Button
-              size="small"
-              color="error"
-              variant="outlined"
-              startIcon={closing ? <CircularProgress size={12} color="inherit" /> : <OutputIcon />}
-              disabled={closing}
-              onClick={(event) => {
-                event.stopPropagation();
-                onClosePosition();
-              }}
-              sx={{ minWidth: 72 }}
-            >
-              {closing ? '提交中' : '平仓'}
-            </Button>}
-            <Button
-              size="small"
-              variant="contained"
-              startIcon={planning ? <CircularProgress size={12} /> : <AutoAwesomeIcon />}
-              disabled={planning}
-              onClick={(event) => {
-                event.stopPropagation();
-                onCreatePlan();
-              }}
-              sx={{ minWidth: 88 }}
-            >
-              {planning ? '推理中' : 'AI计划'}
-            </Button>
-          </Stack>
+          <ShowChartIcon fontSize="small" color="primary" aria-hidden />
         </Stack>
 
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: '1fr auto',
+            gridTemplateColumns: 'minmax(0, 1fr) auto',
             gap: 1,
             alignItems: 'end',
           }}
@@ -493,13 +440,13 @@ function ContractCard({
             <Typography variant="caption" color="text.secondary">
               {held ? '未实现盈亏' : '最新价格'}
             </Typography>
-            <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 22, fontWeight: 900 }}>
+            <Typography sx={{ fontSize: '1.375rem', fontWeight: 750, color: held ? pnlColor(position.unrealizedPnl) : 'text.primary' }}>
               {held ? formatUSDT(position.unrealizedPnl) : formatPrice(contract.lastPrice)}
             </Typography>
           </Box>
-          <Stack direction="row" alignItems="center" spacing={0.5} sx={{ color: positive ? 'success.main' : 'error.main' }}>
-            <TrendIcon sx={{ fontSize: 18 }} />
-            <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontWeight: 900 }}>
+          <Stack direction="row" alignItems="center" spacing={0.5} sx={{ color: pnlColor(change) }}>
+            {Number.isFinite(change) && change !== 0 ? <ChangeIcon sx={{ fontSize: 18 }} /> : null}
+            <Typography sx={{ fontWeight: 900 }}>
               {formatPercent(change)}
             </Typography>
           </Stack>
@@ -518,13 +465,36 @@ function ContractCard({
           <MiniMetric label="方向" value={formatTrend(contract.trendDirection)} />
         </Box>
 
-        <Stack direction="row" gap={0.75} flexWrap="wrap" sx={{ minHeight: 26 }}>
+        <Stack direction="row" gap={1} flexWrap="wrap" sx={{ minHeight: 26 }}>
           {((contract.candidateReasonList as string[]) ?? []).slice(0, 2).map((item) => (
             <Chip key={item} size="small" label={item} variant="outlined" sx={{ maxWidth: '100%' }} />
           ))}
           {((contract.riskTagList as string[]) ?? []).slice(0, 1).map((item) => (
             <Chip key={item} size="small" color="warning" label={item} variant="outlined" sx={{ maxWidth: '100%' }} />
           ))}
+        </Stack>
+        <Stack direction="row" gap={1} flexWrap="wrap" sx={{ pt: 1, borderTop: 1, borderColor: 'divider', '& .MuiButton-root': { position: 'relative', zIndex: 2 } }}>
+          {held && <Button
+            size="small"
+            color="error"
+            variant="outlined"
+            startIcon={closing ? <CircularProgress size={12} color="inherit" /> : <OutputIcon />}
+            disabled={closing}
+            onClick={onClosePosition}
+            sx={{ minWidth: 72 }}
+          >
+            {closing ? '提交中' : '平仓'}
+          </Button>}
+          <Button
+            size="small"
+            variant="contained"
+            startIcon={planning ? <CircularProgress size={12} /> : <AutoAwesomeIcon />}
+            disabled={planning}
+            onClick={onCreatePlan}
+            sx={{ minWidth: 88 }}
+          >
+            {planning ? '推理中' : 'AI计划'}
+          </Button>
         </Stack>
       </Stack>
     </Box>
@@ -584,57 +554,59 @@ function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="lg">
       <DialogTitle>
-        <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} gap={1} sx={{ pr: 5 }}>
-          <Box>
-            <Typography fontWeight={900}>{instId} K线图</Typography>
-            <Typography variant="caption" sx={{ color: positive ? 'success.main' : 'error.main', fontWeight: 900 }}>
-              {positive ? '多头结构更明显' : '空头结构更明显'}
-            </Typography>
-          </Box>
-          <ToggleButtonGroup
-            size="small"
-            exclusive
-            value={bar}
-            onChange={(_, value) => value && setBar(value)}
-          >
-            {candlePeriods.map((period) => (
-              <ToggleButton key={period.bar} value={period.bar}>
-                {period.label}
-              </ToggleButton>
-            ))}
-          </ToggleButtonGroup>
-        </Stack>
-        <IconButton
-          aria-label="关闭"
-          onClick={onClose}
-          size="small"
-          sx={{ position: 'absolute', right: 14, top: 14 }}
-        >
+        <Box sx={{ pr: 6 }}>
+          <Typography component="span" variant="h6">{instId} K线图</Typography>
+          <Typography display="block" variant="caption" color={positive ? 'success.main' : 'error.main'}>
+            {positive ? '多头结构更明显' : '空头结构更明显'}
+          </Typography>
+        </Box>
+        <IconButton aria-label="关闭" onClick={onClose} sx={{ position: 'absolute', right: 8, top: 8 }}>
           <CloseIcon fontSize="small" />
         </IconButton>
       </DialogTitle>
       <DialogContent>
-        <Box sx={{ height: { xs: 360, md: 520 }, position: 'relative' }}>
-          {loading ? (
-            <Box sx={{ height: 1, display: 'grid', placeItems: 'center' }}>
-              <CircularProgress size={28} />
-            </Box>
-          ) : (
-            <CandleChart candles={candles} bar={bar} />
-          )}
-        </Box>
+        <Stack spacing={2}>
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={bar}
+            aria-label="K线周期"
+            onChange={(_, value) => value && setBar(value)}
+            sx={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 0.5,
+              '& .MuiToggleButtonGroup-grouped': { m: 0, px: 1, border: 1, borderColor: 'divider', borderRadius: 1 },
+            }}
+          >
+            {candlePeriods.map((period) => (
+              <ToggleButton key={period.bar} value={period.bar}>{period.label}</ToggleButton>
+            ))}
+          </ToggleButtonGroup>
+          {loading ? <PanelState loading sx={insetPanel} /> : <CandleChart candles={candles} bar={bar} />}
+        </Stack>
       </DialogContent>
     </Dialog>
   );
 }
 
 function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
-  const width = 1000;
-  const height = 460;
-  const padding = { top: 18, right: 72, bottom: 32, left: 18 };
-  const priceHeight = 318;
-  const volumeTop = 354;
-  const volumeHeight = 72;
+  const chartRef = useRef<HTMLDivElement>(null);
+  const [chartWidth, setChartWidth] = useState(0);
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const observer = new ResizeObserver(([entry]) => setChartWidth(Math.floor(entry.contentRect.width)));
+    observer.observe(chart);
+    return () => observer.disconnect();
+  }, []);
+
+  const width = Math.max(chartWidth, 240);
+  const height = width < 600 ? 288 : 416;
+  const padding = { top: 12, right: 88, left: 12 };
+  const priceHeight = height - 112;
+  const volumeTop = priceHeight + 36;
+  const volumeHeight = 48;
   const data = candles
     .map((item) => ({
       timestamp: item.timestamp,
@@ -649,9 +621,7 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
 
   if (data.length === 0) {
     return (
-      <Box sx={{ height: 1, display: 'grid', placeItems: 'center', color: 'text.secondary' }}>
-        暂无K线数据
-      </Box>
+      <PanelState sx={insetPanel}>暂无K线数据</PanelState>
     );
   }
 
@@ -661,7 +631,7 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = priceHeight - padding.top;
   const step = plotWidth / data.length;
-  const candleWidth = Math.max(3, Math.min(10, step * 0.58));
+  const candleWidth = Math.max(0.75, Math.min(8, step * 0.62));
   const y = (price: number) => padding.top + ((max - price) / range) * plotHeight;
   const maxVolume = Math.max(...data.map((item) => item.volume), 1);
   const volumeY = (volume: number) => volumeTop + volumeHeight - (volume / maxVolume) * volumeHeight;
@@ -670,45 +640,39 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
   const trendPositive = last.close >= first.open;
   const changePercent = first.open ? ((last.close - first.open) / first.open) * 100 : 0;
   const grid = Array.from({ length: 5 }, (_, index) => min + (range * index) / 4);
-  const timeTicks = timeTickIndexes(data.length).map((index) => ({ index, item: data[index] }));
+  const timeTicks = timeTickIndexes(data.length, width < 400 ? 2 : width < 650 ? 4 : 6).map((index) => ({ index, item: data[index] }));
   const trendLine = regressionTrendLine(data, padding.left, step, y);
 
   return (
-    <Box sx={{ height: 1, width: 1, overflow: 'hidden', border: '1px solid rgba(148, 163, 184, 0.16)', borderRadius: 1 }}>
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%" preserveAspectRatio="none" role="img">
-        <rect x="0" y="0" width={width} height={height} fill="#0b111c" />
-        <g>
-          <rect x={padding.left} y={padding.top} width="240" height="72" rx="6" fill="#111827" stroke="rgba(148,163,184,0.22)" />
-          <text x={padding.left + 12} y={padding.top + 20} fill="#94a3b8" fontSize="12">
-            实时最新价
-          </text>
-          <text x={padding.left + 12} y={padding.top + 48} fill="#f8fafc" fontSize="18" fontWeight="800">
-            {formatPrice(last.close)}
-          </text>
-          <text x={padding.left + 12} y={padding.top + 66} fill={trendPositive ? '#22c55e' : '#ef4444'} fontSize="14" fontWeight="800">
-            {formatPercent(changePercent)}
-          </text>
-        </g>
+    <Box ref={chartRef} sx={{ ...panel, overflow: 'hidden' }}>
+      <Stack direction="row" flexWrap="wrap" gap={1} alignItems="baseline" sx={{ px: 1.5, py: 1, borderBottom: 1, borderColor: 'divider' }}>
+        <Typography variant="caption" color="text.secondary">实时最新价</Typography>
+        <Typography fontWeight={750}>{formatPrice(last.close)}</Typography>
+        <Typography variant="body2" fontWeight={700} color={trendPositive ? 'success.main' : 'error.main'}>
+          {formatPercent(changePercent)}
+        </Typography>
+      </Stack>
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img" aria-label="价格K线及成交量" style={{ display: 'block' }}>
         {grid.map((price) => {
           const lineY = y(price);
           return (
             <g key={price}>
-              <line x1={padding.left} y1={lineY} x2={width - padding.right} y2={lineY} stroke="rgba(148,163,184,0.12)" strokeWidth="1" />
-              <text x={width - padding.right + 8} y={lineY + 4} fill="#94a3b8" fontSize="12">
+              <line x1={padding.left} y1={lineY} x2={width - padding.right} y2={lineY} stroke={colors.divider} strokeWidth="1" />
+              <text x={width - 8} y={lineY + 4} textAnchor="end" fill={colors.muted} fontSize="12">
                 {formatPrice(price)}
               </text>
             </g>
           );
         })}
-        <line x1={padding.left} y1={priceHeight} x2={width - padding.right} y2={priceHeight} stroke="rgba(148,163,184,0.18)" strokeWidth="1" />
-        <line x1={padding.left} y1={volumeTop - 10} x2={width - padding.right} y2={volumeTop - 10} stroke="rgba(148,163,184,0.12)" strokeWidth="1" />
-        <text x={padding.left} y={volumeTop - 18} fill="#94a3b8" fontSize="12">
+        <line x1={padding.left} y1={priceHeight} x2={width - padding.right} y2={priceHeight} stroke={colors.divider} strokeWidth="1" />
+        <line x1={padding.left} y1={volumeTop - 10} x2={width - padding.right} y2={volumeTop - 10} stroke={colors.divider} strokeWidth="1" />
+        <text x={padding.left} y={volumeTop - 18} fill={colors.muted} fontSize="12">
           分时量
         </text>
         <path
           d={data.map((item, index) => `${index === 0 ? 'M' : 'L'} ${padding.left + index * step + step / 2} ${y(item.close)}`).join(' ')}
           fill="none"
-          stroke={trendPositive ? '#22c55e' : '#ef4444'}
+          stroke={trendPositive ? colors.success : colors.error}
           strokeWidth="2"
           opacity="0.42"
         />
@@ -718,7 +682,7 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
             y1={trendLine.y1}
             x2={trendLine.x2}
             y2={trendLine.y2}
-            stroke={trendPositive ? '#7dd3fc' : '#fbbf24'}
+            stroke={trendPositive ? colors.primary : colors.warning}
             strokeWidth="2.4"
             strokeDasharray="8 6"
             opacity="0.92"
@@ -727,7 +691,7 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
         {data.map((item, index) => {
           const x = padding.left + index * step + step / 2;
           const up = item.close >= item.open;
-          const color = up ? '#22c55e' : '#ef4444';
+          const color = up ? colors.success : colors.error;
           const bodyTop = y(Math.max(item.open, item.close));
           const bodyBottom = y(Math.min(item.open, item.close));
           const bodyHeight = Math.max(2, bodyBottom - bodyTop);
@@ -739,14 +703,15 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
                 y={bodyTop}
                 width={candleWidth}
                 height={bodyHeight}
-                fill={up ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)'}
+                fill={color}
               />
               <rect
                 x={x - candleWidth / 2}
                 y={volumeY(item.volume)}
                 width={candleWidth}
                 height={Math.max(1, volumeTop + volumeHeight - volumeY(item.volume))}
-                fill={up ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)'}
+                fill={color}
+                opacity="0.42"
               />
             </g>
           );
@@ -755,8 +720,8 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
           const x = padding.left + index * step + step / 2;
           return (
             <g key={`time-${item.timestamp}`}>
-              <line x1={x} y1={padding.top} x2={x} y2={volumeTop + volumeHeight} stroke="rgba(148,163,184,0.07)" strokeWidth="1" />
-              <text x={x} y={height - 10} fill="#94a3b8" fontSize="12" textAnchor="middle">
+              <line x1={x} y1={padding.top} x2={x} y2={volumeTop + volumeHeight} stroke={colors.divider} opacity="0.6" strokeWidth="1" />
+              <text x={Math.max(48, x)} y={height - 8} fill={colors.muted} fontSize="12" textAnchor="middle">
                 {formatCandleTime(item.time, bar)}
               </text>
             </g>
@@ -797,11 +762,11 @@ function regressionTrendLine(
   };
 }
 
-function timeTickIndexes(length: number) {
+function timeTickIndexes(length: number, maxTicks: number) {
   if (length <= 1) {
     return [0];
   }
-  const tickCount = Math.min(6, length);
+  const tickCount = Math.min(maxTicks, length);
   const indexes = new Set<number>();
   for (let i = 0; i < tickCount; i += 1) {
     indexes.add(Math.round((i * (length - 1)) / (tickCount - 1)));
@@ -828,13 +793,13 @@ function formatCandleTime(date: Date, bar: string) {
   return `${year}-${month}-${day}`;
 }
 
-function MarketStat({ label, value, helper }: { label: string; value: unknown; helper: string }) {
+function MarketStat({ label, value, helper, color }: { label: string; value: unknown; helper: string; color?: string }) {
   return (
-    <Box sx={{ ...compactGlass, p: 1.25, borderRadius: 1, bgcolor: '#101826' }}>
+    <Box sx={{ ...insetPanel, p: 2, bgcolor: 'background.paper' }}>
       <Typography variant="caption" color="text.secondary" fontWeight={800}>
         {label}
       </Typography>
-      <Typography sx={{ mt: 0.35, fontSize: 20, fontWeight: 900, overflowWrap: 'anywhere' }}>{String(value)}</Typography>
+      <Typography color={color} sx={{ mt: 0.5, fontSize: '1.25rem', fontWeight: 750, overflowWrap: 'anywhere' }}>{String(value)}</Typography>
       <Typography variant="caption" color="text.secondary">
         {helper}
       </Typography>
@@ -844,11 +809,11 @@ function MarketStat({ label, value, helper }: { label: string; value: unknown; h
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <Box sx={{ ...compactGlass, p: 0.9, borderRadius: 1, bgcolor: '#0f172a' }}>
+    <Box sx={{ ...insetPanel, p: 1 }}>
       <Typography variant="caption" color="text.secondary" fontWeight={800}>
         {label}
       </Typography>
-      <Typography sx={{ mt: 0.25, fontFamily: '"JetBrains Mono", monospace', fontWeight: 900 }}>{value}</Typography>
+      <Typography sx={{ mt: 0.5, fontWeight: 900 }}>{value}</Typography>
     </Box>
   );
 }

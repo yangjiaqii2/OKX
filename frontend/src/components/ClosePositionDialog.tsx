@@ -9,7 +9,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
-import { formatNumber, formatSide, formatUSDT } from '../formatters';
+import { formatNumber, formatSide, formatUSDT, pnlColor } from '../formatters';
 
 type ClosePositionDialogProps = {
   open: boolean;
@@ -38,13 +38,13 @@ export function ClosePositionDialog({
           <Alert severity="warning">
             将向 OKX 提交一键平仓请求，提交后请在 OKX 当前委托和持仓里确认最终成交。
           </Alert>
-          <Stack spacing={0.75}>
+          <Stack spacing={1}>
             <ConfirmRow label="合约" value={instId} />
             <ConfirmRow label="方向" value={posSide} />
             <ConfirmRow label="保证金模式" value={marginMode} />
             <ConfirmRow label="数量" value={formatNumber(position?.size)} />
             <ConfirmRow label="真实保证金" value={formatUSDT(position?.margin)} />
-            <ConfirmRow label="未实现盈亏" value={formatUSDT(position?.unrealizedPnl)} />
+            <ConfirmRow label="未实现盈亏" value={formatUSDT(position?.unrealizedPnl)} color={pnlColor(position?.unrealizedPnl)} />
           </Stack>
         </Stack>
       </DialogContent>
@@ -66,13 +66,13 @@ export function ClosePositionDialog({
   );
 }
 
-function ConfirmRow({ label, value }: { label: string; value: string }) {
+function ConfirmRow({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <Stack direction="row" justifyContent="space-between" alignItems="center" gap={2}>
-      <Typography variant="body2" color="text.secondary">
+    <Stack direction="row" justifyContent="space-between" alignItems="baseline" gap={2} sx={{ py: 0.5, borderBottom: 1, borderColor: 'divider' }}>
+      <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>
         {label}
       </Typography>
-      <Typography variant="body2" fontWeight={800} sx={{ fontFamily: '"JetBrains Mono", monospace', textAlign: 'right' }}>
+      <Typography variant="body2" color={color} fontWeight={700} sx={{ textAlign: 'right' }}>
         {value}
       </Typography>
     </Stack>

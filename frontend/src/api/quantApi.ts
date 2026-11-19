@@ -53,7 +53,7 @@ export const quantApi = {
     }),
   unbindOkxAccount: () => quantFetch('/account/unbind', { method: 'POST' }),
   systemStatus: () => quantFetch('/system/status'),
-  runtimeStatus: () => quantFetch('/system/runtime-status'),
+  runtimeStatus: (signal?: AbortSignal) => quantFetch('/system/runtime-status', { signal }),
   fxRate: (base = 'USD', quote = 'CNY') =>
     quantFetch(`/system/fx-rate?base=${encodeURIComponent(base)}&quote=${encodeURIComponent(quote)}`),
   autoTradeRecords: (params: { status?: string; instId?: string; page?: number; size?: number } = {}) => {

@@ -13,6 +13,12 @@ import java.util.UUID;
 @Entity
 @Table(name = "pending_order_state")
 public class PendingOrderEntity {
+    @jakarta.persistence.Version
+    @Column(name = "state_version", nullable = false)
+    private Long stateVersion;
+
+    Long stateVersion() { return stateVersion; }
+
     @Id
     @Column(name = "id", length = 36)
     private String id;
@@ -139,6 +145,7 @@ public class PendingOrderEntity {
         PendingOrderEntity entity = new PendingOrderEntity();
         entity.id = order.id().toString();
         entity.userName = userName;
+        entity.stateVersion = order.persistedVersion();
         entity.marketType = order.marketType().name();
         entity.instId = order.instId();
         entity.action = order.action().name();
@@ -222,6 +229,7 @@ public class PendingOrderEntity {
         );
         order.restoreExecutableRiskFacts(executableContractQuantity, executableStopLossAmount);
         order.restoreCanonicalPlanJson(canonicalPlanJson);
+        order.persistedVersion(stateVersion);
         return order;
     }
 

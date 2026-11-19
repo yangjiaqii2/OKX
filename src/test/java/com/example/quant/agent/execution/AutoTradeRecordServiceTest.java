@@ -25,6 +25,24 @@ import org.springframework.data.jpa.domain.Specification;
 
 class AutoTradeRecordServiceTest {
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "no_order_submitted: CANONICAL_PLAN_REJECTED: EXECUTABLE_RISK_EXCEEDS_RISK_BUDGET, CONFIRM",
+            "no_order_submitted: NET_RISK_REWARD_AFTER_COSTS_TOO_LOW, CONFIRM",
+            "no_candidate_passed_auto_gate: candidate_signal_not_tradable_NEUTRAL, SCAN"
+    })
+    void exposesActualStageForNewAndHistoricalSkippedRecords(String reason, String stage) {
+        var repository = mock(AutoTradeRecordRepository.class);
+        new AutoTradeRecordService(repository).record(AutoTradeService.AutoTradeResult.skipped(reason), 1, null);
+        var saved = ArgumentCaptor.forClass(AutoTradeRecordEntity.class);
+        verify(repository).save(saved.capture());
+        assertThat(saved.getValue().getStage()).isEqualTo(stage);
+        var historical = saved.getValue();
+        historical.setStage("SCAN");
+        historical.setReasonMessage(null);
+        assertThat(AutoTradeRecordView.from(historical).stage()).isEqualTo(stage);
+    }
+
     @Test
     void selectedCandidateNeverFallsBackToDecisionLevelReason() {
         AutoTradeRecordRepository repository = mock(AutoTradeRecordRepository.class);
@@ -104,7 +122,7 @@ class AutoTradeRecordServiceTest {
     }
 
     @Test
-    void skippedRecordFillsOpenDirectionFromCandidateTrendWhenResultHasNoSide() {
+    void skippedRecordPreservesCandidateTrendWithoutImplyingAnOrder() {
         AutoTradeRecordRepository repository = mock(AutoTradeRecordRepository.class);
         when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         AutoTradeRecordService service = new AutoTradeRecordService(repository);
@@ -119,10 +137,16 @@ class AutoTradeRecordServiceTest {
         ArgumentCaptor<AutoTradeRecordEntity> captor = ArgumentCaptor.forClass(AutoTradeRecordEntity.class);
         verify(repository).save(captor.capture());
         AutoTradeRecordEntity saved = captor.getValue();
-        assertThat(saved.getAction()).isEqualTo("OPEN_LONG");
-        assertThat(saved.getPosSide()).isEqualTo("long");
+        assertThat(saved.getAction()).isNull();
+        assertThat(saved.getPosSide()).isNull();
         assertThat(saved.getTrendDirection()).isEqualTo("BULLISH");
         assertThat(saved.getSignalType()).isEqualTo("NO_TRADE");
+        saved.setAction("OPEN_LONG");
+        saved.setPosSide("long");
+        AutoTradeRecordView historical = AutoTradeRecordView.from(saved);
+        assertThat(historical.action()).isNull();
+        assertThat(historical.posSide()).isNull();
+        assertThat(historical.trendDirection()).isEqualTo("BULLISH");
     }
 
     private static ContractCandidate skippedCandidate(DirectionBias trend) {

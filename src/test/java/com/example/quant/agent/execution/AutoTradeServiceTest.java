@@ -55,6 +55,17 @@ import org.mockito.ArgumentCaptor;
 class AutoTradeServiceTest {
 
     @Test
+    void scanRepresentativePreservesScannerDeliveryOrderEvenWhenLegacyScorePrefersAnotherSymbol() {
+        var first = candidate("ETH-USDT-SWAP", 64);
+        var second = candidate("PEPE-USDT-SWAP", 70);
+        var calculator = new com.example.quant.crypto.selection.V2SelectionScoreCalculator();
+        var scores = java.util.Map.of(first.instId(), calculator.calculate(first),
+                second.instId(), calculator.calculate(second));
+        assertThat(AutoTradeService.topCandidate(List.of(first, second), scores)).contains(first);
+        assertThat(AutoTradeService.topCandidate(List.of(first, second), java.util.Map.of())).contains(second);
+    }
+
+    @Test
     void preservesScannerCandidateOrderWhenPassingEligibleCandidatesToAi() {
         AgentProperties properties = new AgentProperties();
         properties.score().setMinTrendScore(0);
@@ -290,7 +301,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void preservesHardConfirmRejectionWhenLaterAiCandidatesOnlyProduceWatchPlans() {
+    void stopsEntireCandidateRoundOnLossCooldown() {
         AgentProperties properties = new AgentProperties();
         properties.autoTrade().setMinOpenPositions(1);
         properties.autoTrade().setMaxOpenPositions(1);
@@ -320,7 +331,7 @@ class AutoTradeServiceTest {
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(
                 candidate("BTC-USDT-SWAP", 90), candidate("ETH-USDT-SWAP", 89)));
 
-        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.status()).isEqualTo("REJECTED");
         assertThat(result.message()).contains("LOSS_COOLDOWN_ACTIVE");
         assertThat(confirmService.confirmCount).isEqualTo(1);
     }
@@ -386,7 +397,7 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void capsAllocatedMarginAtOneThirdOfAccountEquity() {
+    void capsAllocatedMarginAtLeveragedStopAndCostBudget() {
         AgentProperties properties = new AgentProperties();
         SystemControlService controls = new SystemControlService(tradingProperties());
         controls.enableAutoTrade(new BigDecimal("60000"));
@@ -407,7 +418,7 @@ class AutoTradeServiceTest {
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(candidate()));
 
         assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(confirmService.capturedMargin).isEqualByComparingTo("20000.0004");
+        assertThat(confirmService.capturedMargin).isEqualByComparingTo("13761.4678899");
     }
 
     @Test
@@ -1059,6 +1070,60 @@ class AutoTradeServiceTest {
     }
 
     @Test
+    void positionQualityAllows60AndRejectsEitherScoreBelow60() {
+        PositionQualityPolicy policy = new PositionQualityPolicy(new AgentProperties());
+
+        assertThat(policy.evaluate(List.of(), 0,
+                candidateWithActionAndFinalRankScore("ETH-USDT-SWAP", 60, "AUTO_TRADE_ALLOWED",
+                        BigDecimal.valueOf(60))).allowed()).isTrue();
+        assertThat(policy.evaluate(List.of(), 0,
+                candidateWithActionAndFinalRankScore("ETH-USDT-SWAP", 59, "AUTO_TRADE_ALLOWED",
+                        BigDecimal.valueOf(60))).reason()).isEqualTo("position_quality_score_below_60");
+        assertThat(policy.evaluate(List.of(), 0,
+                candidateWithActionAndFinalRankScore("ETH-USDT-SWAP", 71, "AUTO_TRADE_ALLOWED",
+                        new BigDecimal("59.99"))).reason()).isEqualTo("position_quality_final_rank_below_60");
+        ContractCandidate highVolatility = candidate("ETH-USDT-SWAP", 87, RiskLevel.HIGH,
+                DirectionBias.BULLISH, DirectionBias.BULLISH);
+        assertThat(policy.evaluate(List.of(), 0, highVolatility).reason())
+                .isEqualTo("position_quality_score_below_88");
+    }
+
+    @Test
+    void ruleFallbackRecordUsesTheRecordedCandidatesOwnSkipReason() {
+        AgentProperties properties = new AgentProperties();
+        properties.positionQuality().setMinScoreByOpenPositions(Map.of(0, 65));
+        properties.positionQuality().setMinFinalRankScoreByOpenPositions(Map.of(0, 65));
+        SystemControlService controls = new SystemControlService(tradingProperties());
+        controls.enableAutoTrade(BigDecimal.valueOf(20));
+        CapturingSelectionRecordService records = new CapturingSelectionRecordService();
+        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        AutoTradeService service = new AutoTradeService(
+                properties, controls, new FakeTradeOrderRecordService(false), records,
+                new CandidateTradePlanService(), new PendingOrderService(120), confirmService,
+                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)), new FixedPositionSnapshotService(List.of())
+        );
+        AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
+        Mockito.when(selector.select(Mockito.anyList())).thenReturn(new ContractSelectionDecision(
+                ContractSelectionDecision.DecisionSource.RULE_FALLBACK,
+                ContractSelectionDecision.SelectionAction.TRADE,
+                null, null, null, null, List.of(), List.of(), List.of(), ""));
+        service.configureAiContractSelection(selector);
+
+        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(
+                candidateWithActionAndFinalRankScore("ETH-USDT-SWAP", 71, "WAIT", BigDecimal.valueOf(60)),
+                candidateWithActionAndFinalRankScore("MMT-USDT-SWAP", 55, "WAIT", BigDecimal.valueOf(55))));
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(records.candidate.instId()).isEqualTo("ETH-USDT-SWAP");
+        assertThat(records.candidate.score()).isEqualTo(71);
+        assertThat(records.candidate.finalRankScore()).isEqualByComparingTo("60");
+        assertThat(result.message())
+                .contains("position_quality_final_rank_below_65", "candidate_action_not_auto_trade_allowed_WAIT")
+                .doesNotContain("position_quality_score_below_65");
+        assertThat(confirmService.confirmCount).isZero();
+    }
+
+    @Test
     void fallbackAttemptBudgetIsNotConsumedByAlreadyIneligibleHigherRankedCandidates() {
         // maxAutoTradeFallbackRank=5。5 个 finalRankScore 更高但点差极端（已知不可交易）的候选，
         // 不得把唯一合法候选挤出尝试名单——那样这一轮根本不会尝试任何可执行候选。
@@ -1289,6 +1354,17 @@ class AutoTradeServiceTest {
 
         assertThat(result.status()).isEqualTo("EXECUTED");
         assertThat(confirmService.confirmCount).isEqualTo(1);
+    }
+
+    @Test
+    void heldSymbolGetsPositionReasonEvenWithNoActiveOrder() {
+        var confirm = new CapturingOrderConfirmService();
+        var held = new PositionSummary("AKE-USDT-SWAP", "long", "1", BigDecimal.ONE, BigDecimal.ZERO, "OKX_REAL");
+        var result = autoTradeWithMargin(BigDecimal.TEN, BigDecimal.valueOf(1000), confirm, List.of(held))
+                .evaluateAndExecute(List.of(candidate("AKE-USDT-SWAP", 95)));
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("SYMBOL_ALREADY_HELD");
+        assertThat(confirm.confirmCount).isZero();
     }
 
     @Test

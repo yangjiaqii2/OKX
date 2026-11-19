@@ -2,6 +2,8 @@ package com.example.quant.agent.evaluation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.quant.agent.scan.AgentScanRunEntity;
+import com.example.quant.agent.scan.AgentScanRunRepository;
 import com.example.quant.agent.score.AgentContractCandidateScoreEntity;
 import com.example.quant.agent.score.AgentContractCandidateScoreRepository;
 import java.time.Instant;
@@ -22,6 +24,32 @@ class CandidateFutureOutcomeRepositoryTest {
     @Autowired private CandidateFutureOutcomeRepository outcomes;
     @Autowired private AgentContractCandidateScoreRepository snapshots;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private AgentScanRunRepository runs;
+
+    @Test
+    void cohortQueryChecksVersionStatusAndPersistedCount() {
+        AgentScanRunEntity run = new AgentScanRunEntity();
+        run.setStatus("SUCCESS");
+        run.setCandidateCount(1);
+        run.setStartedAt(Instant.EPOCH);
+        run.setCreatedAt(Instant.EPOCH);
+        runs.saveAndFlush(run);
+        AgentContractCandidateScoreEntity row = new AgentContractCandidateScoreEntity();
+        row.setScanRunId(run.getId());
+        row.setInstId("AKE-USDT-SWAP");
+        row.setCreatedAt(Instant.EPOCH);
+        row.setScoringVersion("TEST_VERSION");
+        snapshots.saveAndFlush(row);
+        assertThat(runs.findCompleteForVersion("TEST_VERSION")).containsExactly(run);
+        assertThat(runs.findCompleteForVersion("OTHER_VERSION")).isEmpty();
+        run.setCandidateCount(2);
+        runs.saveAndFlush(run);
+        assertThat(runs.findCompleteForVersion("TEST_VERSION")).isEmpty();
+        run.setCandidateCount(1);
+        run.setStatus("FAILED");
+        runs.saveAndFlush(run);
+        assertThat(runs.findCompleteForVersion("TEST_VERSION")).isEmpty();
+    }
 
     @BeforeAll
     static void modelMySqlTimestampInstant(@Autowired JdbcTemplate jdbc) {
