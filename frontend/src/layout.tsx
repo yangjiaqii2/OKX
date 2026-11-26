@@ -13,9 +13,12 @@ import type { Theme } from '@mui/material/styles';
 import { AppBar, Layout, Menu, Sidebar } from 'react-admin';
 import { RuntimeStatusBar } from './components/RuntimeStatusBar';
 import { MobileBottomNavigation } from './components/MobileBottomNavigation';
+import { LanguageSwitch } from './components/LanguageSwitch';
 import { appBarHeight, mobileNavHeight, safeArea } from './designTokens';
+import { t, useLanguage } from './i18n';
 
 const AppMenu = () => {
+  useLanguage();
   return (
     <Box sx={{ p: 1 }}>
       <Menu sx={{
@@ -34,17 +37,17 @@ const AppMenu = () => {
       }}>
         <Menu.DashboardItem leftIcon={<DashboardIcon />} />
         <Menu.ResourceItem name="contractCandidates" />
-        <Menu.Item to="/positions" primaryText="当前持仓" leftIcon={<AccountBalanceWalletIcon />} />
+        <Menu.Item to="/positions" primaryText={t("当前持仓")} leftIcon={<AccountBalanceWalletIcon />} />
         <Menu.ResourceItem name="pendingOrders" />
         <Menu.ResourceItem name="currentOkxOrders" />
         <Menu.ResourceItem name="autoTradeRecords" />
         <Menu.ResourceItem name="autoTradeLifecycle" />
         <Menu.ResourceItem name="closePositionRecords" />
         <Divider sx={{ my: 1 }} />
-        <Menu.Item to="/account-risk" primaryText="账户与风控" leftIcon={<AccountBalanceWalletIcon />} />
-        <Menu.Item to="/account-binding" primaryText="账号绑定" leftIcon={<KeyIcon />} />
-        <Menu.Item to="/security" primaryText="账号安全" leftIcon={<ManageAccountsIcon />} />
-        <Menu.Item to="/system-control" primaryText="系统控制" leftIcon={<EmergencyIcon />} />
+        <Menu.Item to="/account-risk" primaryText={t("账户与风控")} leftIcon={<AccountBalanceWalletIcon />} />
+        <Menu.Item to="/account-binding" primaryText={t("账号绑定")} leftIcon={<KeyIcon />} />
+        <Menu.Item to="/security" primaryText={t("账号安全")} leftIcon={<ManageAccountsIcon />} />
+        <Menu.Item to="/system-control" primaryText={t("系统控制")} leftIcon={<EmergencyIcon />} />
       </Menu>
     </Box>
   );
@@ -70,9 +73,10 @@ const TradingAppBar = (props: Parameters<typeof AppBar>[0]) => (
       <Box sx={{ display: 'grid', placeItems: 'center', width: 32, height: 32, borderRadius: 1, bgcolor: 'primary.main', color: 'primary.contrastText', flexShrink: 0 }}>
         <StackedLineChartIcon fontSize="small" aria-hidden />
       </Box>
-      <Typography fontWeight={750} sx={{ fontSize: { xs: '0.875rem', md: '1rem' }, whiteSpace: 'nowrap' }}>Quant Desk</Typography>
+      <Typography fontWeight={750} sx={{ display: { xs: 'none', sm: 'block' }, fontSize: { sm: '0.875rem', md: '1rem' }, whiteSpace: 'nowrap' }}>Quant Desk</Typography>
     </Box>
     <RuntimeStatusBar />
+    <LanguageSwitch />
   </AppBar>
 );
 

@@ -2,6 +2,9 @@ package com.example.quant.agent.selection;
 
 import com.example.quant.agent.gate.ContractTradeGate;
 import com.example.quant.ai.AiAnalysisService;
+import com.example.quant.account.OkxCredentialStore;
+import com.example.quant.auth.AuthUserContext;
+import com.example.quant.agent.selection.AiEntryObservation.Rejection;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.crypto.filter.FilterContext;
@@ -22,16 +25,20 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -45,6 +52,12 @@ public class AiContractSelectionService {
     private final AgentProperties properties;
     private final UniverseHardFilter universeHardFilter;
     private final AtomicReference<ContractSelectionDecision> latest = new AtomicReference<>(ContractSelectionDecision.noEligible());
+    private AiEntryObservationService observations;
+
+    @Autowired
+    void configureEntryObservations(AiEntryObservationService observations) {
+        this.observations = observations;
+    }
 
     /**
      * 5 参生产构造器：完整接入 Universe Hard Filter。
@@ -75,9 +88,23 @@ public class AiContractSelectionService {
 
     public ContractSelectionDecision select(List<ContractCandidate> candidates,
                                             Map<String, V2SelectionScoreResult> v2ScoreSnapshot) {
+        return select(candidates, v2ScoreSnapshot, "EXECUTION");
+    }
+
+    public ContractSelectionDecision selectForShadow(List<ContractCandidate> candidates, String scanId) {
+        String previousScanId = MDC.get("coverageScanId");
+        try (var ignored = MDC.putCloseable("coverageScanId", scanId)) {
+            return select(candidates, Map.of(), "SHADOW");
+        } finally {
+            if (previousScanId != null) MDC.put("coverageScanId", previousScanId);
+        }
+    }
+
+    private ContractSelectionDecision select(List<ContractCandidate> candidates,
+                                             Map<String, V2SelectionScoreResult> v2ScoreSnapshot, String scope) {
         Map<String, V2SelectionScoreResult> scores = v2ScoreSnapshot == null
                 ? Map.of() : Map.copyOf(v2ScoreSnapshot);
-        List<ContractCandidate> pool = eligiblePool(candidates, scores);
+        List<ContractCandidate> pool = eligiblePool(candidates, scores, scope);
         log.info("AI selection started candidateCount={} eligibleCount={} enabled={} policy={}",
                 candidates == null ? 0 : candidates.size(), pool.size(), properties.aiSelection().enabled(),
                 properties.aiSelection().policy());
@@ -89,18 +116,94 @@ public class AiContractSelectionService {
             log.warn("AI selection skipped reason=AI_SELECTION_DISABLED eligibleCount={}", pool.size());
             return remember(ContractSelectionDecision.fallback("AI_SELECTION_DISABLED"));
         }
+        boolean typeSafe = false;
+        String prompt = null;
+        Map<String, Object> input = null;
+        JsonNode response = null;
+        boolean received = false;
+        Set<Rejection> thresholdVetoes = EnumSet.noneOf(Rejection.class);
         try {
-            ContractSelectionDecision decision = ai.isTypeSafeProvider()
-                    ? parseTypeSafe(ai.completeTyped(typeSafeState(pool, scores), typeSafeQuestions(pool, scores)), pool)
-                    : parse(ai.completeJson(systemPrompt(), userPrompt(pool, scores)), pool);
+            typeSafe = ai.isTypeSafeProvider();
+            if (typeSafe) {
+                var state = typeSafeState(pool, scores);
+                var questions = typeSafeQuestions(pool, scores);
+                prompt = (String) state.get("task");
+                input = Map.of("state", state, "questions", questions);
+                response = ai.completeTyped(state, questions);
+            } else {
+                prompt = systemPrompt();
+                String user = userPrompt(pool, scores);
+                input = Map.of("system", prompt, "user", user);
+                response = ai.completeJson(prompt, user);
+            }
+            received = true;
+            ContractSelectionDecision decision = typeSafe ? parseTypeSafe(response, pool, thresholdVetoes) : parse(response, pool);
             log.info("AI selection completed source={} decision={} selectedInstId={} eligibleCount={}",
                     decision.source(), decision.decision(), decision.selectedInstId(), pool.size());
-            return remember(decision);
+            return remember(observe(scope, typeSafe, prompt, input, response, decision, thresholdVetoes, null));
         } catch (RuntimeException ex) {
             String reason = compact(ex.getMessage());
             log.warn("AI selection fallback reason={} eligibleCount={}", reason, pool.size());
-            return remember(ContractSelectionDecision.fallback(reason));
+            Rejection code = ex instanceof DirectionConflict ? Rejection.DIRECTION_CONFLICT
+                    : received || ex instanceof AiAnalysisService.InvalidAiResponse ? Rejection.AI_RESPONSE_INVALID
+                    : Rejection.AI_CALL_FAILED;
+            if (ex instanceof AiAnalysisService.InvalidAiResponse invalid) {
+                response = invalid.response();
+            }
+            return remember(observe(scope, typeSafe, prompt, input, response,
+                    ContractSelectionDecision.fallback(reason), thresholdVetoes, code));
         }
+    }
+
+    private ContractSelectionDecision observe(String scope, boolean typeSafe, String prompt, Map<String, Object> input,
+                                               JsonNode response, ContractSelectionDecision decision,
+                                               Set<Rejection> thresholdVetoes, Rejection failure) {
+        if (observations == null) return decision;
+        try {
+            Rejection code = failure == null ? observedReason(typeSafe, response, decision, thresholdVetoes) : failure;
+            var ref = new AiEntryObservation.Reference(UUID.randomUUID().toString(), code);
+            observations.record(new AiEntryObservation(ref, scope, observationOwner(), MDC.get("coverageScanId"),
+                    Instant.now(), decision.selectedInstId(), ai.selectionModel(typeSafe), typeSafe, prompt,
+                    input, response, decision, List.copyOf(thresholdVetoes), List.of(),
+                    code == Rejection.OTHER ? "Unclassified selection outcome" : null));
+            return decision.withObservation(ref);
+        } catch (RuntimeException ex) {
+            log.warn("AI entry observation skipped errorType={}", ex.getClass().getSimpleName());
+            return decision;
+        }
+    }
+
+    private static Rejection observedReason(boolean typeSafe, JsonNode response, ContractSelectionDecision decision,
+                                            Set<Rejection> thresholdVetoes) {
+        if (decision.source() == ContractSelectionDecision.DecisionSource.AI_PRIMARY) return Rejection.NONE;
+        if (decision.source() != ContractSelectionDecision.DecisionSource.AI_WAIT) return Rejection.OTHER;
+        if (!typeSafe) {
+            return "WAIT".equalsIgnoreCase(required(response, "decision")) ? Rejection.MODEL_WAIT : Rejection.ENTRY_MODE_WAIT;
+        }
+        JsonNode answers = response.path("answers");
+        if ("WAIT".equalsIgnoreCase(typedChoice(response, answers, "decision"))) return Rejection.MODEL_WAIT;
+        if (thresholdVetoes.size() == 2) return Rejection.QUALITY_AND_RISK_BELOW_THRESHOLD;
+        if (!thresholdVetoes.isEmpty()) return thresholdVetoes.iterator().next();
+        return Rejection.ENTRY_MODE_WAIT;
+    }
+
+    public void observeHardDeny(ContractCandidate candidate, List<String> rules) {
+        observeHardDeny(candidate, rules, "EXECUTION");
+    }
+
+    private void observeHardDeny(ContractCandidate candidate, List<String> rules, String scope) {
+        if (observations == null || candidate == null) return;
+        try {
+            var ref = new AiEntryObservation.Reference(UUID.randomUUID().toString(), Rejection.HARD_DENY);
+            observations.record(new AiEntryObservation(ref, scope, observationOwner(), MDC.get("coverageScanId"),
+                    Instant.now(), candidate.instId(), null, false, null, null, null, null, List.of(), rules, null));
+        } catch (RuntimeException ex) {
+            log.warn("AI hard deny observation skipped errorType={}", ex.getClass().getSimpleName());
+        }
+    }
+
+    private static String observationOwner() {
+        return AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
     }
 
     public ContractSelectionDecision latest() {
@@ -113,7 +216,7 @@ public class AiContractSelectionService {
     }
 
     private List<ContractCandidate> eligiblePool(List<ContractCandidate> candidates,
-                                                 Map<String, V2SelectionScoreResult> scores) {
+                                                 Map<String, V2SelectionScoreResult> scores, String scope) {
         if (candidates == null) {
             return List.of();
         }
@@ -123,12 +226,13 @@ public class AiContractSelectionService {
             if (candidate == null || !hasText(candidate.instId()) || !seen.add(candidate.instId())) {
                 continue;
             }
-            if (!passesUniverseHardFilter(candidate)) {
+            if (!passesUniverseHardFilter(candidate, scope)) {
                 log.debug("AI eligible pool rejected by UniverseHardFilter instId={}", candidate.instId());
                 continue;
             }
             List<String> aiDeny = ContractTradeGate.aiHardDenyReasons(candidate, properties);
             if (!aiDeny.isEmpty()) {
+                observeHardDeny(candidate, aiDeny, scope);
                 log.debug("AI eligible pool rejected by aiHardDenyReasons instId={} reasons={}",
                         candidate.instId(), aiDeny);
                 continue;
@@ -142,7 +246,7 @@ public class AiContractSelectionService {
         return List.copyOf(filtered);
     }
 
-    private boolean passesUniverseHardFilter(ContractCandidate c) {
+    private boolean passesUniverseHardFilter(ContractCandidate c, String scope) {
         try {
             // 用 candidate 自身的 V2 字段构造 ProviderResult（fresh 来源 = AI_POOL_DERIVED）。
             // 任何 null 字段会自然被对应 Filter 判定为 MISSING / UNAVAILABLE → 拒绝。
@@ -177,9 +281,13 @@ public class AiContractSelectionService {
                     c.volumeMcapRatio()
             );
             UniverseHardFilter.SingleOutcome outcome = universeHardFilter.apply(ctx);
+            if (!outcome.passed()) {
+                observeHardDeny(c, List.of(outcome.result().filterName() + ":" + outcome.result().reason()), scope);
+            }
             return outcome.passed();
         } catch (RuntimeException ex) {
             log.warn("UniverseHardFilter threw on instId={} message={}", c.instId(), ex.getMessage());
+            observeHardDeny(c, List.of("universe_filter_exception"), scope);
             return false;
         }
     }
@@ -211,7 +319,7 @@ public class AiContractSelectionService {
             throw new IllegalArgumentException("rankedCandidates first item must match selectedInstId");
         }
         if (direction != ranked.get(0).direction()) {
-            throw new IllegalArgumentException("top-level direction conflicts with rankedCandidates first direction");
+            throw new DirectionConflict("top-level direction conflicts with rankedCandidates first direction");
         }
         for (ContractSelectionDecision.RankedCandidate item : ranked) {
             DirectionBias candidateDirection = pool.stream()
@@ -220,7 +328,7 @@ public class AiContractSelectionService {
                     .findFirst()
                     .orElse(null);
             if (candidateDirection != item.direction()) {
-                throw new IllegalArgumentException("AI direction conflicts with deterministic candidate direction: "
+                throw new DirectionConflict("AI direction conflicts with deterministic candidate direction: "
                         + item.instId());
             }
         }
@@ -274,8 +382,11 @@ public class AiContractSelectionService {
     private Map<String, Object> typeSafeState(List<ContractCandidate> pool,
                                               Map<String, V2SelectionScoreResult> scores) {
         Map<String, Object> state = new LinkedHashMap<>();
-        state.put("task", "在 Java 已筛选的 eligible candidates 中选择或 WAIT。只能确认候选的 deterministic direction，"
-                + "不得反转方向或绕过 hard deny；缺失证据不是中性证据，低 coverage 应降低确定性。");
+        state.put("task", "根据 recentClosed5mCandles 中已有的最近两根已收盘 5m K 线判断当前能否入场。"
+                + "若已收盘 K 线支持顺势延续，且当前价格、量能和执行成本支持入场，可直接选择 MARKET 或 LIMIT。"
+                + "回踩或反抽只是可用的入场结构之一。若当前入场依赖尚未出现的确认，或关键证据不足，选择 WAIT。"
+                + "只能确认候选的 deterministic direction，不得反转方向或绕过 hard deny；"
+                + "缺失证据不能按中性处理，低 coverage 应降低确定性。");
         state.put("candidates", candidatePayload(pool, scores));
         return state;
     }
@@ -287,8 +398,8 @@ public class AiContractSelectionService {
                 "type", "choice",
                 "instructions", "Should the system trade one of these already eligible candidates now?",
                 "criteria", Map.of(
-                        "TRADE", "A clear opportunity exists and execution is appropriate now.",
-                        "WAIT", "Do not enter now; wait for a better setup or confirmation.")));
+                        "TRADE", "The latest closed candles support trend continuation or a confirmed retest, and execution is appropriate now.",
+                        "WAIT", "Current price, direction, execution conditions or missing evidence make entry unsuitable now.")));
         Map<String, String> selectedCriteria = new LinkedHashMap<>();
         for (ContractCandidate candidate : pool) {
             V2SelectionScoreResult score = scores.get(candidate.instId());
@@ -313,15 +424,15 @@ public class AiContractSelectionService {
                 "criteria", Map.of(
                         "MARKET", "Enter at market when conditions are ready.",
                         "LIMIT", "Use a limit entry when price improvement is appropriate.",
-                        "WAIT_PULLBACK", "Wait for a pullback before entering.",
-                        "WAIT_RETEST", "Wait for a retest or confirmation before entering.")));
+                        "WAIT_PULLBACK", "Skip this scan because a pullback has not been confirmed.",
+                        "WAIT_RETEST", "Skip this scan because a retest has not been confirmed.")));
         questions.put("quality", Map.of(
                 "type", "score",
                 "instructions", "How strong is the selected setup for a disciplined trade?",
                 "criteria", List.of(
                         "Insufficient or conflicting; do not trade.",
                         "Weak; wait for improvement.",
-                        "Mixed but potentially workable with confirmation.",
+                        "Workable now with supporting evidence despite some mixed signals.",
                         "Good; suitable if deterministic risk checks remain clear.",
                         "Strong; clear setup with favorable execution conditions.")));
         questions.put("risk_ok", Map.of(
@@ -330,7 +441,8 @@ public class AiContractSelectionService {
         return questions;
     }
 
-    private ContractSelectionDecision parseTypeSafe(JsonNode root, List<ContractCandidate> pool) {
+    private ContractSelectionDecision parseTypeSafe(JsonNode root, List<ContractCandidate> pool,
+                                                   Set<Rejection> thresholdVetoes) {
         JsonNode answers = root.path("answers");
         String decisionText = typedChoice(root, answers, "decision").toUpperCase(Locale.ROOT);
         String selectedInstId = typedChoice(root, answers, "selectedInstId");
@@ -343,7 +455,11 @@ public class AiContractSelectionService {
         confidence = confidence.min(typedConfidence(root, answers, "quality", "scores"));
         double quality = typedScore(root, answers, "quality");
         double riskAcceptableProbability = typedNoul(root, answers, "risk_ok");
-        if ("TRADE".equals(decisionText) && (quality < 2.0 || riskAcceptableProbability < 0.65)) {
+        boolean qualityBelow = quality < AiEntryObservation.QUALITY_MINIMUM;
+        boolean riskBelow = riskAcceptableProbability < AiEntryObservation.RISK_MINIMUM;
+        if ("TRADE".equals(decisionText) && (qualityBelow || riskBelow)) {
+            if (qualityBelow) thresholdVetoes.add(Rejection.QUALITY_BELOW_THRESHOLD);
+            if (riskBelow) thresholdVetoes.add(Rejection.RISK_BELOW_THRESHOLD);
             decisionText = "WAIT";
             entryModeText = "WAIT_RETEST";
         }
@@ -396,6 +512,12 @@ public class AiContractSelectionService {
             item.put("newsRisk", candidate.newsAnalysis() == null ? null : candidate.newsAnalysis().newsRiskLevel());
             item.put("softRuleReasons", candidate.candidateReasonList());
             item.put("softRuleDiagnostics", candidate.riskTagList());
+            var kline = candidate.klineAnalysis();
+            item.put("entryTiming5m", kline == null ? null : kline.entryTiming5m());
+            item.put("recentClosed5mCandles", kline == null ? List.of() : kline.recentClosed5mCandles().stream()
+                    .map(candle -> Map.of("openTime", candle.timestamp().toString(), "open", candle.open(),
+                            "high", candle.high(), "low", candle.low(), "close", candle.close()))
+                    .toList());
             item.put("v2RankingScore", v2 == null ? null : v2.rankingScore());
             item.put("v2NormalizedScore", v2 == null ? null : v2.normalizedScore());
             item.put("v2CoverageRatio", v2 == null ? null : v2.coverageRatio());
@@ -509,7 +631,9 @@ public class AiContractSelectionService {
                 + "不得发明池外候选、不得绕过 hard deny、不得反转 deterministic candidate direction。"
                 + "候选 BULLISH 只能 LONG 或 WAIT，候选 BEARISH 只能 SHORT 或 WAIT。"
                 + "数据缺失不能被解释为中性证据；coverageRatio 和 availableWeight 较低时应降低确定性，必要时 WAIT。"
-                + "你应基于价格、趋势、量能、OI、Funding、流动性和风险收益独立决定 TRADE 或 WAIT，"
+                + "用 recentClosed5mCandles 中已有的最近两根已收盘 5m K 线核对最近约 10 分钟的入场结构，"
+                + "结合 entryTiming5m、实时价格、趋势、量能、OI、Funding、流动性和风险收益决定 TRADE 或 WAIT。"
+                + "回踩或反抽确认已经出现时按当前条件决定；证据不足时返回 WAIT，本轮直接跳过。"
                 + "趋势方向明确、流动性和执行成本良好且未明显过热时，优先选择 MARKET 或 LIMIT；"
                 + "不要求所有周期完全一致，但核心方向不能相互冲突。"
                 + "WAIT_PULLBACK / WAIT_RETEST 只用于短线明显过热、结构尚未确认、价格明显偏离或风险收益不合适。"
@@ -518,7 +642,7 @@ public class AiContractSelectionService {
                 + "entryMode=MARKET|LIMIT|WAIT_PULLBACK|WAIT_RETEST, confidence=0..1, "
                 + "rankedCandidates=[{instId,rank,direction,entryMode,confidence}], reasonList, riskList。"
                 + "TRADE 只能搭配 MARKET/LIMIT；WAIT 只能搭配 WAIT_PULLBACK/WAIT_RETEST。"
-                + "选择等待机会时也必须给出池内 selectedInstId、direction 和 rankedCandidates；"
+                + "选择跳过时也必须给出池内 selectedInstId、direction 和 rankedCandidates；"
                 + "selectedInstId 必须是 rankedCandidates 第一项；不要输出额外文字。";
     }
 
@@ -528,6 +652,12 @@ public class AiContractSelectionService {
             case "SHORT" -> DirectionBias.BEARISH;
             default -> throw new IllegalArgumentException("direction must be LONG or SHORT");
         };
+    }
+
+    private static final class DirectionConflict extends IllegalArgumentException {
+        private DirectionConflict(String message) {
+            super(message);
+        }
     }
 
     private static String entryMode(String value) {

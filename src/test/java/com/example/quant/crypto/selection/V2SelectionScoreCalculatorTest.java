@@ -51,6 +51,19 @@ class V2SelectionScoreCalculatorTest {
     }
 
     @Test
+    void losingALowScoredApplicableDimensionCannotImproveRanking() {
+        ContractCandidate withWeakBreakout = breakoutCandidate("-50", "DEEP_BELOW", DataQuality.FRESH);
+        ContractCandidate withoutBreakout = withWeakBreakout.withAthBreakout(null);
+        V2SelectionScoreCalculator calculator = new V2SelectionScoreCalculator();
+
+        V2SelectionScoreResult observed = calculator.calculate(withWeakBreakout);
+        V2SelectionScoreResult missing = calculator.calculate(withoutBreakout);
+
+        assertThat(missing.normalizedScore()).isGreaterThan(observed.normalizedScore());
+        assertThat(missing.rankingScore()).isLessThan(observed.rankingScore());
+    }
+
+    @Test
     void allDimensionsUnavailableReturnsNoScoreInsteadOfZeroOrNan() {
         ContractCandidate candidate = unavailableCandidate();
 
@@ -145,18 +158,23 @@ class V2SelectionScoreCalculatorTest {
     @Test
     void derivativesRewardsPositiveOiOnlyForLeadingAndDoesNotRewardOiContraction() {
         V2SelectionScoreCalculator calculator = new V2SelectionScoreCalculator();
-        BigDecimal leading20 = calculator.calculate(candidateWithDerivatives("8", "20")).dimensionScores()
+        BigDecimal leading20 = calculator.calculate(candidateWithDerivatives("8", "0.20")).dimensionScores()
                 .get(V2ScoreDimension.DERIVATIVES);
-        BigDecimal leading5 = calculator.calculate(candidateWithDerivatives("8", "5")).dimensionScores()
+        BigDecimal leading5 = calculator.calculate(candidateWithDerivatives("8", "0.05")).dimensionScores()
                 .get(V2ScoreDimension.DERIVATIVES);
-        BigDecimal followingWeakMinus20 = calculator.calculate(candidateWithDerivatives("8", "-20"))
+        BigDecimal leadingAboveCap = calculator.calculate(candidateWithDerivatives("8", "0.431125"))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
-        BigDecimal followingWeakMinus5 = calculator.calculate(candidateWithDerivatives("8", "-5"))
+        BigDecimal followingWeakMinus20 = calculator.calculate(candidateWithDerivatives("8", "-0.20"))
+                .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
+        BigDecimal followingWeakMinus5 = calculator.calculate(candidateWithDerivatives("8", "-0.05"))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
         BigDecimal followingWeakZero = calculator.calculate(candidateWithDerivatives("8", "0"))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
 
-        assertThat(leading20).isGreaterThan(leading5);
+        assertThat(leading20).isEqualByComparingTo("95");
+        assertThat(leadingAboveCap).isEqualByComparingTo(leading20);
+        assertThat(leading5).isEqualByComparingTo("87.5");
+        assertThat(followingWeakMinus20).isEqualByComparingTo("35");
         assertThat(followingWeakMinus20).isLessThan(followingWeakMinus5).isLessThan(followingWeakZero);
         assertThat(followingWeakMinus20).isLessThan(leading20);
     }
@@ -164,12 +182,12 @@ class V2SelectionScoreCalculatorTest {
     @Test
     void fundingTrendStillAdjustsDerivativeBaseAfterOiCalibration() {
         V2SelectionScoreCalculator calculator = new V2SelectionScoreCalculator();
-        BigDecimal stable = calculator.calculate(candidateWithFunding("8", "5", FundingTrend.STABLE, false))
+        BigDecimal stable = calculator.calculate(candidateWithFunding("8", "0.05", FundingTrend.STABLE, false))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
         BigDecimal heatingExtreme = calculator.calculate(
-                candidateWithFunding("8", "5", FundingTrend.HEATING, true))
+                candidateWithFunding("8", "0.05", FundingTrend.HEATING, true))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
-        BigDecimal cooling = calculator.calculate(candidateWithFunding("8", "5", FundingTrend.COOLING, false))
+        BigDecimal cooling = calculator.calculate(candidateWithFunding("8", "0.05", FundingTrend.COOLING, false))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
 
         assertThat(heatingExtreme).isLessThan(stable);
@@ -179,13 +197,13 @@ class V2SelectionScoreCalculatorTest {
     @Test
     void derivativesTreatsCapitulationAndWeakDownMagnitudeAsRiskNotBonus() {
         V2SelectionScoreCalculator calculator = new V2SelectionScoreCalculator();
-        BigDecimal capitulation20 = calculator.calculate(candidateWithDerivatives("-8", "20"))
+        BigDecimal capitulation20 = calculator.calculate(candidateWithDerivatives("-8", "0.20"))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
-        BigDecimal capitulation5 = calculator.calculate(candidateWithDerivatives("-8", "5"))
+        BigDecimal capitulation5 = calculator.calculate(candidateWithDerivatives("-8", "0.05"))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
-        BigDecimal weakDown20 = calculator.calculate(candidateWithDerivatives("-8", "-20"))
+        BigDecimal weakDown20 = calculator.calculate(candidateWithDerivatives("-8", "-0.20"))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
-        BigDecimal weakDown5 = calculator.calculate(candidateWithDerivatives("-8", "-5"))
+        BigDecimal weakDown5 = calculator.calculate(candidateWithDerivatives("-8", "-0.05"))
                 .dimensionScores().get(V2ScoreDimension.DERIVATIVES);
 
         assertThat(capitulation20).isLessThan(capitulation5);
@@ -348,7 +366,7 @@ class V2SelectionScoreCalculatorTest {
                 "HIGHER_HIGH_HIGHER_LOW", RiskLevel.LOW,
                 new BigDecimal("500000000"), new BigDecimal("2"), new BigDecimal("0.5"),
                 new BigDecimal("2"), new BigDecimal("200000"), new BigDecimal("200000"),
-                oi(instId, "12"), funding(instId, FundingHistorySnapshot.DataQuality.FRESH),
+                oi(instId, "0.12"), funding(instId, FundingHistorySnapshot.DataQuality.FRESH),
                 relativeStrength("10"),
                 new AthBreakoutSnapshot(instId, BigDecimal.TEN, new BigDecimal("9.8"),
                         new BigDecimal("-2"), "AT_ATH", DataQuality.FRESH, 2, false),

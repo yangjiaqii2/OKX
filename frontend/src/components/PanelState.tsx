@@ -2,6 +2,7 @@ import InboxOutlinedIcon from '@mui/icons-material/InboxOutlined';
 import { Box, CircularProgress, Stack, Typography } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { ReactNode } from 'react';
+import { t, useLanguage } from '../i18n';
 
 type PanelStateProps = {
   children?: ReactNode;
@@ -10,12 +11,13 @@ type PanelStateProps = {
 };
 
 export function PanelState({ children, loading = false, sx = [] }: PanelStateProps) {
+  useLanguage();
   return (
     <Stack alignItems="center" justifyContent="center" spacing={1} role="status" sx={[
       { minHeight: 160, px: 2, py: 3, textAlign: 'center' },
       ...(Array.isArray(sx) ? sx : [sx]),
     ]}>
-      {loading ? <CircularProgress size={28} aria-label="加载中" /> : (
+      {loading ? <CircularProgress size={28} aria-label={t("加载中")} /> : (
         <>
           <Box sx={{ color: 'primary.main', bgcolor: 'action.selected', p: 1, borderRadius: 1, display: 'flex' }}>
             <InboxOutlinedIcon fontSize="small" aria-hidden />

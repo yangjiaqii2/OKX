@@ -14,7 +14,8 @@ public class FailureReasonClassifier {
     public FailureClassification classify(String stage, String reason) {
         String normalized = reason == null ? "" : reason.toLowerCase(java.util.Locale.ROOT);
         boolean candidateBudgetTooSmall = normalized.contains("budget_order_margin_below_min")
-                || normalized.contains("candidate_budget_allocation_too_low");
+                || normalized.contains("candidate_budget_allocation_too_low")
+                || normalized.contains("net_risk_or_margin_below_minimum_size");
         // Global blockers take precedence over candidate-local plan/AI wording.
         if (normalized.contains("pre_order_setup_failed")
                 || normalized.contains("daily_risk_")
@@ -40,6 +41,7 @@ public class FailureReasonClassifier {
         }
         if (candidateBudgetTooSmall
                 || normalized.contains("symbol_already_in_flight")
+                || normalized.contains("market_entry_outside_exit_range")
                 || normalized.contains("pre_confirm_refresh_failed")) {
             return FailureClassification.NEXT_CANDIDATE_ALLOWED;
         }

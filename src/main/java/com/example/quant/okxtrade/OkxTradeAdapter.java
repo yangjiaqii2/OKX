@@ -11,8 +11,10 @@ import com.example.quant.order.OrderExecutionResult;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.tradeplan.CanonicalExecutablePlan;
 import com.example.quant.tradeplan.CanonicalPlanCompiler;
+import com.example.quant.tradeplan.PlanExecutionRisk;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -110,6 +112,12 @@ public class OkxTradeAdapter {
                 positionMode = OkxPositionMode.NET;
             }
             setLeverage(order, positionMode);
+            var checkedPlan = order.canonicalExecutablePlan();
+            if ("MARKET".equalsIgnoreCase(order.orderType()) && checkedPlan != null && checkedPlan.risk() != null
+                    && checkedPlan.risk().quoteTime() != null
+                    && !PlanExecutionRisk.isFreshMarketQuote(checkedPlan.risk().quoteTime(), Instant.now())) {
+                throw new IllegalStateException("MARKET_EXECUTION_BOOK_STALE");
+            }
             payload = orderPayload(order, rules, positionMode);
             entryRecord = entryRecord(order, payload, null);
         } catch (RuntimeException ex) {

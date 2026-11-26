@@ -1,9 +1,13 @@
 package com.example.quant.crypto.filter;
 
+import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.provider.DataQuality;
 import com.example.quant.crypto.provider.ProviderResult;
 import com.example.quant.crypto.provider.dto.MarketCapSnapshot;
 import java.math.BigDecimal;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * Phase B 流通量硬资格 Filter。
@@ -16,6 +20,8 @@ import java.math.BigDecimal;
  *   <li>所有必要数据都缺失 → 拒（理由 _MISSING）</li>
  * </ol>
  */
+@Component
+@ConditionalOnProperty(prefix = "quant.agent.selection.universe", name = "circulation-enabled", havingValue = "true")
 public final class CirculationFilter implements UniverseFilter {
 
     public static final String NAME = "circulation";
@@ -26,6 +32,11 @@ public final class CirculationFilter implements UniverseFilter {
     public static final String REASON_STALE = "CIRCULATION_STALE";
 
     private final BigDecimal minCirculationRatio;
+
+    @Autowired
+    public CirculationFilter(AgentProperties properties) {
+        this(properties.selection().universe().minCirculationRatio());
+    }
 
     public CirculationFilter(BigDecimal minCirculationRatio) {
         if (minCirculationRatio == null) {

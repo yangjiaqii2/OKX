@@ -63,8 +63,12 @@ public record ContractRiskRequest(
     }
 
     public ContractRiskRequest withStopLossPrice(BigDecimal value) {
+        return withExecutionPrices(entryPrice, value);
+    }
+
+    public ContractRiskRequest withExecutionPrices(BigDecimal entry, BigDecimal stop) {
         return copy(emergencyStop, websocketConnected, marketDelayMs, maxMarketDelayMs, accountEquity, suggestedMargin, maxSingleMarginRate,
-                leverage, maxLeverage, entryPrice, value, riskRewardRatio, minRiskRewardRatio, fundingRate,
+                leverage, maxLeverage, entry, stop, riskRewardRatio, minRiskRewardRatio, fundingRate,
                 maxAbsFundingRate, volume24h, minVolume24h, newsRiskLevel, volatility, maxStopLossDistanceRate,
                 signalScore, minSignalScore, maxSingleLossRate);
     }

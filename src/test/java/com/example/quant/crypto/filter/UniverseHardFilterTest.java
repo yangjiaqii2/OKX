@@ -2,6 +2,7 @@ package com.example.quant.crypto.filter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.provider.DataQuality;
 import com.example.quant.crypto.provider.ProviderResult;
 import com.example.quant.crypto.provider.dto.MarketCapSnapshot;
@@ -11,6 +12,10 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.ClassPathBeanDefinitionScanner;
 
 /**
  * Phase B Universe 硬资格边界 + Funnel + 短路 + 异常隔离测试。
@@ -37,6 +42,38 @@ class UniverseHardFilterTest {
             new PriceRangeFilter(MAX_RANGE),
             new LiquidityFilter(MAX_SPREAD, MIN_DEPTH)
     ));
+
+    @Test
+    void supplyAndTurnoverRulesAreOptInAndRejectUnderThresholdWhenEnabled() {
+        var context = new ApplicationContextRunner()
+                .withUserConfiguration(BoundAgentProperties.class)
+                .withInitializer(ctx -> new ClassPathBeanDefinitionScanner((BeanDefinitionRegistry) ctx)
+                        .scan(UniverseHardFilter.class.getPackageName()));
+        var marketCap = ProviderResult.fresh(new MarketCapSnapshot("BTC", new BigDecimal("40000000"),
+                null, BigDecimal.ONE, BigDecimal.valueOf(4), BigDecimal.valueOf(4), Instant.now(), "test"), "test");
+        var lowCirculation = FilterContext.withV2Ratios("BTC-USDT-SWAP", "BTC", BigDecimal.ONE,
+                BigDecimal.valueOf(100_000), null, null, null, null, marketCap,
+                new BigDecimal("0.25"), new BigDecimal("0.0025"));
+        context.run(ctx -> assertThat(ctx.getBean(UniverseHardFilter.class).apply(lowCirculation).passed()).isTrue());
+        context.withPropertyValues("quant.agent.selection.universe.circulation-enabled=true",
+                        "quant.agent.selection.universe.min-circulation-ratio=0.30")
+                .run(ctx -> {
+                    var result = ctx.getBean(UniverseHardFilter.class).apply(lowCirculation).result();
+                    assertThat(result.reason()).isEqualTo(CirculationFilter.REASON_TOO_LOW);
+                    assertThat(result.threshold()).isEqualTo(new BigDecimal("0.30"));
+                });
+        context.withPropertyValues("quant.agent.selection.universe.volume-mcap-enabled=true",
+                        "quant.agent.selection.universe.min-volume-mcap-ratio=0.10")
+                .run(ctx -> {
+                    var result = ctx.getBean(UniverseHardFilter.class).apply(lowCirculation).result();
+                    assertThat(result.reason()).isEqualTo(VolumeMcapFilter.REASON_TOO_LOW);
+                    assertThat(result.threshold()).isEqualTo(new BigDecimal("0.10"));
+                });
+    }
+
+    @EnableConfigurationProperties(AgentProperties.class)
+    static class BoundAgentProperties {
+    }
 
     private static FilterContext ctxWith(ProviderResult<MarketCapSnapshot> mcap) {
         return new FilterContext(

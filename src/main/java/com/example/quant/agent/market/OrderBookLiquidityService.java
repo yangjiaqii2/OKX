@@ -8,6 +8,7 @@ import com.example.quant.okxtrade.OkxInstrumentRulesService;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.Instant;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -33,10 +34,13 @@ public class OrderBookLiquidityService {
     }
 
     public OrderBookLiquiditySnapshot snapshot(String instId) {
+        return snapshot(instId, null);
+    }
+
+    public OrderBookLiquiditySnapshot snapshot(String instId, Duration timeout) {
         try {
-            JsonNode root = okxRestClient.publicGet("/api/v5/market/books?instId="
-                    + OkxRestClient.encode(instId)
-                    + "&sz=50");
+            String path = "/api/v5/market/books?instId=" + OkxRestClient.encode(instId) + "&sz=50";
+            JsonNode root = timeout == null ? okxRestClient.publicGet(path) : okxRestClient.publicGet(path, timeout);
             JsonNode data = root.path("data");
             if (!data.isArray() || data.isEmpty()) {
                 return OrderBookLiquiditySnapshot.unavailable(instId, "OKX订单簿为空");
@@ -75,6 +79,7 @@ public class OrderBookLiquidityService {
             BigDecimal estimatedSlippage = tradable
                     ? spreadBps.divide(BigDecimal.valueOf(2), 4, RoundingMode.HALF_UP)
                     : maxSpreadBps.add(BigDecimal.ONE);
+            long bookTimestamp = book.path("ts").asLong();
             return new OrderBookLiquiditySnapshot(
                     instId,
                     bestBid,
@@ -86,7 +91,7 @@ public class OrderBookLiquidityService {
                     estimatedSlippage,
                     tradable,
                     denyReason,
-                    Instant.now()
+                    bookTimestamp > 0 ? Instant.ofEpochMilli(bookTimestamp) : null
             );
         } catch (RuntimeException ex) {
             return OrderBookLiquiditySnapshot.unavailable(instId, "OKX订单簿或合约规则获取失败：" + ex.getMessage());

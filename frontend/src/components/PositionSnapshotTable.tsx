@@ -21,6 +21,7 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useTheme } from '@mui/material/styles';
 import { formatLeverage, formatNumber, formatPrice, formatSide, formatStatus, formatUSDT, pnlColor } from '../formatters';
+import { t, useLanguage } from '../i18n';
 
 type PositionSnapshotTableProps = {
   positions: Record<string, unknown>[];
@@ -29,11 +30,12 @@ type PositionSnapshotTableProps = {
 };
 
 export function PositionSnapshotTable({ positions, closingKey, onClosePosition }: PositionSnapshotTableProps) {
+  useLanguage();
   const theme = useTheme();
   const mobile = useMediaQuery(theme.breakpoints.down('md'));
   if (positions.length === 0) {
     return (
-      <PanelState sx={panel}>暂无持仓。若 OKX 实际有仓位，请查看接口错误信息和 API 读取权限。</PanelState>
+      <PanelState sx={panel}>{t("暂无持仓。若 OKX 实际有仓位，请查看接口错误信息和 API 读取权限。")}</PanelState>
     );
   }
 
@@ -53,13 +55,13 @@ export function PositionSnapshotTable({ positions, closingKey, onClosePosition }
           </AccordionSummary>
           <AccordionDetails sx={{ borderTop: 1, borderColor: 'divider' }}>
             <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1.5 }}>
-              <MobileValue label="均价" value={formatPrice(position.avgPrice)} />
-              <MobileValue label="保证金" value={formatUSDT(position.margin)} />
-              <MobileValue label="模式" value={`${formatSide(position.marginMode)} ${formatLeverage(position.leverage)}`} />
-              <MobileValue label="状态" value={formatStatus(position.mode)} />
+              <MobileValue label={t("均价")} value={formatPrice(position.avgPrice)} />
+              <MobileValue label={t("保证金")} value={formatUSDT(position.margin)} />
+              <MobileValue label={t("模式")} value={`${formatSide(position.marginMode)} ${formatLeverage(position.leverage)}`} />
+              <MobileValue label={t("状态")} value={formatStatus(position.mode)} />
             </Box>
             {onClosePosition && <Button fullWidth color="error" variant="outlined" sx={{ mt: 2, minHeight: 44 }}
-              onClick={() => onClosePosition(position)} disabled={closingKey === key}>平仓</Button>}
+              onClick={() => onClosePosition(position)} disabled={closingKey === key}>{t("平仓")}</Button>}
           </AccordionDetails>
         </Accordion>;
       })}
@@ -67,19 +69,19 @@ export function PositionSnapshotTable({ positions, closingKey, onClosePosition }
   }
 
   return (
-    <ScrollableTable label="持仓">
+    <ScrollableTable label={t("持仓")}>
       <TableHead>
         <TableRow>
-          <TableCell>合约</TableCell>
-          <TableCell>方向</TableCell>
-          <TableCell>模式</TableCell>
-          <TableCell align="right">数量</TableCell>
-          <TableCell align="right">均价</TableCell>
-          <TableCell align="right">真实保证金</TableCell>
-          <TableCell align="right">未实现盈亏</TableCell>
-          <TableCell>状态</TableCell>
-          <TableCell>归属</TableCell>
-          {onClosePosition && <TableCell align="right">操作</TableCell>}
+          <TableCell>{t("合约")}</TableCell>
+          <TableCell>{t("方向")}</TableCell>
+          <TableCell>{t("模式")}</TableCell>
+          <TableCell align="right">{t("数量")}</TableCell>
+          <TableCell align="right">{t("均价")}</TableCell>
+          <TableCell align="right">{t("真实保证金")}</TableCell>
+          <TableCell align="right">{t("未实现盈亏")}</TableCell>
+          <TableCell>{t("状态")}</TableCell>
+          <TableCell>{t("归属")}</TableCell>
+          {onClosePosition && <TableCell align="right">{t("操作")}</TableCell>}
         </TableRow>
       </TableHead>
       <TableBody>
@@ -119,7 +121,7 @@ export function PositionSnapshotTable({ positions, closingKey, onClosePosition }
                     startIcon={closing ? <CircularProgress size={12} color="inherit" /> : undefined}
                     sx={{ minWidth: 72 }}
                   >
-                    {closing ? '提交中' : '平仓'}
+                    {closing ? t("提交中") : t("平仓")}
                   </Button>
                 </TableCell>
               )}
@@ -132,6 +134,7 @@ export function PositionSnapshotTable({ positions, closingKey, onClosePosition }
 }
 
 function MobileValue({ label, value }: { label: string; value: string }) {
+  useLanguage();
   return <Box><Typography variant="caption" color="text.secondary">{label}</Typography><Typography variant="body2" fontWeight={800}>{value}</Typography></Box>;
 }
 

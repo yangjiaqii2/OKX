@@ -2,6 +2,7 @@ package com.example.quant.crypto.provider.coingecko;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -13,25 +14,19 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
+import java.util.Properties;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * CoinGecko HTTP 客户端（生产实现）。
- *
- * <p>调用：{@code GET /coins/markets?vs_currency=usd&symbols={base}}
- *      -> 选择首条 -> 解析为 {@link CoinGeckoMarketData}。
- *
- * <p>鉴权：Demo 模式使用 {@code x-cg-demo-api-key} 和 Demo endpoint；Pro 模式使用
- * {@code x-cg-pro-api-key} 和 Pro endpoint。
- * 否则无 key（免费层）。<strong>不依赖</strong>CoinGecko 429 返回做速率控制 —— 限流由 {@link CoinGeckoTokenBucket} 在调用前完成。
- *
- * <p>普通上游异常 → {@link Optional#empty()}；本地中断或超时抛出
- * {@link CoinGeckoRequestException}，以保留取消语义。
- */
+/** CoinGecko 市值客户端。先解析币种身份，再按 coin ID 批量查询行情。 */
 public final class CoinGeckoClientImpl implements CoinGeckoHttpClient {
 
     private static final Logger log = LoggerFactory.getLogger(CoinGeckoClientImpl.class);
@@ -40,11 +35,16 @@ public final class CoinGeckoClientImpl implements CoinGeckoHttpClient {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(3);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(6);
 
+    private static final Duration CATALOG_TTL = Duration.ofHours(6);
+    private static final Properties VERIFIED_IDS = loadVerifiedIds();
+
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final String apiKey;
     private final String baseUrl;
     private final String apiKeyHeader;
+    private Map<String, String> coinIds = Map.of();
+    private Instant catalogExpiresAt = Instant.MIN;
 
     public CoinGeckoClientImpl(String apiKey) {
         this(HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build(),
@@ -81,60 +81,115 @@ public final class CoinGeckoClientImpl implements CoinGeckoHttpClient {
         if (baseSymbols == null || baseSymbols.isEmpty()) {
             return List.of();
         }
-        String joined = baseSymbols.stream()
-                .filter(s -> s != null && !s.isBlank())
-                .map(s -> s.toLowerCase())
-                .distinct()
-                .collect(Collectors.joining(","));
-        if (joined.isEmpty()) {
+        Map<String, String> catalog = coinIds();
+        Map<String, String> expectedSymbols = new LinkedHashMap<>();
+        for (String base : baseSymbols) {
+            if (base == null || base.isBlank()) {
+                continue;
+            }
+            String symbol = base.toLowerCase(Locale.ROOT);
+            String id = catalog.get(symbol);
+            if (id != null) {
+                expectedSymbols.put(id, symbol);
+            }
+        }
+        if (expectedSymbols.isEmpty()) {
             return List.of();
         }
+
+        String ids = URLEncoder.encode(String.join(",", expectedSymbols.keySet()), StandardCharsets.UTF_8);
+        JsonNode root = requestArray("/coins/markets?vs_currency=usd&ids=" + ids);
+        List<CoinGeckoMarketData> markets = new ArrayList<>(root.size());
+        for (JsonNode item : root) {
+            CoinGeckoMarketData data = parse(item);
+            if (data != null && data.symbol() != null
+                    && data.symbol().equalsIgnoreCase(expectedSymbols.get(data.id()))) {
+                markets.add(data);
+            }
+        }
+        return markets;
+    }
+
+    private synchronized Map<String, String> coinIds() {
+        if (Instant.now().isBefore(catalogExpiresAt)) {
+            return coinIds;
+        }
+        JsonNode catalog = requestArray("/coins/list");
+        Map<String, Set<String>> idsBySymbol = new HashMap<>();
+        for (JsonNode entry : catalog) {
+            String symbol = entry.path("symbol").asText("");
+            String id = entry.path("id").asText("");
+            if (!symbol.isBlank() && !id.isBlank()) {
+                idsBySymbol.computeIfAbsent(symbol.toLowerCase(Locale.ROOT), key -> new HashSet<>()).add(id);
+            }
+        }
+        if (idsBySymbol.isEmpty()) {
+            throw new CoinGeckoRequestException(CoinGeckoRequestException.Kind.UNAVAILABLE, "empty coin ID catalog");
+        }
+        Map<String, String> resolved = new HashMap<>();
+        idsBySymbol.forEach((symbol, ids) -> {
+            String verified = VERIFIED_IDS.getProperty(symbol);
+            if (verified != null) {
+                if (ids.contains(verified)) {
+                    resolved.put(symbol, verified);
+                }
+            } else if (ids.size() == 1) {
+                resolved.put(symbol, ids.iterator().next());
+            }
+        });
+        coinIds = Map.copyOf(resolved);
+        catalogExpiresAt = Instant.now().plus(CATALOG_TTL);
+        return coinIds;
+    }
+
+    private JsonNode requestArray(String path) {
         try {
-            URI uri = URI.create(baseUrl + "/coins/markets?vs_currency=usd&symbols=" + joined);
-            HttpRequest.Builder rb = HttpRequest.newBuilder(uri)
+            HttpRequest.Builder rb = HttpRequest.newBuilder(URI.create(baseUrl + path))
                     .timeout(REQUEST_TIMEOUT)
                     .header("Accept", "application/json")
                     .header("User-Agent", "quant-assistant/1.0");
             if (apiKey != null) {
                 rb.header(apiKeyHeader, apiKey);
             }
-            HttpResponse<String> resp = httpClient.send(rb.GET().build(),
-                    HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 429) {
-                log.warn("CoinGecko rate limited upstream symbols={}", joined);
+            HttpResponse<String> response = httpClient.send(rb.GET().build(), HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 429) {
                 throw new CoinGeckoRequestException(
                         CoinGeckoRequestException.Kind.RATE_LIMITED, "upstream rate limited");
             }
-            if (resp.statusCode() / 100 != 2) {
-                log.warn("CoinGecko non-2xx status={} symbols={}", resp.statusCode(), joined);
-                return List.of();
+            if (response.statusCode() / 100 != 2) {
+                throw new CoinGeckoRequestException(
+                        CoinGeckoRequestException.Kind.UNAVAILABLE, "upstream HTTP " + response.statusCode());
             }
-            JsonNode root = objectMapper.readTree(resp.body());
-            if (!root.isArray() || root.isEmpty()) {
-                return List.of();
+            JsonNode root = objectMapper.readTree(response.body());
+            if (root == null || !root.isArray()) {
+                throw new CoinGeckoRequestException(
+                        CoinGeckoRequestException.Kind.UNAVAILABLE, "invalid upstream response");
             }
-            List<CoinGeckoMarketData> out = new ArrayList<>(root.size());
-            for (JsonNode item : root) {
-                CoinGeckoMarketData parsed = parse(item);
-                if (parsed != null) {
-                    out.add(parsed);
-                }
-            }
-            return out;
+            return root;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            log.warn("CoinGecko batch fetch interrupted symbols={} : {}", joined, ex.toString());
             throw new CoinGeckoRequestException(
                     CoinGeckoRequestException.Kind.INTERRUPTED, "request interrupted", ex);
         } catch (HttpTimeoutException ex) {
-            log.warn("CoinGecko batch fetch timed out symbols={} : {}", joined, ex.toString());
             throw new CoinGeckoRequestException(
                     CoinGeckoRequestException.Kind.TIMEOUT, "request timed out", ex);
-        } catch (CoinGeckoRequestException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            log.warn("CoinGecko batch fetch failed symbols={} : {}", joined, ex.toString());
-            return List.of();
+        } catch (IOException ex) {
+            log.warn("CoinGecko request failed path={} reason={}", path, ex.getClass().getSimpleName());
+            throw new CoinGeckoRequestException(
+                    CoinGeckoRequestException.Kind.UNAVAILABLE, "upstream I/O failure", ex);
+        }
+    }
+
+    private static Properties loadVerifiedIds() {
+        Properties ids = new Properties();
+        try (var input = CoinGeckoClientImpl.class.getResourceAsStream("/coingecko-okx-coin-ids.properties")) {
+            if (input == null) {
+                throw new IllegalStateException("CoinGecko OKX coin ID mapping is missing");
+            }
+            ids.load(input);
+            return ids;
+        } catch (IOException ex) {
+            throw new IllegalStateException("CoinGecko OKX coin ID mapping cannot be read", ex);
         }
     }
 

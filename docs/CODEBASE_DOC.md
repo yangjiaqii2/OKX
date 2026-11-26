@@ -1,5 +1,42 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-26 - 控制台中英文切换与双语 README
+
+- 登录页和控制台顶部提供语言切换。`frontend/src/i18n.ts` 默认使用简体中文，在浏览器保存选择，并同步页面语言及日期、数字格式。
+- `frontend/src/i18n.en.json` 提供界面词表。菜单、列表、弹窗和已知交易状态及原因码随界面切换。AI 自由文本、交易所原始回执和未识别说明保留原文，切换语言无需调用模型或修改交易数据。
+- `README.md` 和 `README.en.md` 提供项目功能、Linux/macOS 与 Windows 命令行启动、Docker Compose 本地和服务器部署步骤。`.dockerignore` 显式将英文词表纳入镜像构建上下文。
+- `npm --prefix frontend run build`、Docker `web-runtime` 镜像构建和 `scripts/test-deployment.sh` 均通过。使用模拟响应在浏览器中核验登录页和 12 个控制台页面的两种语言、刷新后保留设置、切换时保留表单输入及 320px 宽的入口可见性。
+
+### 2026-11-20 - 核验合约类别、CoinGecko 币种身份和市值时效
+
+- `OkxInstrumentRulesService` 复用现有批量合约规则缓存，`OkxContractScanner` 只给 OKX 标记为加密货币、状态为 live 的 USDT 永续拉取市值和深度数据。类别未知的合约留在加密货币池之外，元数据不可用时该轮失败。
+- `CoinGeckoClientImpl` 每 6 小时刷新 `/coins/list`，按明确的 coin ID 批量请求 `/coins/markets` 并校验回包。唯一简称直接解析，同名币使用 `coingecko-okx-coin-ids.properties` 中已核验的映射。初始映射取自 CoinGecko 的 OKX 现货（交易所 ID `okex`）USDT/USDC 配对，过滤异常和过期行情，另按 OKX 上市公告确认 BTW。暂未核验的同名币不进入市值初筛。
+- `CoinGeckoMarketCapProvider` 用上游 `last_updated` 判断市值时效，默认有效期 10 分钟。HTTP 失败与无匹配分开处理。超龄快照只作过期数据，`ProviderCache` 保留原始质量和源时间。
+- 扫描信号计数与 `ContractTradeGate` 共用可交易信号规则。扫描门槛通过数按同一套扫描准入判断统计，观察和等待状态不计入。
+- 回归覆盖非加密和未知类别、同名币与回包校验、HTTP 错误、缓存状态和源时间。Java 17 执行 `mvn -B -o package` 通过 1,138 项测试。公开 API 单独验证 BTC、UB、BTW 获取有效市值，未核验的 ARX 返回不可用。
+
+### 2026-11-20 - 修正合约候选池初筛和同 K 线去重递补
+
+- `OkxContractScanner` 以百分点向振幅过滤器传值，并用有效买卖一价格计算中间价价差（bps）。报价缺失或无效时交由深度分析查真实盘口，盘口深度与下单前复核沿用原有流程。
+- `ScanContext` 保存该轮报告、V2 分数和候补，`ContractAnalysisService` 使用该轮结果，避免手动和定时扫描重叠时串轮。`ContractMarketScanTask` 遇到同一根已收盘 K 线重复或缺少决策时间时，按已有排名递补，补足原有候选名额即停止。展示和候选快照仍使用原有上限，任务日志额外记录执行评估候选数。
+- `CirculationFilter` 和 `VolumeMcapFilter` 分别由 `QUANT_SELECTION_CIRCULATION_ENABLED` 与 `QUANT_SELECTION_VOLUME_MCAP_ENABLED` 控制。两项默认关闭，沿用修复前的有效筛选口径。显式开启后分别使用 `QUANT_SELECTION_MIN_CIRCULATION_RATIO`（默认 0.50）和 `QUANT_SELECTION_MIN_VOLUME_MCAP_RATIO`（默认 0.20）。`application.yml`、Compose 和环境示例提供同一配置。
+- 回归覆盖超限振幅、过宽价差、边界与异常行情、配置装配、候补执行上限及重叠扫描隔离。Java 17 执行 `mvn -B -o package` 通过 1,132 项测试并生成 JAR，`docker compose config --quiet` 通过。
+
+### 2026-11-20 - 修正 V2 持仓变化幅度与缺失数据排名
+
+- `V2SelectionScoreCalculator` 沿用数据源约定的小数变化率，OI 变动幅度在 20% 达到既有的 10 分加减分上限。`OpenInterestHistorySnapshot` 明确记录字段单位。
+- V2 归一化分仍用已有数据的权重计算。V2 排名分使用分项加权和除以当前方向的全部适用权重，覆盖率为可用权重除以适用权重。适用项缺失会减少可计入的分数，做空方向的 ATH 项不参与覆盖率计算。
+- `OkxContractScanner` 与执行层共用 V2 排序规则。同档同分时优先采用覆盖率更高的候选，避免零分项缺失后通过归一化分提高名次。
+- `ContractCandidateScoreRecorder` 将新快照标记为 `V2_WAVE_4_6`，保留历史版本和记录。原有基础评分、交易准入及仓位风控继续通过既有规则处理。
+- 回归覆盖正负 OI 变化、幅度封顶、缺失低分项、同分排序以及做空的完整覆盖率。Java 17 执行 `mvn -B -o package` 通过 1,127 项测试并生成 JAR。
+
+### 2026-11-19 - 自动入场在当轮用最近两根已收盘 K 线决策
+
+- `ContractSignalAnalyzer` 和 `ContractKlineAnalysis` 提供最近两根连续的已收盘 5 分钟 K 线。两个 AI 选择分支结合这 10 分钟的行情、现有入场节奏和风险输入，给出当轮交易或跳过结果。
+- `AutoTradeService` 将 AI 的观望结果记录为「已跳过」，停止创建及触发跨轮等待意图。当轮可交易候选继续经过现有的盘口、计划、仓位、费用和确认风控。复盘页用「AI 本轮观望」标记该结果。
+- Flyway V52 关闭未关联本地订单或 OKX 订单的旧等待意图。已关联订单和待对账状态沿用既有恢复链路，历史复盘记录保留。
+- Java 17 的 `mvn -B -o package` 通过 1,125 项测试，前端 `npm --prefix frontend run build --offline` 通过。迁移回归覆盖关闭未提交意图及保留已关联订单。
+
 ### 2026-11-19 - 自动入场按可执行止损距离控制张数
 
 - `CanonicalPlanCompiler` 先按价格步长规整入场价和止损价。自动确认时，如果初始张数超出已批准的止损风险预算，按合约面值及张数步进向下取整，重新校验止损金额和止盈分单。风险预算不足最小张数时拒绝入场。手动确认沿用原有超预算拒绝规则。
@@ -369,7 +406,7 @@
 - 当前数据库：MySQL 8.4、Flyway V33 success；所有 PendingOrder 为 CLOSED/REJECTED，所有 close record 为 CLOSED，unresolved pending/close、非零持仓、当前普通/Algo订单均为 0。
 - 当前部署：`okx-quant:demo-v33-e2e-final-20260909`，image ID `sha256:2906188154257a73f8a1d1b5dcdddcf1cb05ec0def3e43f16cb627d4327263b6`；仓库与容器 JAR SHA-256 均为 `e04de923829eecf226119134cc5f70ddaeaefef37a066c4e6c6c16ca4277e267`。
 - 当前结论：`READY_FOR_DEMO_AUTO=YES`，但 AutoTrade 保持 OFF；`READY_FOR_LIVE=NO`。未完成/证据限制为：V27 pre-migration backup 无证据、无本轮新 Algo child fill、无真实 exchange timeout UNKNOWN 注入、Public WS 未实现、Shadow/OOS 尚不能证明策略正期望。
-- 详细证据：`docs/GPT56_SOL_DEMO_V33_E2E_2026-09-09.md`。
+- Demo 验证的账户对账明细与订单标识保存在本地运行报告中。
 
 ### 2026-09-09 - Demo QA 手动平仓生命周期恢复收口
 
@@ -377,7 +414,7 @@
 - 变更摘要：`ClosePositionRecoveryService.reconcileNaturalClose` 可收养唯一且完整的孤立手动平仓事实；只接受同 owner、同合约、同方向、与 PendingOrder 持久化 executable contract quantity 完全一致、时间相差不超过 10 分钟且已有 order/fill/PnL 完整事实的候选。候选不唯一或任一条件不满足时继续保持 `CLOSED_RECONCILING`。
 - 唯一约束：恢复只复制交易所 close order、数量、成交价、realized PnL、fee/funding 完整性，不复制原记录的 `closeClOrdId`，因此不制造 V33 `(user_name, close_cl_ord_id)` 冲突；原手动 close 记录保持不变。
 - 影响文件：`src/main/java/com/example/quant/account/ClosePositionRecoveryService.java`、`src/test/java/com/example/quant/account/ClosePositionRecoveryServiceTest.java`、本说明和 Demo V33 E2E 最终报告。
-- 验证：正向用例先失败（预期 closed=1、实际 0），实现后通过；另有双候选歧义 fail-closed 用例。`ClosePositionRecoveryServiceTest` 13/13；close 修复阶段全量 418/418，加入 F5 API 测试后最终全量 419/419。真实 Demo 部署、启动恢复与运行态读回结果记录在 `docs/GPT56_SOL_DEMO_V33_E2E_2026-09-09.md`。
+- 验证：正向用例先失败（预期 closed=1、实际 0），实现后通过；另有双候选歧义 fail-closed 用例。`ClosePositionRecoveryServiceTest` 13/13；close 修复阶段全量 418/418，加入 F5 API 测试后最终全量 419/419。真实 Demo 验证的运行明细保存在本地报告中。
 
 ### 2026-09-07 - Close Intent 数据库级幂等
 
@@ -735,6 +772,32 @@
 `OKX REST 行情/K线/订单簿 → ContractSignalAnalyzer → ContractTradeGate/PreConfirmRefresh → ContractRiskService → PendingOrder → OkxTradeAdapter → OKX REST → AutoTradeRecoveryTask/AutoTradeLifecycleService → OKX 订单与仓位同步 → 本地审计和收益估算`
 
 ## 变更记录
+
+### 2026-11-20 - 整理启动说明与发布文件
+
+- **变更摘要**：README 集中说明 Docker 快速启动、运行模式、V2 候选、交易方案和 AI 入场复盘。
+- **影响文件**：`README.md`、`.gitignore`、`.dockerignore`、`docs/CODEBASE_DOC.md`。
+- **影响**：本地行情快照、浏览器抓取、打包输出和数据库备份从发布文件中排除。应用配置和交易逻辑沿用现有实现。
+- **验证**：发布前检查文档链接、Compose 启动参数、暂存文件和凭据特征。
+
+### 2026-11-20 - AI 入场审计与反事实跟踪
+
+TypeSafe 入场质量门槛现为 1.75/4，风险可接受概率门槛为 55%，等于门槛即可通过该项检查。模型可根据已收盘 K 线评估顺势延续入场，也可依据已确认的回踩或反抽入场。模型主动选择 WAIT 时，本轮跳过。每次审计按当时的提示和门槛记录版本。
+
+- **变更摘要**：保存模型原始回答、规则改写后的决定、所有实际触发的阈值拒绝码、模型标识、提示与阈值版本及请求快照。执行复盘列出关联编号与拒绝码。Shadow 观测有独立标记。
+- **影响文件**：`AiContractSelectionService.java`、`AiEntryObservationService.java`、`AiEntryCounterfactual.java`、`AutoTradeRecordService.java`、`V53__ai_entry_observation.sql`、`docs/sql/ai-entry-observation-report.sql`、`frontend/src/pages/AutoTradeRecordList.tsx`。
+- **存储与查询**：`ai_entry_observation` 保存完整请求和结构化结果，SHA-256 校验请求快照。TypeSafe 提示版本基于任务指令文本，完整六题随快照保存。 `auto_trade_record` 通过可空编号关联审计记录。按扫描 ID 可以同时查询未送模型的硬拒绝记录，各版本的统计通过报表 SQL 获取。
+- **运行影响**：入场链路把审计和跟踪写入交给有界后台队列。队列满或写入失败时记 WARN。跟踪从 MySQL 加载到期任务，默认每分钟最多查六个合约，HTTP 429 暂停请求五分钟。以账户、合约、方向、UTC 五分钟桶去重，保留先写入的样本；相邻时间桶仍可各有一条。重启继续补算过去四小时内的任务，超过四小时的任务标记为过期，保留已完成时点。
+- **统计口径**：以执行链路最终 AI 观望时的候选快照价和规则方向为准，保存快照时间用于检查价格滞后。使用完整已收盘 1 分钟 K 线，结果可能早于目标时间不足一分钟，窗口开头的不足一分钟区间不计入 MFE/MAE。收益为无杠杆毛收益，未计手续费、资金费和成交滑点。完成样本纳入均值和胜率分母。
+- **验证**：Java 17 下执行 `mvn -B -o package`，1,157 项测试通过。前端 `npm run build` 和 `git diff --check` 通过。隔离 MySQL 8.4 应用 V53，保留旧复盘行并用模拟样本核验拒绝比例、分版本查询和各时点的胜率，验证未完成时点不计入分母。本轮未更新运行容器。
+
+### 2026-11-20 - 统一交易方案和确认前风险估算
+
+- **变更摘要**：手动生成按已发布的候选快照定位合约，只刷新点选标的。推荐方案沿用扫描排序，明确提示无可交易候选或生成失败的原因。
+- **影响文件**：`tradeplan/ContractTradePlanBuilder.java`、`tradeplan/PlanExecutionRisk.java`、`order/OrderConfirmService.java`、`order/PendingOrderView.java`、`agent/execution/AutoTradeService.java`、`agent/execution/FailureReasonClassifier.java`、`frontend/src/components/PendingOrderReviewDialog.tsx`。
+- **运行影响**：生成与确认共享 tick/lot 规整、盘口估价、分批止盈、手续费、滑点和资金费预留。市价多单参考卖一、空单参考买一，按不利价估算，保留原止损和止盈。按净止损预算和费用后可用保证金缩量，最小张数或净盈亏比不达标时跳过。本地保存的方案预估值与最终确认值有独立时点，历史记录缺失预估字段时显示为空。
+- **Demo 验证**：基础设施验证使用专门的合成止盈目标，以覆盖常规分批和成本下的净盈亏比校验。保证金与止损维持原验证设置，验证入口仍限 Demo。
+- **验证**：Java 17 下运行 `mvn -B -o package`，1,143 项测试通过并打包成功。前端 `npm run build` 和 `git diff --check` 通过。构建显示 Java 弃用注解提示和 Vite 主包大小提示。本轮没有部署容器或提交 OKX 订单。
 
 ### 2026-08-09 - 第二轮审计补齐待处理订单用户所有权
 

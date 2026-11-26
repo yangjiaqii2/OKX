@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { formatLeverage, formatStatus } from '../formatters';
 import { insetPanel } from './surfaces';
 import { StatusChip } from './StatusChip';
+import { t, useLanguage } from '../i18n';
 
 type TradingStatusStripProps = {
   risk?: Record<string, unknown>;
@@ -13,6 +14,7 @@ type TradingStatusStripProps = {
 };
 
 export function TradingStatusStrip({ risk = {}, account = {}, pendingCount = 0, compact = false }: TradingStatusStripProps) {
+  useLanguage();
   const accountMode = String(account.mode ?? 'UNKNOWN');
   const riskLevel = String(risk.riskLevel ?? 'UNKNOWN');
   const rejectReason = String(risk.rejectReason ?? '');
@@ -34,15 +36,15 @@ export function TradingStatusStrip({ risk = {}, account = {}, pendingCount = 0, 
           }),
         }}
       >
-        <StripItem label="账户" value={<StatusChip value={accountMode} />} />
-        <StripItem label="风控" value={<StatusChip value={risk.passed as boolean | undefined} />} />
-        <StripItem label="等级" value={formatStatus(riskLevel)} />
-        <StripItem label="建议杠杆" value={formatLeverage(risk.adjustedLeverage)} />
-        {!compact ? <StripItem label="待确认" value={pendingCount ?? '不可用'} tone={pendingCount != null && pendingCount > 0 ? 'warning' : 'neutral'} /> : null}
+        <StripItem label={t("账户")} value={<StatusChip value={accountMode} />} />
+        <StripItem label={t("风控")} value={<StatusChip value={risk.passed as boolean | undefined} />} />
+        <StripItem label={t("等级")} value={formatStatus(riskLevel)} />
+        <StripItem label={t("建议杠杆")} value={formatLeverage(risk.adjustedLeverage)} />
+        {!compact ? <StripItem label={t("待确认")} value={pendingCount ?? t("不可用")} tone={pendingCount != null && pendingCount > 0 ? 'warning' : 'neutral'} /> : null}
       </Box>
       {showAlert ? (
         <Alert severity={risk.passed === false || accountMode === 'OKX_ERROR' ? 'error' : 'warning'}>
-          {rejectReason || String(account.message ?? '') || '当前账户或风控状态需要复核。'}
+          {rejectReason || String(account.message ?? '') || t("当前账户或风控状态需要复核。")}
         </Alert>
       ) : null}
     </Stack>
@@ -50,6 +52,7 @@ export function TradingStatusStrip({ risk = {}, account = {}, pendingCount = 0, 
 }
 
 function StripItem({ label, value, tone = 'neutral' }: { label: string; value: ReactNode; tone?: 'warning' | 'neutral' }) {
+  useLanguage();
   return (
     <Box
       sx={{

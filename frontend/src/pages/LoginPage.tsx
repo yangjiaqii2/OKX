@@ -17,8 +17,11 @@ import {
 import { FormEvent, useState } from 'react';
 import { useLogin, useNotify } from 'react-admin';
 import { colors, elevation, safeArea } from '../designTokens';
+import { LanguageSwitch } from '../components/LanguageSwitch';
+import { t, useLanguage } from '../i18n';
 
 export function LoginPage() {
+  useLanguage();
   const login = useLogin();
   const notify = useNotify();
   const [submitting, setSubmitting] = useState(false);
@@ -45,7 +48,7 @@ export function LoginPage() {
       const message = error instanceof Error ? error.message : '账号或密码错误';
       setErrorMessage(message || '账号或密码错误');
       setForm((current) => ({ ...current, password: '' }));
-      notify(message || '登录失败', { type: 'error' });
+      notify(message || t("登录失败"), { type: 'error' });
     } finally {
       setSubmitting(false);
     }
@@ -112,43 +115,46 @@ export function LoginPage() {
                 Quant Desk
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                OKX 量化交易终端
+                {t("OKX 量化交易终端")}
               </Typography>
             </Box>
           </Stack>
 
           <Box>
             <Typography variant="h4" sx={{ mb: 1, fontSize: { xs: '1.375rem', md: '1.75rem' } }}>
-              登录后管理交易系统
+              {t("登录后管理交易系统")}
             </Typography>
             <Typography color="text.secondary" sx={{ lineHeight: 1.7 }}>
-              账号已改为数据库用户体系，密码以 PBKDF2 哈希保存。首次进入后可在“账号安全”里修改管理员密码。
+              {t("账号已改为数据库用户体系，密码以 PBKDF2 哈希保存。首次进入后可在“账号安全”里修改管理员密码。")}
             </Typography>
           </Box>
         </Stack>
 
         <Stack spacing={3} sx={{ p: { xs: 3, md: 5 } }}>
           <Box>
-            <Typography component="h1" variant="h5">
-              用户登录
-            </Typography>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+              <Typography component="h1" variant="h5">
+                {t("用户登录")}
+              </Typography>
+              <LanguageSwitch />
+            </Stack>
             <Typography variant="body2" color="text.secondary">
-              使用已创建的系统账号进入控制台。
+              {t("使用已创建的系统账号进入控制台。")}
             </Typography>
           </Box>
 
-          {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
+          {errorMessage ? <Alert severity="error">{t(errorMessage)}</Alert> : null}
 
           <TextField
             required
-            label="用户名"
+            label={t("用户名")}
             value={form.username}
             autoComplete="username"
             onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))}
           />
           <TextField
             required
-            label="密码"
+            label={t("密码")}
             type={showPassword ? 'text' : 'password'}
             value={form.password}
             autoComplete="current-password"
@@ -157,7 +163,7 @@ export function LoginPage() {
               endAdornment: (
                 <InputAdornment position="end">
                   <IconButton
-                    aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                    aria-label={showPassword ? t("隐藏密码") : t("显示密码")}
                     edge="end"
                     onClick={() => setShowPassword((value) => !value)}
                   >
@@ -175,7 +181,7 @@ export function LoginPage() {
             disabled={submitting}
             sx={{ minHeight: 48 }}
           >
-            {submitting ? '登录中...' : '登录'}
+            {submitting ? t("登录中...") : t("登录")}
           </Button>
         </Stack>
       </Paper>

@@ -2,6 +2,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import { Box, Button, Stack, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
 import { Title } from 'react-admin';
+import { t, useLanguage } from '../i18n';
 
 type PageShellProps = {
   title: string;
@@ -31,6 +32,7 @@ export function PageShell({ title, children, maxWidth = 1560 }: PageShellProps) 
 }
 
 export function PageHeader({ title, subtitle, status, onRefresh, refreshing = false, actions, filters }: PageHeaderProps) {
+  useLanguage();
   return (
     <Stack spacing={2} sx={{ pb: 2, borderBottom: 1, borderColor: 'divider' }}>
       <Stack
@@ -58,7 +60,7 @@ export function PageHeader({ title, subtitle, status, onRefresh, refreshing = fa
             {actions}
             {onRefresh ? (
               <Button startIcon={<RefreshIcon />} variant="outlined" onClick={onRefresh} disabled={refreshing}>
-                {refreshing ? '刷新中' : '刷新'}
+                {refreshing ? t("刷新中") : t("刷新")}
               </Button>
             ) : null}
           </Stack>

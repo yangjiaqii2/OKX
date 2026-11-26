@@ -1,6 +1,12 @@
 package com.example.quant.crypto;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -8,6 +14,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.example.quant.agent.market.MarketEnvironmentService;
 import com.example.quant.agent.market.OrderBookLiquidityService;
 import com.example.quant.agent.scan.ScanDiagnostics;
+import com.example.quant.agent.scan.ScanContext;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.crypto.dto.ContractCandle;
@@ -27,6 +34,7 @@ import com.example.quant.market.MarketType;
 import com.example.quant.news.NewsSearchService;
 import com.example.quant.news.dto.NewsItem;
 import com.example.quant.okxtrade.OkxInstrumentRules;
+import com.example.quant.okxtrade.OkxInstrumentRulesService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
@@ -54,6 +62,97 @@ class OkxContractScannerV2Test {
     private static final long VOL_HIGH = 5_000_000_000L;
     private static final long VOL_SLEEPER = 5_000_000L;
     private static final BigDecimal PRICE = new BigDecimal("1.5");
+
+    @Test
+    void exchangeMetadataKeepsNonCryptoAndUnknownSwapsOutOfSelection() {
+        StubProvider provider = new StubProvider();
+        for (String base : List.of("BTC", "ANTHROPIC", "UNKNOWN")) {
+            provider.snapshot(base, qualitySnapshot(base));
+        }
+        var fixture = V2Fixture.builder().provider(provider).tickers(List.of(
+                ticker("ANTHROPIC-USDT-SWAP", VOL_HIGH),
+                ticker("UNKNOWN-USDT-SWAP", VOL_HIGH),
+                ticker("BTC-USDT-SWAP", VOL_HIGH))).build();
+        var metadata = mock(OkxInstrumentRulesService.class);
+        when(metadata.liveCryptoUsdtSwapIds(any())).thenReturn(java.util.Set.of("BTC-USDT-SWAP"));
+        fixture.scanner.configureInstrumentRulesService(metadata);
+
+        assertThat(fixture.scanner.scan()).extracting(ContractCandidate::instId)
+                .containsExactly("BTC-USDT-SWAP");
+        assertThat(fixture.scanner.lastV2ScoreResults()).containsOnlyKeys("BTC-USDT-SWAP");
+    }
+
+    @Test
+    void rejectsExcessiveRangeAndWideTickerSpreadBeforeDeepAnalysis() {
+        var wideRange = ticker("RANGE-USDT-SWAP", VOL_HIGH);
+        wideRange.put("high24h", "1.8");
+        wideRange.put("low24h", "0.9");
+        var wideSpread = ticker("SPREAD-USDT-SWAP", VOL_HIGH);
+        wideSpread.put("bidPx", "1.499");
+        wideSpread.put("askPx", "1.501");
+        var boundary = ticker("BOUNDARY-USDT-SWAP", VOL_HIGH);
+        boundary.put("high24h", "1.8");
+        boundary.put("low24h", "1.2");
+        boundary.put("bidPx", "1.4994");
+        boundary.put("askPx", "1.5006");
+        var missingQuote = ticker("MISSING-USDT-SWAP", VOL_HIGH);
+        missingQuote.remove("bidPx");
+        var invalidQuote = ticker("INVALID-USDT-SWAP", VOL_HIGH);
+        invalidQuote.put("bidPx", "--");
+        StubProvider provider = new StubProvider();
+        for (String base : List.of("RANGE", "SPREAD", "BOUNDARY", "MISSING", "INVALID")) {
+            provider.snapshot(base, qualitySnapshot(base));
+        }
+        var fixture = V2Fixture.builder().provider(provider)
+                .tickers(List.of(wideRange, wideSpread, boundary, missingQuote, invalidQuote)).build();
+
+        assertThat(fixture.scanner.scan()).extracting(ContractCandidate::instId)
+                .containsExactlyInAnyOrder("BOUNDARY-USDT-SWAP", "MISSING-USDT-SWAP", "INVALID-USDT-SWAP");
+    }
+
+    @Test
+    void completedScanCarriesRankedReservesWithoutExpandingPublishedCandidates() {
+        StubProvider provider = new StubProvider();
+        for (int i = 0; i < 5; i++) {
+            provider.snapshot("POOL" + i, qualitySnapshot("POOL" + i));
+        }
+        AgentProperties properties = V2Fixture.defaultProps();
+        properties.setTopCandidateLimit(2);
+        var fixture = V2Fixture.builder().provider(provider).agentProperties(properties)
+                .tickers(tickers("POOL", 5, VOL_HIGH)).build();
+        var analysis = new ContractAnalysisService(fixture.scanner, null, null);
+
+        var result = analysis.refreshScan("reserve-check");
+
+        assertThat(result.candidates()).hasSize(2);
+        assertThat(analysis.candidates()).containsExactlyElementsOf(result.candidates());
+        assertThat(result.reserveCandidates()).hasSize(3).doesNotContainAnyElementsOf(result.candidates());
+        assertThat(result.reserveCandidates()).allSatisfy(candidate ->
+                assertThat(result.v2Scores()).containsKey(candidate.instId()));
+    }
+
+    @Test
+    void scheduledResultsKeepTheirScanIdentityWhenManualScanOverlaps() {
+        StubProvider provider = new StubProvider();
+        provider.snapshot("POOL0", qualitySnapshot("POOL0"));
+        provider.snapshot("POOL1", qualitySnapshot("POOL1"));
+        AgentProperties properties = V2Fixture.defaultProps();
+        properties.setTopCandidateLimit(1);
+        var scanner = spy(V2Fixture.builder().provider(provider).agentProperties(properties)
+                .tickers(tickers("POOL", 2, VOL_HIGH)).build().scanner);
+        doAnswer(call -> {
+            Object scheduledCandidates = call.callRealMethod();
+            scanner.scan(ScanContext.unbounded("manual"));
+            return scheduledCandidates;
+        }).when(scanner).scan(argThat(ctx -> ctx.scanId().equals("scheduled")));
+        var analysis = new ContractAnalysisService(scanner, null, null);
+
+        var result = analysis.refreshScan("scheduled");
+
+        assertThat(result.report().scanId()).isEqualTo("scheduled");
+        assertThat(result.reserveCandidates()).hasSize(1);
+        assertThat(analysis.liveSnapshot().scanId()).isEqualTo("scheduled");
+    }
 
     @Test
     @DisplayName("架构级：非 Top 30 但满足 V2 阈值的候选能进入 V2 后续分析")
@@ -250,8 +349,8 @@ class OkxContractScannerV2Test {
                 : BigDecimal.valueOf(quoteVolumeUsdt).divide(PRICE, 8, java.math.RoundingMode.HALF_UP);
         t.put("volCcy24h", baseVolume.stripTrailingZeros().toPlainString());
         t.put("vol24h", "0");
-        t.put("bidPx", PRICE.subtract(new BigDecimal("0.01")).toPlainString());
-        t.put("askPx", PRICE.add(new BigDecimal("0.01")).toPlainString());
+        t.put("bidPx", PRICE.subtract(new BigDecimal("0.0001")).toPlainString());
+        t.put("askPx", PRICE.add(new BigDecimal("0.0001")).toPlainString());
         return t;
     }
 
@@ -412,7 +511,7 @@ class OkxContractScannerV2Test {
                 }
                 if (requestPath.startsWith("/api/v5/market/books")) {
                     return objectMapper.readTree("""
-                            {"code":"0","data":[{"bids":[["1.49","10000"],["1.48","8000"]],"asks":[["1.51","10000"],["1.52","8000"]]}]}
+                            {"code":"0","data":[{"bids":[["1.4999","10000"],["1.48","8000"]],"asks":[["1.5001","10000"],["1.52","8000"]]}]}
                             """);
                 }
                 if (requestPath.startsWith("/api/v5/public/funding-rate")) {

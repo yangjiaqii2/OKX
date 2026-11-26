@@ -133,6 +133,20 @@ public class AutoTradeRecordEntity {
     @Column(name = "selection_reason", columnDefinition = "TEXT")
     private String selectionReason;
 
+    @Column(name = "ai_observation_id", length = 36)
+    private String aiObservationId;
+
+    @Column(name = "ai_rejection_code", length = 48)
+    private String aiRejectionCode;
+
+    public String getAiObservationId() { return aiObservationId; }
+
+    public void setAiObservationId(String value) { this.aiObservationId = value; }
+
+    public String getAiRejectionCode() { return aiRejectionCode; }
+
+    public void setAiRejectionCode(String value) { this.aiRejectionCode = value; }
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -256,6 +270,9 @@ public class AutoTradeRecordEntity {
         if (reason != null) {
             for (String part : reason.split(":")) {
                 String code = part.trim();
+                if ("PLAN_NOT_EXECUTABLE".equals(code)) {
+                    return "PLAN";
+                }
                 if ("CANONICAL_PLAN_REJECTED".equals(code) || "NET_RISK_REWARD_AFTER_COSTS_TOO_LOW".equals(code)) {
                     return "CONFIRM";
                 }

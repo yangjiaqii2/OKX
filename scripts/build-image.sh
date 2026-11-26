@@ -28,7 +28,7 @@ image="${1:-${OKX_APP_IMAGE:-}}"
   exit 1
 }
 
-docker build --pull --tag "$image" .
+docker build --pull --target web-runtime --tag "$image" .
 
 if [[ "$push" == true ]]; then
   docker push "$image"

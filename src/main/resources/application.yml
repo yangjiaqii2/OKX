@@ -70,6 +70,7 @@ quant:
       candidate-limit: ${QUANT_AGENT_AI_SELECTION_CANDIDATE_LIMIT:12}
       policy: ${QUANT_AGENT_AI_SELECTION_POLICY:RULE_FIRST_AI_RANK}
     evaluation:
+      ai-entry-tracking-interval-ms: ${QUANT_AGENT_AI_ENTRY_TRACKING_INTERVAL_MS:60000}
       outcome-reconciliation-interval-ms: ${QUANT_AGENT_EVALUATION_OUTCOME_INTERVAL_MS:120000}
       outcome-reconciliation-batch-size: ${QUANT_AGENT_EVALUATION_OUTCOME_BATCH_SIZE:100}
       outcome-reconciliation-retry-delay-ms: ${QUANT_AGENT_EVALUATION_OUTCOME_RETRY_DELAY_MS:300000}
@@ -82,8 +83,8 @@ quant:
       deep-analysis-rotation-quota: ${QUANT_AGENT_DEEP_ANALYSIS_ROTATION_QUOTA:20}
       universe:
         market-cap-enabled: true
-        circulation-enabled: true
-        volume-mcap-enabled: true
+        circulation-enabled: ${QUANT_SELECTION_CIRCULATION_ENABLED:false}
+        volume-mcap-enabled: ${QUANT_SELECTION_VOLUME_MCAP_ENABLED:false}
         min-market-cap-usd: ${QUANT_SELECTION_MIN_MARKET_CAP_USD:20000000}
         min-circulation-ratio: ${QUANT_SELECTION_MIN_CIRCULATION_RATIO:0.50}
         min-volume-mcap-ratio: ${QUANT_SELECTION_MIN_VOLUME_MCAP_RATIO:0.20}

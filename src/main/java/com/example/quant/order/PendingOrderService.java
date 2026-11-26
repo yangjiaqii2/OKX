@@ -103,8 +103,8 @@ public class PendingOrderService {
         if (marketType != MarketType.OKX_SWAP) {
             throw new IllegalArgumentException("仅OKX合约支持待确认订单");
         }
-        if (plan == null || plan.action() == TradePlanType.WATCH || "NO_ENTRY".equalsIgnoreCase(plan.orderType())) {
-            throw new IllegalArgumentException("观察计划不能进入订单生命周期");
+        if (plan == null || plan.rejectionReason() != null) {
+            throw new IllegalArgumentException(plan == null ? "方案不可用" : "观察计划不能进入订单生命周期：" + plan.rejectionReason());
         }
     }
 
@@ -141,8 +141,12 @@ public class PendingOrderService {
                 plan.id(),
                 UUID.randomUUID().toString(),
                 now,
-                now.plusSeconds(expireSeconds)
+                plan.expireTime() != null && plan.expireTime().isBefore(now.plusSeconds(expireSeconds))
+                        ? plan.expireTime() : now.plusSeconds(expireSeconds)
         );
+        if (plan.executionPreview() != null) {
+            order.setCanonicalExecutablePlan(plan.executionPreview());
+        }
         order.assignClientOrderId("qa" + id.toString().replace("-", "").substring(0, 30));
         return order;
     }

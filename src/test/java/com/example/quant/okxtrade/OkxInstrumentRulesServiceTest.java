@@ -17,6 +17,30 @@ class OkxInstrumentRulesServiceTest {
     private static final String SINGLE_PATH = "/api/v5/public/instruments?instType=SWAP&instId=BTC-USDT-SWAP";
 
     @Test
+    void cachedExchangeMetadataIdentifiesOnlyLiveCryptoUsdtSwaps() throws Exception {
+        var mapper = new ObjectMapper();
+        var client = mock(OkxRestClient.class);
+        var root = mapper.createObjectNode();
+        root.put("code", "0");
+        var rows = root.putArray("data");
+        var template = mapper.readTree(bulkInstrumentJson("1")).path("data").get(0);
+        for (String[] asset : new String[][] {
+                {"BTC-USDT-SWAP", "1", "live"}, {"ANTHROPIC-USDT-SWAP", "3", "live"},
+                {"XAU-USDT-SWAP", "4", "live"}, {"UNKNOWN-USDT-SWAP", "", "live"},
+                {"HALTED-USDT-SWAP", "1", "suspend"}, {"BTC-USD-SWAP", "1", "live"}}) {
+            var row = (com.fasterxml.jackson.databind.node.ObjectNode) template.deepCopy();
+            row.put("instId", asset[0]).put("instCategory", asset[1]).put("state", asset[2]);
+            rows.add(row);
+        }
+        when(client.publicGet(BULK_PATH)).thenReturn(root);
+        var service = new OkxInstrumentRulesService(client);
+
+        assertThat(service.liveCryptoUsdtSwapIds(null)).containsExactly("BTC-USDT-SWAP");
+        assertThat(service.rules("BTC-USDT-SWAP").contractValue()).isEqualByComparingTo("1");
+        verify(client, times(1)).publicGet(BULK_PATH);
+    }
+
+    @Test
     void failsClosedWhenOkxInstrumentRulesCannotBeLoaded() {
         OkxRestClient client = mock(OkxRestClient.class);
         when(client.publicGet(BULK_PATH)).thenThrow(new IllegalStateException("network unavailable"));

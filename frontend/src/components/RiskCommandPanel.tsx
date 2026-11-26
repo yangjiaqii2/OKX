@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 import { formatLeverage, formatStatus, formatUSDT } from '../formatters';
 import { insetPanel, panel } from './surfaces';
 import { StatusChip } from './StatusChip';
+import { t, useLanguage } from '../i18n';
 
 type RiskCommandPanelProps = {
   risk?: Record<string, unknown>;
@@ -14,6 +15,7 @@ type RiskCommandPanelProps = {
 };
 
 export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: RiskCommandPanelProps) {
+  useLanguage();
   const riskLevel = String(risk.riskLevel ?? 'UNKNOWN');
   const passed = risk.passed as boolean | undefined;
   const accountMode = String(account.mode ?? 'UNKNOWN');
@@ -35,7 +37,7 @@ export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: Risk
           <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={1.5}>
             <Stack spacing={0.5}>
               <Typography variant="caption" color="text.secondary" fontWeight={800} sx={{ textTransform: 'uppercase' }}>
-                风控状态
+                {t("风控状态")}
               </Typography>
               <Typography variant="h5" fontWeight={900} sx={{ lineHeight: 1.1 }}>
                 {formatStatus(riskLevel)}
@@ -58,17 +60,17 @@ export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: Risk
           </Stack>
 
           <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
-            <MiniStat label="风控" value={<StatusChip value={passed} />} />
-            <MiniStat label="账户" value={<StatusChip value={accountMode} />} />
-            <MiniStat label="建议杠杆" value={formatLeverage(risk.adjustedLeverage)} />
-            <MiniStat label="单笔亏损" value={formatUSDT(risk.maxLossAmount)} />
-            <MiniStat label="待确认" value={pendingCount ?? '不可用'} tone={pendingCount === 0 ? 'neutral' : 'warning'} />
-            <MiniStat label="检查时间" value={createdAt ? createdAt.slice(11, 19) : '-'} />
+            <MiniStat label={t("风控")} value={<StatusChip value={passed} />} />
+            <MiniStat label={t("账户")} value={<StatusChip value={accountMode} />} />
+            <MiniStat label={t("建议杠杆")} value={formatLeverage(risk.adjustedLeverage)} />
+            <MiniStat label={t("单笔亏损")} value={formatUSDT(risk.maxLossAmount)} />
+            <MiniStat label={t("待确认")} value={pendingCount ?? t("不可用")} tone={pendingCount === 0 ? 'neutral' : 'warning'} />
+            <MiniStat label={t("检查时间")} value={createdAt ? createdAt.slice(11, 19) : '-'} />
           </Box>
 
           {rejectReason ? <Alert severity={isBlocked ? 'error' : 'warning'}>{rejectReason}</Alert> : null}
-          {accountMode === 'OKX_UNBOUND' ? <Alert severity="warning">OKX API 未绑定，私有交易接口不可用。</Alert> : null}
-          {accountMode === 'OKX_ERROR' ? <Alert severity="error">{String(account.message ?? 'OKX接口异常')}</Alert> : null}
+          {accountMode === 'OKX_UNBOUND' ? <Alert severity="warning">{t("OKX API 未绑定，私有交易接口不可用。")}</Alert> : null}
+          {accountMode === 'OKX_ERROR' ? <Alert severity="error">{String(account.message ?? t("OKX接口异常"))}</Alert> : null}
         </Stack>
       </CardContent>
     </Card>
@@ -76,6 +78,7 @@ export function RiskCommandPanel({ risk = {}, account = {}, pendingCount }: Risk
 }
 
 function MiniStat({ label, value, tone = 'neutral' }: { label: string; value: ReactNode; tone?: 'warning' | 'neutral' }) {
+  useLanguage();
   return (
     <Box
       sx={{

@@ -170,8 +170,13 @@ public class PendingOrder {
     }
 
     synchronized void bindCanonicalExecution(CanonicalExecutablePlan plan, BigDecimal baseSize) {
+        bindCanonicalExecution(plan, baseSize, marginAmount);
+    }
+
+    synchronized void bindCanonicalExecution(CanonicalExecutablePlan plan, BigDecimal baseSize, BigDecimal margin) {
         String snapshot = CanonicalPlanJsonCodec.write(plan);
         this.size = baseSize;
+        this.marginAmount = margin;
         this.executableContractQuantity = plan.entry().executableContractQuantity();
         this.executableStopLossAmount = plan.risk().executableStopLossAmount();
         this.canonicalExecutablePlan = plan;

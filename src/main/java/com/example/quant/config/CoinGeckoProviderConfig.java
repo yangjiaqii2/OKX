@@ -7,6 +7,7 @@ import com.example.quant.crypto.provider.coingecko.CoinGeckoHttpClient;
 import com.example.quant.crypto.provider.coingecko.CoinGeckoMarketCapProvider;
 import com.example.quant.crypto.provider.coingecko.CoinGeckoTokenBucket;
 import com.example.quant.crypto.provider.NullMarketCapProvider;
+import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -60,7 +61,8 @@ public class CoinGeckoProviderConfig {
                                                MarketCapSnapshotRepository snapshotRepository) {
         if (props.selection().providers().getCoingecko().isEnabled()) {
             log.info("MarketCapProvider = CoinGeckoMarketCapProvider");
-            return new CoinGeckoMarketCapProvider("coingecko", httpClient, bucket, snapshotRepository);
+            Duration maxSourceAge = Duration.ofSeconds(props.selection().providers().marketCapFreshTtlSeconds());
+            return new CoinGeckoMarketCapProvider("coingecko", httpClient, bucket, snapshotRepository, maxSourceAge);
         }
         log.info("MarketCapProvider = NullMarketCapProvider (CoinGecko disabled)");
         return new NullMarketCapProvider();

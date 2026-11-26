@@ -51,6 +51,11 @@ public record TradeIntent(
         }
     }
 
+    TradeIntent withSizing(BigDecimal quantity, BigDecimal budget) {
+        return new TradeIntent(planId, instId, action, entryPolicy, intendedEntryPrice,
+                initialStopLossPrice, intendedTakeProfitPrice, quantity, budget, strategyVersion, exitLegs);
+    }
+
     public static TradeIntent fromPlan(TradePlan plan, BigDecimal tp1Fraction,
                                        BigDecimal tp2Fraction, BigDecimal tp3Fraction,
                                        String strategyVersion) {

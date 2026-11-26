@@ -9,7 +9,8 @@ final class CoinGeckoRequestException extends RuntimeException {
     enum Kind {
         INTERRUPTED,
         TIMEOUT,
-        RATE_LIMITED
+        RATE_LIMITED,
+        UNAVAILABLE
     }
 
     private final Kind kind;

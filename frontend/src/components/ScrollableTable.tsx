@@ -3,8 +3,10 @@ import { Box, Stack, Table, TableContainer, Typography } from '@mui/material';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { colors } from '../designTokens';
+import { t, useLanguage } from '../i18n';
 
 export function ScrollableTable({ label, children }: { label: string; children: ReactNode }) {
+  useLanguage();
   const region = useRef<HTMLDivElement>(null);
   const table = useRef<HTMLTableElement>(null);
   const hintId = useId();
@@ -25,7 +27,7 @@ export function ScrollableTable({ label, children }: { label: string; children: 
       {overflowing ? (
         <Stack id={hintId} direction="row" alignItems="center" gap={0.5} sx={{ px: 2, py: 1, color: 'text.secondary' }}>
           <SwapHorizIcon fontSize="small" aria-hidden />
-          <Typography variant="caption">横向滚动查看更多</Typography>
+          <Typography variant="caption">{t("横向滚动查看更多")}</Typography>
         </Stack>
       ) : null}
       <TableContainer

@@ -1,6 +1,7 @@
 import type { AuthProvider } from 'react-admin';
 import { clearAuthSession, getAuthRole, getAuthToken, getAuthUser, setAuthSession, type AuthSession } from './auth';
 import { apiBaseUrl } from './http';
+import { t } from '../i18n';
 
 async function authFetch(path: string, options: RequestInit = {}) {
   const token = getAuthToken();
@@ -52,7 +53,7 @@ export const authProvider: AuthProvider = {
       }),
     });
     if (!session.authenticated || !session.token) {
-      throw new Error('登录失败');
+      throw new Error(t("登录失败"));
     }
     setAuthSession(session);
   },
@@ -71,14 +72,14 @@ export const authProvider: AuthProvider = {
 
   async checkAuth() {
     if (!getAuthToken()) {
-      throw new Error('需要登录');
+      throw new Error(t("需要登录"));
     }
   },
 
   async checkError(error) {
     if (error?.status === 401 || String(error?.message ?? '').includes('401')) {
       clearAuthSession();
-      throw new Error('登录已失效');
+      throw new Error(t("登录已失效"));
     }
   },
 

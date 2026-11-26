@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -33,6 +34,98 @@ import org.mockito.Mockito;
 import org.mockito.ArgumentCaptor;
 
 class AiContractSelectionServiceTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "WAIT,MARKET,1.0,0.30,LONG,MODEL_WAIT,AI_WAIT,WAIT_PULLBACK",
+            "WAIT,WAIT_RETEST,2.0,0.65,LONG,MODEL_WAIT,AI_WAIT,WAIT_RETEST",
+            "TRADE,MARKET,1.74,0.55,LONG,QUALITY_BELOW_THRESHOLD,AI_WAIT,WAIT_RETEST",
+            "TRADE,MARKET,1.75,0.549,LONG,RISK_BELOW_THRESHOLD,AI_WAIT,WAIT_RETEST",
+            "TRADE,MARKET,1.74,0.549,LONG,QUALITY_AND_RISK_BELOW_THRESHOLD,AI_WAIT,WAIT_RETEST",
+            "TRADE,WAIT_RETEST,1.75,0.55,LONG,ENTRY_MODE_WAIT,AI_WAIT,WAIT_RETEST",
+            "TRADE,MARKET,1.75,0.55,LONG,NONE,AI_PRIMARY,MARKET",
+            "TRADE,LIMIT,1.9,0.60,LONG,NONE,AI_PRIMARY,LIMIT",
+            "TRADE,MARKET,1.75,0.55,SHORT,DIRECTION_CONFLICT,RULE_FALLBACK,RULE"
+    })
+    void auditsTypedDecisionWithoutChangingTheExistingOutcome(String choice, String mode, double quality,
+            double risk, String direction, String reason, String source, String finalMode) throws Exception {
+        service.configureEntryObservations(mock(AiEntryObservationService.class));
+        when(ai.isTypeSafeProvider()).thenReturn(true);
+        when(ai.completeTyped(any(), any())).thenReturn(objectMapper.readTree("""
+                {"answers":{
+                  "decision":{"choice":"%s","confidence":0.13},
+                  "selectedInstId":{"choice":"BTC-USDT-SWAP","confidence":0.88},
+                  "direction":{"choice":"%s","confidence":0.90},
+                  "entryMode":{"choice":"%s","confidence":0.86},
+                  "quality":{"score":%s,"confidence":0.82},
+                  "risk_ok":{"noul":%s}}}
+                """.formatted(choice, direction, mode, quality, risk)));
+
+        var result = service.select(List.of(candidate("BTC-USDT-SWAP", 90)));
+
+        assertThat(result.source().name()).isEqualTo(source);
+        assertThat(result.entryMode()).isEqualTo(finalMode);
+        assertThat(result.observation().reason().name()).isEqualTo(reason);
+        service.configureEntryObservations(null);
+        assertThat(result.withObservation(null)).isEqualTo(service.select(List.of(candidate("BTC-USDT-SWAP", 90))));
+    }
+
+    @Test
+    void recordsCallFailureAndReturnsTheExistingFallback() {
+        service.configureEntryObservations(mock(AiEntryObservationService.class));
+        when(ai.isTypeSafeProvider()).thenReturn(true);
+        when(ai.completeTyped(any(), any())).thenThrow(new IllegalStateException("timeout"));
+
+        var result = service.select(List.of(candidate("BTC-USDT-SWAP", 90)));
+
+        assertThat(result.source()).isEqualTo(ContractSelectionDecision.DecisionSource.RULE_FALLBACK);
+        assertThat(result.fallbackReason()).isEqualTo("timeout");
+        assertThat(result.observation().reason()).isEqualTo(AiEntryObservation.Rejection.AI_CALL_FAILED);
+    }
+
+    @Test
+    void recordsHardDenyWithoutCallingTheModel() {
+        var observer = mock(AiEntryObservationService.class);
+        service.configureEntryObservations(observer);
+
+        var result = service.select(List.of(candidate("BTC-USDC-SWAP", 90)));
+
+        assertThat(result.source()).isEqualTo(ContractSelectionDecision.DecisionSource.NO_ELIGIBLE_CANDIDATE);
+        var captured = org.mockito.ArgumentCaptor.forClass(AiEntryObservation.class);
+        verify(observer).record(captured.capture());
+        assertThat(captured.getValue().reference().reason()).isEqualTo(AiEntryObservation.Rejection.HARD_DENY);
+        assertThat(captured.getValue().hardRules()).containsExactly("unsupported_instrument");
+        verify(ai, never()).completeTyped(any(), any());
+        verify(ai, never()).completeJson(anyString(), anyString());
+    }
+
+    @Test
+    void distinguishesInvalidAnswersFromCallFailure() throws Exception {
+        service.configureEntryObservations(mock(AiEntryObservationService.class));
+        when(ai.isTypeSafeProvider()).thenReturn(true);
+        when(ai.completeTyped(any(), any())).thenReturn(objectMapper.readTree("{\"answers\":{}}"));
+
+        var result = service.select(List.of(candidate("BTC-USDT-SWAP", 90)));
+
+        assertThat(result.source()).isEqualTo(ContractSelectionDecision.DecisionSource.RULE_FALLBACK);
+        assertThat(result.observation().reason()).isEqualTo(AiEntryObservation.Rejection.AI_RESPONSE_INVALID);
+    }
+
+    @Test
+    void observationFailureCannotReplaceTheTradeDecision() throws Exception {
+        var observer = mock(AiEntryObservationService.class);
+        org.mockito.Mockito.doThrow(new IllegalStateException("audit failed")).when(observer).record(any());
+        service.configureEntryObservations(observer);
+        when(ai.completeJson(anyString(), anyString())).thenReturn(objectMapper.readTree("""
+                {"decision":"TRADE","selectedInstId":"BTC-USDT-SWAP","direction":"LONG",
+                 "entryMode":"MARKET","confidence":0.82,"rankedCandidates":[
+                 {"instId":"BTC-USDT-SWAP","rank":1,"direction":"LONG","entryMode":"MARKET","confidence":0.82}]}
+                """));
+
+        var result = service.select(List.of(candidate("BTC-USDT-SWAP", 90)));
+
+        assertThat(result.source()).isEqualTo(ContractSelectionDecision.DecisionSource.AI_PRIMARY);
+        assertThat(result.observation()).isNull();
+    }
     private final ObjectMapper objectMapper = new ObjectMapper();
     private AiAnalysisService ai;
     private AiContractSelectionService service;
@@ -377,7 +470,7 @@ class AiContractSelectionServiceTest {
         verify(ai).completeJson(systemPrompt.capture(), userPrompt.capture());
         assertThat(systemPrompt.getValue()).contains("软规则不是硬否决");
         assertThat(userPrompt.getValue())
-                .contains("softRuleSignal", "softRuleScore", "softRuleDiagnostics")
+                .contains("softRuleSignal", "softRuleScore", "softRuleDiagnostics", "entryTiming5m", "recentClosed5mCandles")
                 .doesNotContain("\"riskTags\"");
     }
 
@@ -397,6 +490,7 @@ class AiContractSelectionServiceTest {
                 .contains("趋势方向明确", "流动性", "未明显过热")
                 .contains("优先选择 MARKET 或 LIMIT")
                 .contains("WAIT_PULLBACK / WAIT_RETEST 只用于")
+                .contains("最近两根已收盘 5m K 线", "本轮直接跳过")
                 .contains("不得为了增加交易次数忽略");
     }
 

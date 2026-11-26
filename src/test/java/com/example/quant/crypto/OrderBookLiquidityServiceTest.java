@@ -9,6 +9,7 @@ import com.example.quant.okxtrade.OkxInstrumentRules;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -46,6 +47,7 @@ class OrderBookLiquidityServiceTest {
         assertThat(snapshot.bidDepthUsdt()).isGreaterThan(BigDecimal.valueOf(100_000));
         assertThat(snapshot.askDepthUsdt()).isGreaterThan(BigDecimal.valueOf(100_000));
         assertThat(snapshot.tradable()).isTrue();
+        assertThat(snapshot.createdAt()).isEqualTo(Instant.ofEpochMilli(1795154400000L));
     }
 
     @Test
@@ -80,7 +82,7 @@ class OrderBookLiquidityServiceTest {
             try {
                 if (requestPath.startsWith("/api/v5/market/books")) {
                     return objectMapper.readTree("""
-                            {"code":"0","data":[{"bids":[["99.98","%s"]],"asks":[["100.02","101000"]]}]}
+                            {"code":"0","data":[{"ts":"1795154400000","bids":[["99.98","%s"]],"asks":[["100.02","101000"]]}]}
                             """.formatted(bidContracts));
                 }
                 if (requestPath.startsWith("/api/v5/public/instruments")) {

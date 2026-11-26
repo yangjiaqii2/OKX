@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.slf4j.Logger;
@@ -24,6 +26,7 @@ public class OkxInstrumentRulesService implements OkxInstrumentRulesProvider {
     private final Object bulkLoadLock = new Object();
     private volatile Instant bulkLoadedAt;
     private volatile boolean bulkLoadFailed;
+    private volatile Set<String> liveCryptoUsdtSwapIds = Set.of();
 
     @Autowired
     public OkxInstrumentRulesService(OkxRestClient okxRestClient) {
@@ -41,7 +44,7 @@ public class OkxInstrumentRulesService implements OkxInstrumentRulesProvider {
             throw new IllegalArgumentException("OKX合约不能为空");
         }
         Instant now = Instant.now();
-        ensureBulkCache(now);
+        ensureBulkCache(now, null);
         CachedRules cached = cache.get(instId);
         if (cached != null && isFreshFromBulk(cached)) {
             return cached.rules();
@@ -58,6 +61,15 @@ public class OkxInstrumentRulesService implements OkxInstrumentRulesProvider {
         }).rules();
     }
 
+    public Set<String> liveCryptoUsdtSwapIds(Duration timeout) {
+        ensureBulkCache(Instant.now(), timeout);
+        Set<String> ids = liveCryptoUsdtSwapIds;
+        if (bulkLoadFailed || ids.isEmpty()) {
+            throw new IllegalStateException("OKX live crypto USDT swap metadata unavailable");
+        }
+        return ids;
+    }
+
     private boolean isFreshByTtl(CachedRules cached, Instant now) {
         return now.isBefore(cached.loadedAt().plus(cacheTtl));
     }
@@ -67,7 +79,7 @@ public class OkxInstrumentRulesService implements OkxInstrumentRulesProvider {
         return loadedAt != null && !bulkLoadFailed && !cached.loadedAt().isBefore(loadedAt);
     }
 
-    private void ensureBulkCache(Instant now) {
+    private void ensureBulkCache(Instant now, Duration timeout) {
         if (bulkLoadedAt != null && now.isBefore(bulkLoadedAt.plus(cacheTtl)) && !bulkLoadFailed) {
             return;
         }
@@ -76,7 +88,7 @@ public class OkxInstrumentRulesService implements OkxInstrumentRulesProvider {
                 return;
             }
             try {
-                int loaded = loadAllSwapInstruments(now);
+                int loaded = loadAllSwapInstruments(now, timeout);
                 bulkLoadedAt = now;
                 bulkLoadFailed = false;
                 if (loaded > 0) {
@@ -90,24 +102,31 @@ public class OkxInstrumentRulesService implements OkxInstrumentRulesProvider {
         }
     }
 
-    private int loadAllSwapInstruments(Instant loadedAt) {
-        JsonNode root = okxRestClient.publicGet(BULK_SWAP_PATH);
+    private int loadAllSwapInstruments(Instant loadedAt, Duration timeout) {
+        JsonNode root = timeout == null ? okxRestClient.publicGet(BULK_SWAP_PATH)
+                : okxRestClient.publicGet(BULK_SWAP_PATH, timeout);
         JsonNode data = root.path("data");
         if (!data.isArray() || data.isEmpty()) {
             throw new IllegalStateException("OKX bulk instruments returned empty data");
         }
         int loaded = 0;
+        Set<String> cryptoSwaps = new HashSet<>();
         for (JsonNode instrument : data) {
             OkxInstrumentRules rules = parseInstrumentRules(instrument);
             if (rules == null) {
                 continue;
             }
             cache.put(rules.instId(), new CachedRules(rules, loadedAt));
+            if (rules.instId().endsWith("-USDT-SWAP") && "1".equals(instrument.path("instCategory").asText())
+                    && "live".equals(instrument.path("state").asText())) {
+                cryptoSwaps.add(rules.instId());
+            }
             loaded++;
         }
         if (loaded == 0) {
             throw new IllegalStateException("OKX bulk instruments parsed zero valid SWAP rules");
         }
+        liveCryptoUsdtSwapIds = Set.copyOf(cryptoSwaps);
         return loaded;
     }
 

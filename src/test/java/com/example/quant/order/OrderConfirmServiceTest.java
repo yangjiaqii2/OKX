@@ -51,7 +51,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.test.util.ReflectionTestUtils;
+import com.example.quant.tradeplan.PlanExecutionRisk;
 
 class OrderConfirmServiceTest {
 
@@ -142,14 +142,19 @@ class OrderConfirmServiceTest {
         AccountSnapshotService snapshots = mock(AccountSnapshotService.class);
         when(snapshots.summary()).thenReturn(new AccountSummary(
                 new BigDecimal("10000"), new BigDecimal("100"), "OKX_DEMO", ""));
-        var confirmService = new OrderConfirmService(pendingOrders, new CapturingRiskService(), adapter,
-                null, properties, snapshots, null, null, budgetService, clock);
-        confirmService.configureInstrumentRules(instId -> rules);
-        confirmService.configureCanonicalPlanCompiler(compiler);
+        var book = mock(OrderBookLiquidityService.class);
+        when(book.snapshot(plan.instId())).thenAnswer(ignored -> new OrderBookLiquiditySnapshot(
+                plan.instId(), new BigDecimal("0.5225"), new BigDecimal("0.5226"), new BigDecimal("0.52255"),
+                BigDecimal.valueOf(2), new BigDecimal("10000"), new BigDecimal("10000"),
+                BigDecimal.ONE, true, "", Instant.now()));
+        RiskService risk = request -> new RiskCheckResult(true, RiskLevel.LOW, null, null, List.of(),
+                null, request.leverage(), new BigDecimal("1.4914"), Instant.now());
+        var confirmService = new OrderConfirmService(pendingOrders, risk, adapter,
+                book, properties, snapshots, null, null, budgetService, clock);
         NetProfitExitPolicy exitCosts = mock(NetProfitExitPolicy.class);
         when(exitCosts.feeRates(plan.instId())).thenReturn(new NetProfitExitPolicy.FeeRates(
                 new BigDecimal("0.0002"), new BigDecimal("0.0005")));
-        ReflectionTestUtils.setField(confirmService, "exitCosts", exitCosts);
+        confirmService.configureExecutionRisk(new PlanExecutionRisk(compiler, instId -> rules, book, exitCosts, properties, risk));
         DailyRiskService dailyRisk = mock(DailyRiskService.class);
         when(dailyRisk.claimAutomaticEntry(anyString(), eq(id.toString()), any(BigDecimal.class),
                 eq(clock.instant()), any(BigDecimal.class))).thenReturn(new DailyRiskService.Decision(true, "OK"));
@@ -157,21 +162,16 @@ class OrderConfirmServiceTest {
 
         OrderExecutionResult result = confirmService.confirmAuto(order.id(), margin);
 
-        assertThat(order.size()).isEqualByComparingTo("136");
-        assertThat(order.executableContractQuantity()).isEqualByComparingTo("136");
-        assertThat(order.executableStopLossAmount()).isEqualByComparingTo("1.4824");
-        assertThat(order.maxLossAmount()).isEqualByComparingTo("1.4914");
-        assertThat(order.canonicalExecutablePlan().decisions())
-                .contains(CanonicalPlanCompiler.ENTRY_SIZE_REDUCED_TO_RISK_BUDGET);
-        assertThat(order.canonicalExecutablePlan().takeProfitLegs().stream()
-                .map(leg -> leg.executableContractQuantity()).reduce(BigDecimal.ZERO, BigDecimal::add))
-                .isEqualByComparingTo("136");
         assertThat(budgetService.reservation(reservation.reservationId()).orElseThrow().amount())
                 .isEqualByComparingTo(margin);
         if (passesNetRiskReward) {
             assertThat(result.submitted()).as(result.message()).isTrue();
+            assertThat(order.size()).isEqualByComparingTo("126");
+            assertThat(order.executableContractQuantity()).isEqualByComparingTo("126");
+            assertThat(order.canonicalExecutablePlan().risk().estimatedNetStopLossAmount())
+                    .isLessThanOrEqualTo(new BigDecimal("1.4914"));
             assertThat(gateway.placeOrderCalls).isEqualTo(1);
-            assertThat(gateway.lastOrderPayload.get("sz")).isEqualTo("136");
+            assertThat(gateway.lastOrderPayload.get("sz")).isEqualTo("126");
             assertThat(gateway.lastOrderPayload.get("attachAlgoOrds")).asList().hasSize(1);
             assertThat(((Map<?, ?>) ((List<?>) gateway.lastOrderPayload.get("attachAlgoOrds")).get(0)).get("slTriggerPx"))
                     .isEqualTo("0.5334");
@@ -179,12 +179,45 @@ class OrderConfirmServiceTest {
                     eq(clock.instant()), any(BigDecimal.class));
         } else {
             assertThat(result.submitted()).isFalse();
-            assertThat(result.message()).isEqualTo("NET_RISK_REWARD_AFTER_COSTS_TOO_LOW");
+            assertThat(result.message()).startsWith("NET_RISK_REWARD_AFTER_COSTS_TOO_LOW:");
             assertThat(gateway.placeOrderCalls).isZero();
             assertThat(budgetService.reservation(reservation.reservationId()).orElseThrow().status().name())
                     .isEqualTo("RELEASED");
             verifyNoInteractions(dailyRisk);
         }
+    }
+
+    @Test
+    void manualMarketConfirmationRejectsAnAdverseQuoteBeforeExchangeWrite() {
+        var orders = new PendingOrderService(120);
+        TradePlan plan = marketPlan();
+        var order = orders.createPendingOrder(MarketType.OKX_SWAP, plan);
+        var book = mock(OrderBookLiquidityService.class);
+        when(book.snapshot(plan.instId())).thenAnswer(ignored -> new OrderBookLiquiditySnapshot(
+                plan.instId(), new BigDecimal("100.29"), new BigDecimal("100.31"), new BigDecimal("100.30"),
+                BigDecimal.valueOf(2), new BigDecimal("10000"), new BigDecimal("10000"),
+                BigDecimal.ONE, true, "", Instant.now()));
+        var feePolicy = mock(NetProfitExitPolicy.class);
+        when(feePolicy.feeRates(plan.instId())).thenReturn(new NetProfitExitPolicy.FeeRates(BigDecimal.ZERO, BigDecimal.ZERO));
+        var account = mock(AccountSnapshotService.class);
+        when(account.summary()).thenReturn(new AccountSummary(new BigDecimal("10000"), new BigDecimal("100"), "OKX_DEMO", ""));
+        var gateway = new CountingGateway();
+        RiskService risk = new CapturingRiskService();
+        var properties = new AgentProperties();
+        var service = new OrderConfirmService(orders, risk, testAdapter(gateway), book, properties,
+                account, null, null, Clock.systemUTC());
+        service.configureExecutionRisk(new PlanExecutionRisk(new CanonicalPlanCompiler(),
+                instId -> new OkxInstrumentRules(instId, new BigDecimal("0.01"), "BTC",
+                        BigDecimal.ONE, BigDecimal.ONE, new BigDecimal("0.01")),
+                book, feePolicy, properties, risk));
+
+        var result = service.confirm(order.id(), new BigDecimal("20"));
+
+        assertThat(result.submitted()).isFalse();
+        assertThat(result.message()).startsWith("MARKET_PRICE_DEVIATION_TOO_WIDE:");
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_CONFIRM);
+        assertThat(order.rejectReason()).isEqualTo(result.message());
+        assertThat(gateway.placeOrderCalls).isZero();
     }
 
     @Test

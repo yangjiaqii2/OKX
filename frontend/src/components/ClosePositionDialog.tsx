@@ -10,6 +10,7 @@ import {
   Typography,
 } from '@mui/material';
 import { formatNumber, formatSide, formatUSDT, pnlColor } from '../formatters';
+import { t, useLanguage } from '../i18n';
 
 type ClosePositionDialogProps = {
   open: boolean;
@@ -26,31 +27,32 @@ export function ClosePositionDialog({
   onCancel,
   onConfirm,
 }: ClosePositionDialogProps) {
+  useLanguage();
   const instId = String(position?.instId ?? '-');
   const posSide = formatSide(position?.posSide);
   const marginMode = formatSide(position?.marginMode);
 
   return (
     <Dialog open={open} onClose={loading ? undefined : onCancel} fullWidth maxWidth="xs">
-      <DialogTitle>确认平仓</DialogTitle>
+      <DialogTitle>{t("确认平仓")}</DialogTitle>
       <DialogContent>
         <Stack spacing={1.5}>
           <Alert severity="warning">
-            将向 OKX 提交一键平仓请求，提交后请在 OKX 当前委托和持仓里确认最终成交。
+            {t("将向 OKX 提交一键平仓请求，提交后请在 OKX 当前委托和持仓里确认最终成交。")}
           </Alert>
           <Stack spacing={1}>
-            <ConfirmRow label="合约" value={instId} />
-            <ConfirmRow label="方向" value={posSide} />
-            <ConfirmRow label="保证金模式" value={marginMode} />
-            <ConfirmRow label="数量" value={formatNumber(position?.size)} />
-            <ConfirmRow label="真实保证金" value={formatUSDT(position?.margin)} />
-            <ConfirmRow label="未实现盈亏" value={formatUSDT(position?.unrealizedPnl)} color={pnlColor(position?.unrealizedPnl)} />
+            <ConfirmRow label={t("合约")} value={instId} />
+            <ConfirmRow label={t("方向")} value={posSide} />
+            <ConfirmRow label={t("保证金模式")} value={marginMode} />
+            <ConfirmRow label={t("数量")} value={formatNumber(position?.size)} />
+            <ConfirmRow label={t("真实保证金")} value={formatUSDT(position?.margin)} />
+            <ConfirmRow label={t("未实现盈亏")} value={formatUSDT(position?.unrealizedPnl)} color={pnlColor(position?.unrealizedPnl)} />
           </Stack>
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onCancel} disabled={loading}>
-          取消
+          {t("取消")}
         </Button>
         <Button
           color="error"
@@ -59,7 +61,7 @@ export function ClosePositionDialog({
           disabled={loading || !position}
           startIcon={loading ? <CircularProgress size={14} color="inherit" /> : undefined}
         >
-          {loading ? '提交中' : '确认平仓'}
+          {loading ? t("提交中") : t("确认平仓")}
         </Button>
       </DialogActions>
     </Dialog>
@@ -67,6 +69,7 @@ export function ClosePositionDialog({
 }
 
 function ConfirmRow({ label, value, color }: { label: string; value: string; color?: string }) {
+  useLanguage();
   return (
     <Stack direction="row" justifyContent="space-between" alignItems="baseline" gap={2} sx={{ py: 0.5, borderBottom: 1, borderColor: 'divider' }}>
       <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>

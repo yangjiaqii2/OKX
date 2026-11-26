@@ -1,6 +1,7 @@
 package com.example.quant.ai;
 
 import com.example.quant.config.AiProperties;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
@@ -133,9 +134,14 @@ public class AiAnalysisService {
                 throw new IllegalStateException("TypeSafe request failed HTTP " + response.statusCode()
                         + ": " + compact(response.body()));
             }
-            JsonNode result = objectMapper.readTree(response.body());
+            JsonNode result;
+            try {
+                result = objectMapper.readTree(response.body());
+            } catch (JsonProcessingException ex) {
+                throw new InvalidAiResponse("TypeSafe request failed: " + ex.getMessage(), null);
+            }
             if (result == null || !result.isObject() || !result.has("answers")) {
-                throw new IllegalStateException("TypeSafe响应缺少 answers");
+                throw new InvalidAiResponse("TypeSafe响应缺少 answers", result);
             }
             log.info("TypeSafe request completed requestId={} httpStatus={} elapsedMs={}",
                     requestId, response.statusCode(), elapsedMs(startedAt));
@@ -158,6 +164,24 @@ public class AiAnalysisService {
 
     public boolean isTypeSafeProvider() {
         return aiProperties.isTypeSafe();
+    }
+
+    public String selectionModel(boolean typeSafe) {
+        return typeSafe ? aiProperties.effectiveTypeSafeModel()
+                : hasText(aiProperties.model()) ? aiProperties.model() : "moonshot-v1-8k";
+    }
+
+    public static final class InvalidAiResponse extends IllegalStateException {
+        private final JsonNode response;
+
+        InvalidAiResponse(String message, JsonNode response) {
+            super(message);
+            this.response = response;
+        }
+
+        public JsonNode response() {
+            return response;
+        }
     }
 
     private HttpResponse<String> sendWithRetry(String body, URI endpoint, String apiKey) throws Exception {
@@ -193,12 +217,19 @@ public class AiAnalysisService {
             }
             throw new IllegalStateException("AI request failed HTTP " + response.statusCode() + ": " + compact(response.body()));
         }
-        JsonNode root = objectMapper.readTree(response.body());
-        String content = root.path("choices").path(0).path("message").path("content").asText("");
-        if (!hasText(content)) {
-            throw new IllegalStateException("AI响应为空");
+        JsonNode root = null;
+        try {
+            root = objectMapper.readTree(response.body());
+            String content = root.path("choices").path(0).path("message").path("content").asText("");
+            if (!hasText(content)) {
+                throw new IllegalStateException("AI响应为空");
+            }
+            return objectMapper.readTree(extractJson(content));
+        } catch (JsonProcessingException ex) {
+            throw new InvalidAiResponse("AI request failed: " + ex.getMessage(), root);
+        } catch (IllegalStateException ex) {
+            throw new InvalidAiResponse(ex.getMessage(), root);
         }
-        return objectMapper.readTree(extractJson(content));
     }
 
     private static String extractJson(String content) {

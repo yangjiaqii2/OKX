@@ -31,7 +31,7 @@ class ShadowSelectionServiceTest {
             return row;
         });
         AiContractSelectionService ai = mock(AiContractSelectionService.class);
-        when(ai.select(any())).thenReturn(new ContractSelectionDecision(
+        when(ai.selectForShadow(any(), any())).thenReturn(new ContractSelectionDecision(
                 ContractSelectionDecision.DecisionSource.AI_PRIMARY,
                 ContractSelectionDecision.SelectionAction.TRADE,
                 "BTC-USDT-SWAP", DirectionBias.BULLISH, "MARKET", new BigDecimal("0.8"),

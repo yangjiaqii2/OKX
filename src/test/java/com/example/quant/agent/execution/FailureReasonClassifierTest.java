@@ -10,6 +10,10 @@ class FailureReasonClassifierTest {
         FailureReasonClassifier classifier = new FailureReasonClassifier(new AgentProperties());
         assertThat(classifier.classify("BUDGET", "BUDGET_ORDER_MARGIN_BELOW_MIN: margin too small"))
                 .isEqualTo(FailureClassification.NEXT_CANDIDATE_ALLOWED);
+        assertThat(classifier.classify("CONFIRM", "NET_RISK_OR_MARGIN_BELOW_MINIMUM_SIZE"))
+                .isEqualTo(FailureClassification.NEXT_CANDIDATE_ALLOWED);
+        assertThat(classifier.classify("CONFIRM", "MARKET_ENTRY_OUTSIDE_EXIT_RANGE"))
+                .isEqualTo(FailureClassification.NEXT_CANDIDATE_ALLOWED);
     }
 
     @Test

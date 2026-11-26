@@ -13,8 +13,10 @@ import { StatusChip } from '../components/StatusChip';
 import { TradeMetricCard } from '../components/TradeMetricCard';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
 import { formatLeverage, formatStatus, formatUSDT } from '../formatters';
+import { t, useLanguage } from '../i18n';
 
 export function AccountRiskPage() {
+  useLanguage();
   const notify = useNotify();
   const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState<Record<string, unknown>>({});
@@ -40,12 +42,12 @@ export function AccountRiskPage() {
     setPositions(positionResult.status === 'fulfilled' && Array.isArray(positionResult.value) ? positionResult.value : []);
     if (positionResult.status === 'rejected') {
       const error = positionResult.reason;
-      setPositionError(error instanceof Error ? error.message : '持仓接口调用失败');
+      setPositionError(error instanceof Error ? error.message : t("持仓接口调用失败"));
     }
     const failed = [accountResult, riskResult, orderResult].find((result) => result.status === 'rejected');
     if (failed) {
       const error = failed.reason;
-      notify(error instanceof Error ? error.message : '加载账户与风控失败', { type: 'error' });
+      notify(error instanceof Error ? error.message : t("加载账户与风控失败"), { type: 'error' });
     }
     setLoading(false);
   }
@@ -62,11 +64,11 @@ export function AccountRiskPage() {
         posSide: String(closeDialogPosition.posSide ?? ''),
         marginMode: String(closeDialogPosition.marginMode ?? ''),
       });
-      notify(`已提交平仓：${String(closeDialogPosition.instId ?? '-')}`, { type: 'success' });
+      notify(`${t("已提交平仓：")}${String(closeDialogPosition.instId ?? '-')}`, { type: 'success' });
       setCloseDialogPosition(null);
       await load();
     } catch (error) {
-      notify(error instanceof Error ? error.message : '平仓提交失败', { type: 'error', multiLine: true });
+      notify(error instanceof Error ? error.message : t("平仓提交失败"), { type: 'error', multiLine: true });
     } finally {
       setClosingKey('');
     }
@@ -77,7 +79,7 @@ export function AccountRiskPage() {
   }, []);
 
   if (loading) {
-    return <PageShell title="账户与风控"><PanelState loading sx={panel} /></PageShell>;
+    return <PageShell title={t("账户与风控")}><PanelState loading sx={panel} /></PageShell>;
   }
 
   const accountMode = String(account.mode ?? '-');
@@ -86,21 +88,21 @@ export function AccountRiskPage() {
   const availableBalance = account.availableBalance;
 
   return (
-    <PageShell title="账户与风控">
+    <PageShell title={t("账户与风控")}>
       <Stack spacing={2.5}>
         <PageHeader
-          title="账户与风控"
-          subtitle="集中查看 OKX 账户总览、可用余额、持仓快照和风控拦截原因。自动交易使用可用余额。"
+          title={t("账户与风控")}
+          subtitle={t("集中查看 OKX 账户总览、可用余额、持仓快照和风控拦截原因。自动交易使用可用余额。")}
           status={<StatusChip value={accountMode} />}
           onRefresh={() => void load()}
         />
 
-        {accountMode === 'OKX_UNBOUND' && <Alert severity="warning">尚未绑定OKX API，余额和持仓不会返回真实数据。</Alert>}
+        {accountMode === 'OKX_UNBOUND' && <Alert severity="warning">{t("尚未绑定OKX API，余额和持仓不会返回真实数据。")}</Alert>}
         {accountMode === 'OKX_ERROR' && (
-          <Alert severity="error">OKX接口调用失败：{accountMessage || '请检查API权限、IP白名单和Passphrase。'}</Alert>
+          <Alert severity="error">{t("OKX接口调用失败：")}{accountMessage || t("请检查API权限、IP白名单和Passphrase。")}</Alert>
         )}
-        {accountMode === 'OKX_EMPTY' && <Alert severity="info">OKX已返回成功响应，但账户余额数据为空。</Alert>}
-        {positionError && <Alert severity="error">OKX持仓接口调用失败：{positionError}</Alert>}
+        {accountMode === 'OKX_EMPTY' && <Alert severity="info">{t("OKX已返回成功响应，但账户余额数据为空。")}</Alert>}
+        {positionError && <Alert severity="error">{t("OKX持仓接口调用失败：")}{positionError}</Alert>}
 
         <TradingStatusStrip risk={risk} account={account} pendingCount={pendingCount} />
 
@@ -111,13 +113,13 @@ export function AccountRiskPage() {
             gap: 2,
           }}
         >
-          <TradeMetricCard label="账户模式" value={formatStatus(accountMode)} helper={accountMessage || undefined} />
-          <TradeMetricCard label="账户总览" value={balanceAvailable ? formatUSDT(account.equity) : '不可用'} helper="OKX账户全部资金参考" />
-          <TradeMetricCard label="可用余额" value={balanceAvailable && availableBalance != null ? formatUSDT(availableBalance) : '不可用'} helper="自动交易实际使用" />
+          <TradeMetricCard label={t("账户模式")} value={formatStatus(accountMode)} helper={accountMessage || undefined} />
+          <TradeMetricCard label={t("账户总览")} value={balanceAvailable ? formatUSDT(account.equity) : t("不可用")} helper={t("OKX账户全部资金参考")} />
+          <TradeMetricCard label={t("可用余额")} value={balanceAvailable && availableBalance != null ? formatUSDT(availableBalance) : t("不可用")} helper={t("自动交易实际使用")} />
           <TradeMetricCard
-            label="风控"
+            label={t("风控")}
             value={<StatusChip value={risk.passed as boolean | undefined} />}
-            helper={String(risk.rejectReason ?? formatStatus(risk.riskLevel) ?? '无拦截')}
+            helper={String(risk.rejectReason ?? formatStatus(risk.riskLevel) ?? t("无拦截"))}
             accent={risk.passed === false ? 'error' : risk.passed === true ? 'success' : 'warning'}
           />
         </Box>
@@ -126,12 +128,12 @@ export function AccountRiskPage() {
           <Card>
             <CardContent>
               <Stack spacing={1.5}>
-                <Typography variant="h6">风控解释</Typography>
-                <RiskRule label="风控状态" value={<StatusChip value={risk.passed as boolean | undefined} />} />
-                <RiskRule label="风险等级" value={formatStatus(risk.riskLevel)} />
-                <RiskRule label="建议杠杆" value={formatLeverage(risk.adjustedLeverage)} />
-                <RiskRule label="最大单笔亏损" value={formatUSDT(risk.maxLossAmount)} />
-                <RiskRule label="拒绝原因" value={String(risk.rejectReason ?? '无拦截')} />
+                <Typography variant="h6">{t("风控解释")}</Typography>
+                <RiskRule label={t("风控状态")} value={<StatusChip value={risk.passed as boolean | undefined} />} />
+                <RiskRule label={t("风险等级")} value={formatStatus(risk.riskLevel)} />
+                <RiskRule label={t("建议杠杆")} value={formatLeverage(risk.adjustedLeverage)} />
+                <RiskRule label={t("最大单笔亏损")} value={formatUSDT(risk.maxLossAmount)} />
+                <RiskRule label={t("拒绝原因")} value={String(risk.rejectReason ?? t("无拦截"))} />
               </Stack>
             </CardContent>
           </Card>
@@ -139,9 +141,9 @@ export function AccountRiskPage() {
           <Card>
             <CardContent>
               <Stack spacing={1.5}>
-                <Typography variant="h6">持仓快照</Typography>
+                <Typography variant="h6">{t("持仓快照")}</Typography>
                 {positionError ? (
-                  <Alert severity="error">持仓不可用，不代表账户空仓：{positionError}</Alert>
+                  <Alert severity="error">{t("持仓不可用，不代表账户空仓：")}{positionError}</Alert>
                 ) : (
                   <PositionSnapshotTable
                     positions={positions}
@@ -166,6 +168,7 @@ export function AccountRiskPage() {
 }
 
 function RiskRule({ label, value }: { label: string; value: ReactNode }) {
+  useLanguage();
   return (
     <Stack
       direction="row"

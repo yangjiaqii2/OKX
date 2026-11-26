@@ -2,6 +2,7 @@ package com.example.quant.crypto.provider.coingecko;
 
 import com.example.quant.crypto.MarketCapSnapshotEntity;
 import com.example.quant.crypto.MarketCapSnapshotRepository;
+import com.example.quant.crypto.provider.DataQuality;
 import com.example.quant.crypto.provider.MarketCapProvider;
 import com.example.quant.crypto.provider.ProviderResult;
 import com.example.quant.crypto.provider.TokenSymbolMapper;
@@ -39,6 +40,7 @@ public final class CoinGeckoMarketCapProvider implements MarketCapProvider {
     private final CoinGeckoHttpClient httpClient;
     private final CoinGeckoTokenBucket tokenBucket;
     private final MarketCapSnapshotRepository snapshotRepository;
+    private final Duration maxSourceAge;
     private volatile Instant upstreamCooldownUntil = Instant.MIN;
 
     public CoinGeckoMarketCapProvider(String providerName,
@@ -51,10 +53,17 @@ public final class CoinGeckoMarketCapProvider implements MarketCapProvider {
                                        CoinGeckoHttpClient httpClient,
                                        CoinGeckoTokenBucket tokenBucket,
                                        MarketCapSnapshotRepository snapshotRepository) {
+        this(providerName, httpClient, tokenBucket, snapshotRepository, Duration.ofMinutes(10));
+    }
+
+    public CoinGeckoMarketCapProvider(String providerName, CoinGeckoHttpClient httpClient,
+                                      CoinGeckoTokenBucket tokenBucket, MarketCapSnapshotRepository snapshotRepository,
+                                      Duration maxSourceAge) {
         this.providerName = providerName == null || providerName.isBlank() ? "coingecko" : providerName;
         this.httpClient = httpClient;
         this.tokenBucket = tokenBucket;
         this.snapshotRepository = snapshotRepository;
+        this.maxSourceAge = maxSourceAge;
     }
 
     @Override
@@ -76,25 +85,16 @@ public final class CoinGeckoMarketCapProvider implements MarketCapProvider {
             if (data.isEmpty() && !key.equals(okxBase)) {
                 data = httpClient.fetchBySymbol(okxBase);
             }
-            if (data.isEmpty()) {
-                return fallbackMissing(okxBase, providerName + ": no data");
-            }
-            CoinGeckoMapper.Result mapped = CoinGeckoMapper.map(okxBase, data.get());
-            if (!mapped.isUsable()) {
-                return fallbackMissing(okxBase, providerName + ": " + mapped.reason());
-            }
-            MarketCapSnapshot snap = mapped.snapshot();
-            persist(snap);
-            return switch (mapped.quality()) {
-                case FRESH, PARTIAL -> ProviderResult.fresh(snap, providerName);
-                case UNAVAILABLE -> ProviderResult.unavailable(providerName + ": " + mapped.reason());
-            };
+            return resolveMarketCap(okxBase, data.orElse(null));
         } catch (CoinGeckoRequestException ex) {
             log.warn("CoinGecko request unavailable symbol={} kind={} message={}",
                     key, ex.kind(), ex.getMessage());
             if (ex.kind() == CoinGeckoRequestException.Kind.RATE_LIMITED) {
                 enterUpstreamCooldown("rate_limited");
                 return fallback(okxBase, providerName + ": upstream rate limited");
+            }
+            if (ex.kind() == CoinGeckoRequestException.Kind.UNAVAILABLE) {
+                return fallback(okxBase, providerName + ": " + ex.getMessage());
             }
             return ProviderResult.timeout("CoinGecko " + ex.kind().name().toLowerCase());
         } catch (Exception ex) {
@@ -146,14 +146,7 @@ public final class CoinGeckoMarketCapProvider implements MarketCapProvider {
                 if (data == null && !query.equals(okxBase.toLowerCase())) {
                     data = byQuerySymbol.get(okxBase.toLowerCase());
                 }
-                ProviderResult<MarketCapSnapshot> result = mapFetched(okxBase, data);
-                if (result.data() == null) {
-                    result = fallbackMissing(okxBase, providerName + ": no data for symbol");
-                }
-                out.put(okxBase, result);
-                if (result.data() != null) {
-                    persist(result.data());
-                }
+                out.put(okxBase, resolveMarketCap(okxBase, data));
             }
             return out;
         } catch (CoinGeckoRequestException ex) {
@@ -162,6 +155,9 @@ public final class CoinGeckoMarketCapProvider implements MarketCapProvider {
             if (ex.kind() == CoinGeckoRequestException.Kind.RATE_LIMITED) {
                 enterUpstreamCooldown("rate_limited");
                 return fallbackBatch(normalized, providerName + ": upstream rate limited");
+            }
+            if (ex.kind() == CoinGeckoRequestException.Kind.UNAVAILABLE) {
+                return fallbackBatch(normalized, providerName + ": " + ex.getMessage());
             }
             return timeoutBatch(normalized, "CoinGecko " + ex.kind().name().toLowerCase());
         } catch (Exception ex) {
@@ -327,18 +323,24 @@ public final class CoinGeckoMarketCapProvider implements MarketCapProvider {
         }
     }
 
-    private ProviderResult<MarketCapSnapshot> mapFetched(String okxBase, CoinGeckoMarketData data) {
+    private ProviderResult<MarketCapSnapshot> resolveMarketCap(String okxBase, CoinGeckoMarketData data) {
         if (data == null) {
-            return ProviderResult.notFound(providerName + ": no data");
+            return fallbackMissing(okxBase, providerName + ": no data");
         }
         CoinGeckoMapper.Result mapped = CoinGeckoMapper.map(okxBase, data);
         if (!mapped.isUsable()) {
-            return ProviderResult.notFound(providerName + ": " + mapped.reason());
+            return fallbackMissing(okxBase, providerName + ": " + mapped.reason());
         }
+        Instant updatedAt = data.lastUpdated();
+        if (updatedAt == null) {
+            return fallback(okxBase, providerName + ": last_updated missing");
+        }
+        Duration age = Duration.between(updatedAt, Instant.now());
         MarketCapSnapshot snap = mapped.snapshot();
-        return switch (mapped.quality()) {
-            case FRESH, PARTIAL -> ProviderResult.fresh(snap, providerName);
-            case UNAVAILABLE -> ProviderResult.notFound(providerName + ": " + mapped.reason());
-        };
+        if (age.isNegative() || age.compareTo(maxSourceAge) > 0) {
+            return ProviderResult.stale(snap, providerName, updatedAt);
+        }
+        persist(snap);
+        return new ProviderResult<>(snap, DataQuality.FRESH, updatedAt, providerName, null, null);
     }
 }

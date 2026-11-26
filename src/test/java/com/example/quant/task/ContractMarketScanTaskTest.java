@@ -144,6 +144,43 @@ class ContractMarketScanTaskTest {
     }
 
     @Test
+    void duplicateIsReplacedByNextRankedCandidateWithoutClaimingBeyondTheLimit() {
+        ContractAnalysisService analysis = mock(ContractAnalysisService.class);
+        AutoTradeService trading = mock(AutoTradeService.class);
+        StrategyDecisionService decisions = mock(StrategyDecisionService.class);
+        SystemControlService controls = mock(SystemControlService.class);
+        Instant candle = Instant.parse("2026-11-20T06:00:00Z");
+        ContractCandidate duplicate = candidate(candle);
+        ContractCandidate reserve = candidate(candle, "ETH");
+        ContractCandidate extra = candidate(candle, "SOL");
+        var scan = completedScan(List.of(duplicate));
+        when(analysis.refreshScan(org.mockito.ArgumentMatchers.any())).thenReturn(new ContractScanResult(
+                scan.candidates(), scan.report(), scan.v2Scores(), List.of(reserve, extra)));
+        when(controls.autoTradeOwnerUsername()).thenReturn("alice");
+        when(decisions.claim(org.mockito.ArgumentMatchers.eq("alice"),
+                org.mockito.ArgumentMatchers.eq("AUTO_CONTRACT_V1"), org.mockito.ArgumentMatchers.eq(duplicate.instId()),
+                org.mockito.ArgumentMatchers.eq("5m"), org.mockito.ArgumentMatchers.eq(candle),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new StrategyDecisionService.DecisionClaim(false, "existing", "qd-btc", StrategyDecisionStatus.NO_SIGNAL));
+        when(decisions.claim(org.mockito.ArgumentMatchers.eq("alice"),
+                org.mockito.ArgumentMatchers.eq("AUTO_CONTRACT_V1"), org.mockito.ArgumentMatchers.eq(reserve.instId()),
+                org.mockito.ArgumentMatchers.eq("5m"), org.mockito.ArgumentMatchers.eq(candle),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new StrategyDecisionService.DecisionClaim(true, "new", "qd-eth", StrategyDecisionStatus.PROCESSING));
+        when(trading.evaluateAndExecute(List.of(reserve), Map.of(reserve.instId(), "qd-eth")))
+                .thenReturn(new AutoTradeResult("SKIPPED", null, null, null, null, null, null,
+                        0, BigDecimal.ZERO, BigDecimal.ZERO, "test", Instant.now()));
+
+        var result = new ContractMarketScanTask(analysis, trading, new AgentProperties(), decisions, controls).runOnce();
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        verify(trading).evaluateAndExecute(List.of(reserve), Map.of(reserve.instId(), "qd-eth"));
+        verify(decisions, never()).claim(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(extra.instId()),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void selectedWaitingEntryKeepsDecisionInWaitingState() {
         ContractAnalysisService analysisService = mock(ContractAnalysisService.class);
         AutoTradeService autoTradeService = mock(AutoTradeService.class);
@@ -174,9 +211,13 @@ class ContractMarketScanTaskTest {
     }
 
     private static ContractCandidate candidate(Instant candle) {
+        return candidate(candle, "BTC");
+    }
+
+    private static ContractCandidate candidate(Instant candle, String base) {
         ContractFactorScore factors = new ContractFactorScore(20, 11, 12, 3, 8, 10, 8);
         return new ContractCandidate(
-                MarketType.OKX_SWAP, "BTC-USDT-SWAP", "BTC", "USDT",
+                MarketType.OKX_SWAP, base + "-USDT-SWAP", base, "USDT",
                 BigDecimal.valueOf(100), BigDecimal.ONE, BigDecimal.ONE,
                 BigDecimal.valueOf(100_000_000), BigDecimal.ONE, new BigDecimal("0.0001"),
                 BigDecimal.valueOf(1_000_000), BigDecimal.ZERO, DirectionBias.BULLISH,

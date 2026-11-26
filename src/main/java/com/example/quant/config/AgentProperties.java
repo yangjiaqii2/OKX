@@ -1920,10 +1920,10 @@ public class AgentProperties {
         private BigDecimal minCirculationRatio = new BigDecimal("0.50");
         /** 最小 Volume/MarketCap（0..N）。默认 0.20。 */
         private BigDecimal minVolumeMcapRatio = new BigDecimal("0.20");
-        /** 是否启用 Volume/MCap 硬资格。默认 true。 */
-        private boolean volumeMcapEnabled = true;
-        /** 是否启用 Circulation 硬资格。默认 true。 */
-        private boolean circulationEnabled = true;
+        /** 是否启用 Volume/MCap 硬资格。回放校准后可显式启用。 */
+        private boolean volumeMcapEnabled = false;
+        /** 是否启用 Circulation 硬资格。回放校准后可显式启用。 */
+        private boolean circulationEnabled = false;
         /** 是否启用 MarketCap 硬资格。默认 true（生产无 Provider 时也会硬拒所有候选）。 */
         private boolean marketCapEnabled = true;
 

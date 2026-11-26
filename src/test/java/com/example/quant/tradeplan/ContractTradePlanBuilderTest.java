@@ -14,7 +14,7 @@ import com.example.quant.agent.selection.ContractSelectionDecision;
 import com.example.quant.ai.AiAnalysisService;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.config.AiProperties;
-import com.example.quant.crypto.OkxContractScanner;
+import com.example.quant.crypto.ContractAnalysisService;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.crypto.dto.ContractFactorScore;
 import com.example.quant.crypto.dto.ContractKlineAnalysis;
@@ -42,7 +42,7 @@ class ContractTradePlanBuilderTest {
     void requestedInstIdMissingFromCandidatesIsRejectedInsteadOfSilentTopPick() {
         ContractCandidate sol = autoTradeCandidate("SOL-USDT-SWAP", 90);
         ContractTradePlanBuilder builder = new ContractTradePlanBuilder(
-                new FixedCandidatesScanner(List.of(sol)),
+                candidateSnapshot(List.of(sol)),
                 new LimitOrderAiAnalysisService(),
                 new FixedAccountSnapshotService(),
                 new PositionSizingService(),
@@ -59,12 +59,12 @@ class ContractTradePlanBuilderTest {
     }
 
     @Test
-    void buildTopCandidatePlanUsesHighestScoreWhenNoInstIdRequested() {
-        ContractCandidate sol = autoTradeCandidate("SOL-USDT-SWAP", 90);
-        ContractCandidate eth = autoTradeCandidate("ETH-USDT-SWAP", 70);
+    void buildTopCandidatePlanUsesPublishedOrderInsteadOfResortingByOldScore() {
+        ContractCandidate sol = autoTradeCandidate("SOL-USDT-SWAP", 70);
+        ContractCandidate eth = autoTradeCandidate("ETH-USDT-SWAP", 90);
         TradePlanRecordService records = mock(TradePlanRecordService.class);
         ContractTradePlanBuilder builder = new ContractTradePlanBuilder(
-                new FixedCandidatesScanner(List.of(sol, eth)),
+                candidateSnapshot(List.of(sol, eth)),
                 new LimitOrderAiAnalysisService(),
                 new FixedAccountSnapshotService(),
                 new PositionSizingService(),
@@ -822,17 +822,9 @@ class ContractTradePlanBuilderTest {
         }
     }
 
-    private static final class FixedCandidatesScanner extends OkxContractScanner {
-        private final List<ContractCandidate> candidates;
-
-        FixedCandidatesScanner(List<ContractCandidate> candidates) {
-            super(null, null, null, null, null, null, new AgentProperties());
-            this.candidates = candidates;
-        }
-
-        @Override
-        public List<ContractCandidate> scan() {
-            return candidates;
-        }
+    private static ContractAnalysisService candidateSnapshot(List<ContractCandidate> candidates) {
+        ContractAnalysisService service = mock(ContractAnalysisService.class);
+        org.mockito.Mockito.when(service.candidates()).thenReturn(candidates);
+        return service;
     }
 }

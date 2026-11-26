@@ -114,7 +114,10 @@ public class ContractSignalAnalyzer {
                 scale(main.atrPct()),
                 scale(distanceFromEma20Pct),
                 structure.clearFor(direction),
-                latestTimestamp(fiveMinute.isEmpty() ? twentyMinute : fiveMinute)
+                latestTimestamp(fiveMinute.isEmpty() ? twentyMinute : fiveMinute),
+                null,
+                null,
+                recentClosed5mCandles(fiveMinute)
         );
 
         ContractScoreBreakdown scores = scoreBreakdown(
@@ -1090,6 +1093,18 @@ public class ContractSignalAnalyzer {
             return BigDecimal.ZERO;
         }
         return reward.divide(risk, 2, RoundingMode.HALF_UP);
+    }
+
+    private static List<ContractCandle> recentClosed5mCandles(List<ContractCandle> candles) {
+        if (candles.size() < 2) {
+            return List.of();
+        }
+        ContractCandle previous = candles.get(candles.size() - 2);
+        ContractCandle latest = candles.get(candles.size() - 1);
+        if (previous.timestamp() == null || !previous.timestamp().plusSeconds(300).equals(latest.timestamp())) {
+            return List.of();
+        }
+        return List.of(previous, latest);
     }
 
     private static List<ContractCandle> clean(List<ContractCandle> candles) {

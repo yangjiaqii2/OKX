@@ -78,7 +78,7 @@ class ContractCandidateScoreRecorderTest {
         assertThat(row.getBaseOiChangeMissing()).isTrue();
         assertThat(row.getAnalysisAction()).isEqualTo("WAIT_CONFIRM");
         assertThat(row.getScanAction()).isEqualTo("AUTO_TRADE_ALLOWED");
-        assertThat(row.getScoringVersion()).isEqualTo("V2_WAVE_4_5");
+        assertThat(row.getScoringVersion()).isEqualTo("V2_WAVE_4_6");
         assertThat(row.getV2NormalizedScore()).isNotNull();
         assertThat(row.getV2RankingScore()).isNotNull();
         assertThat(row.getRelativeStrengthScore()).isNull();

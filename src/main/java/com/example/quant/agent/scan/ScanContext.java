@@ -1,6 +1,7 @@
 package com.example.quant.agent.scan;
 
 import com.example.quant.config.AgentProperties;
+import com.example.quant.crypto.ContractScanResult;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
@@ -20,6 +21,7 @@ public final class ScanContext {
     private final AtomicInteger deepAnalysisCompleted = new AtomicInteger();
     private final AtomicBoolean acceptingResults = new AtomicBoolean(true);
     private volatile ScanRunStatus status = ScanRunStatus.COMPLETED;
+    private volatile ContractScanResult result;
 
     private ScanContext(String scanId, Instant startedAt, Instant deadline) {
         this.scanId = scanId;
@@ -118,6 +120,14 @@ public final class ScanContext {
 
     public ScanRunStatus status() {
         return status;
+    }
+
+    public ContractScanResult result() {
+        return result;
+    }
+
+    public void recordResult(ContractScanResult result) {
+        this.result = result;
     }
 
     public int providerTimeoutCount() {

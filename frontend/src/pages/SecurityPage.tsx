@@ -34,6 +34,7 @@ import { PageHeader, PageShell } from '../components/PageShell';
 import { PanelState } from '../components/PanelState';
 import { ScrollableTable } from '../components/ScrollableTable';
 import { panel } from '../components/surfaces';
+import { getLanguage, t, useLanguage } from '../i18n';
 
 type AuthRole = 'ADMIN' | 'USER';
 
@@ -48,6 +49,7 @@ type AuthUserView = {
 };
 
 export function SecurityPage() {
+  useLanguage();
   const notify = useNotify();
   const username = getAuthUser();
   const role = getAuthRole();
@@ -80,7 +82,7 @@ export function SecurityPage() {
     try {
       setUsers(await quantFetch<AuthUserView[]>('/auth/users'));
     } catch (error) {
-      notify(error instanceof Error ? error.message : '用户列表加载失败', { type: 'error' });
+      notify(error instanceof Error ? error.message : t("用户列表加载失败"), { type: 'error' });
     } finally {
       setLoadingUsers(false);
     }
@@ -93,7 +95,7 @@ export function SecurityPage() {
   async function submitPassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      notify('两次输入的新密码不一致', { type: 'warning' });
+      notify(t("两次输入的新密码不一致"), { type: 'warning' });
       return;
     }
     await quantFetch('/auth/password/change', {
@@ -110,7 +112,7 @@ export function SecurityPage() {
       // Local session must be cleared even if logout is already invalid.
     }
     clearAuthSession();
-    notify('密码已修改，请重新登录', { type: 'success' });
+    notify(t("密码已修改，请重新登录"), { type: 'success' });
     window.location.assign('/login');
   }
 
@@ -121,7 +123,7 @@ export function SecurityPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(createForm),
     });
-    notify('用户已创建', { type: 'success' });
+    notify(t("用户已创建"), { type: 'success' });
     setCreateForm({ username: '', password: '', role: 'USER', enabled: true });
     await loadUsers();
   }
@@ -132,14 +134,14 @@ export function SecurityPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: !user.enabled }),
     });
-    notify(user.enabled ? '用户已停用' : '用户已启用', { type: 'success' });
+    notify(user.enabled ? t("用户已停用") : t("用户已启用"), { type: 'success' });
     await loadUsers();
   }
 
   return (
-    <PageShell title="账号安全" maxWidth={1180}>
+    <PageShell title={t("账号安全")} maxWidth={1180}>
       <Stack spacing={3}>
-        <PageHeader title="账号安全" subtitle="管理控制台登录用户、密码和账号启停状态。" />
+        <PageHeader title={t("账号安全")} subtitle={t("管理控制台登录用户、密码和账号启停状态。")} />
 
         <Paper
           component="form"
@@ -150,16 +152,16 @@ export function SecurityPage() {
             <Stack direction="row" spacing={1} alignItems="center">
               <LockResetIcon color="primary" />
               <Box>
-                <Typography fontWeight={900}>修改当前账号密码</Typography>
+                <Typography fontWeight={900}>{t("修改当前账号密码")}</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  当前登录：{username || '未知用户'} {role ? `(${role})` : ''}
+                  {t("当前登录：")}{username || t("未知用户")} {role ? `(${role})` : ''}
                 </Typography>
               </Box>
             </Stack>
             <Stack direction={{ xs: 'column', sm: 'row' }} gap={2}>
               <TextField
                 required
-                label="旧密码"
+                label={t("旧密码")}
                 type="password"
                 value={passwordForm.oldPassword}
                 autoComplete="current-password"
@@ -168,7 +170,7 @@ export function SecurityPage() {
               />
               <TextField
                 required
-                label="新密码"
+                label={t("新密码")}
                 type="password"
                 value={passwordForm.newPassword}
                 autoComplete="new-password"
@@ -177,7 +179,7 @@ export function SecurityPage() {
               />
               <TextField
                 required
-                label="确认新密码"
+                label={t("确认新密码")}
                 type="password"
                 value={passwordForm.confirmPassword}
                 autoComplete="new-password"
@@ -187,7 +189,7 @@ export function SecurityPage() {
             </Stack>
             <Box>
               <Button type="submit" variant="contained" startIcon={<CheckCircleIcon />}>
-                保存新密码
+                {t("保存新密码")}
               </Button>
             </Box>
           </Stack>
@@ -195,7 +197,7 @@ export function SecurityPage() {
 
         {!isAdmin && (
           <Alert severity="info">
-            当前账号不是管理员，只能修改自己的密码。
+            {t("当前账号不是管理员，只能修改自己的密码。")}
           </Alert>
         )}
 
@@ -209,9 +211,9 @@ export function SecurityPage() {
               <Stack direction="row" spacing={1} alignItems="center">
                 <PersonAddAlt1Icon color="primary" />
                 <Box>
-                  <Typography fontWeight={900}>创建登录用户</Typography>
+                  <Typography fontWeight={900}>{t("创建登录用户")}</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    新用户创建后即可用对应账号密码登录控制台。
+                    {t("新用户创建后即可用对应账号密码登录控制台。")}
                   </Typography>
                 </Box>
               </Stack>
@@ -226,7 +228,7 @@ export function SecurityPage() {
                 <TextField
                   required
                   fullWidth
-                  label="用户名"
+                  label={t("用户名")}
                   value={createForm.username}
                   autoComplete="off"
                   onChange={(event) => setCreateForm((current) => ({ ...current, username: event.target.value }))}
@@ -235,7 +237,7 @@ export function SecurityPage() {
                 <TextField
                   required
                   fullWidth
-                  label="初始密码"
+                  label={t("初始密码")}
                   type={showCreatePassword ? 'text' : 'password'}
                   value={createForm.password}
                   autoComplete="new-password"
@@ -245,7 +247,7 @@ export function SecurityPage() {
                     endAdornment: (
                       <InputAdornment position="end">
                         <IconButton
-                          aria-label={showCreatePassword ? '隐藏初始密码' : '显示初始密码'}
+                          aria-label={showCreatePassword ? t("隐藏初始密码") : t("显示初始密码")}
                           edge="end"
                           onClick={() => setShowCreatePassword((value) => !value)}
                         >
@@ -256,21 +258,21 @@ export function SecurityPage() {
                   }}
                 />
                 <FormControl fullWidth sx={{ minWidth: 0 }}>
-                  <InputLabel id="role-label">角色</InputLabel>
+                  <InputLabel id="role-label">{t("角色")}</InputLabel>
                   <Select
                     labelId="role-label"
-                    label="角色"
+                    label={t("角色")}
                     value={createForm.role}
                     onChange={(event) => setCreateForm((current) => ({ ...current, role: event.target.value as AuthRole }))}
                   >
-                    <MenuItem value="USER">普通用户</MenuItem>
-                    <MenuItem value="ADMIN">管理员</MenuItem>
+                    <MenuItem value="USER">{t("普通用户")}</MenuItem>
+                    <MenuItem value="ADMIN">{t("管理员")}</MenuItem>
                   </Select>
                 </FormControl>
               </Box>
               <Box>
                 <Button type="submit" variant="contained" startIcon={<PersonAddAlt1Icon />}>
-                  创建用户
+                  {t("创建用户")}
                 </Button>
               </Box>
             </Stack>
@@ -283,33 +285,33 @@ export function SecurityPage() {
               <Stack direction="row" spacing={1} alignItems="center">
                 <AdminPanelSettingsIcon color="primary" />
                 <Box>
-                  <Typography fontWeight={900}>用户列表</Typography>
+                  <Typography fontWeight={900}>{t("用户列表")}</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    启停用户不会影响已登录会话之外的历史审计数据。
+                    {t("启停用户不会影响已登录会话之外的历史审计数据。")}
                   </Typography>
                 </Box>
               </Stack>
-              {loadingUsers && users.length === 0 ? <PanelState loading /> : users.length === 0 ? <PanelState>暂无用户。</PanelState> : (
-                <ScrollableTable label="用户列表">
+              {loadingUsers && users.length === 0 ? <PanelState loading /> : users.length === 0 ? <PanelState>{t("暂无用户。")}</PanelState> : (
+                <ScrollableTable label={t("用户列表")}>
                   <TableHead>
                     <TableRow>
-                      <TableCell>用户名</TableCell>
-                      <TableCell>角色</TableCell>
-                      <TableCell>状态</TableCell>
-                      <TableCell>最后登录</TableCell>
-                      <TableCell align="right">操作</TableCell>
+                      <TableCell>{t("用户名")}</TableCell>
+                      <TableCell>{t("角色")}</TableCell>
+                      <TableCell>{t("状态")}</TableCell>
+                      <TableCell>{t("最后登录")}</TableCell>
+                      <TableCell align="right">{t("操作")}</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {users.map((user) => (
                       <TableRow key={user.id ?? user.username}>
                         <TableCell>{user.username}</TableCell>
-                        <TableCell>{user.role === 'ADMIN' ? '管理员' : '普通用户'}</TableCell>
+                        <TableCell>{user.role === 'ADMIN' ? t("管理员") : t("普通用户")}</TableCell>
                         <TableCell>
                           <Chip
                             size="small"
                             color={user.enabled ? 'success' : 'default'}
-                            label={user.enabled ? '启用' : '停用'}
+                            label={user.enabled ? t("启用") : t("停用")}
                           />
                         </TableCell>
                         <TableCell>{formatTime(user.lastLoginAt)}</TableCell>
@@ -322,7 +324,7 @@ export function SecurityPage() {
                             disabled={loadingUsers || user.username === username}
                             onClick={() => void toggleEnabled(user)}
                           >
-                            {user.enabled ? '停用' : '启用'}
+                            {user.enabled ? t("停用") : t("启用")}
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -346,5 +348,5 @@ function formatTime(value?: string) {
   if (Number.isNaN(date.getTime())) {
     return '-';
   }
-  return date.toLocaleString();
+  return date.toLocaleString(getLanguage());
 }

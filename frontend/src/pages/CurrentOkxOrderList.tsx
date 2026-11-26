@@ -9,10 +9,12 @@ import { panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { StatusChip } from '../components/StatusChip';
 import { directionTone, formatPrice, formatSide } from '../formatters';
+import { getLanguage, t, useLanguage } from '../i18n';
 
 type OrderRow = Record<string, unknown>;
 
 export function CurrentOkxOrderList() {
+  useLanguage();
   const notify = useNotify();
   const [tab, setTab] = useState(0);
   const [normalOrders, setNormalOrders] = useState<OrderRow[]>([]);
@@ -28,7 +30,7 @@ export function CurrentOkxOrderList() {
       if (!binding.bound) {
         setNormalOrders([]);
         setAlgoOrders([]);
-        setAvailabilityMessage('当前账号未绑定 OKX API，无法查询交易所活动委托。');
+        setAvailabilityMessage(t("当前账号未绑定 OKX API，无法查询交易所活动委托。"));
         return;
       }
       const [normal, algo] = await Promise.all([
@@ -39,8 +41,8 @@ export function CurrentOkxOrderList() {
       setAlgoOrders(Array.isArray(algo) ? algo as OrderRow[] : []);
       setAvailabilityMessage('');
     } catch (error) {
-      setAvailabilityMessage('OKX 活动委托查询失败；已显示的数据可能过期，请检查接口状态后重试。');
-      notify(error instanceof Error ? error.message : 'OKX委托加载失败', { type: 'error' });
+      setAvailabilityMessage(t("OKX 活动委托查询失败；已显示的数据可能过期，请检查接口状态后重试。"));
+      notify(error instanceof Error ? error.message : t("OKX委托加载失败"), { type: 'error' });
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -54,11 +56,13 @@ export function CurrentOkxOrderList() {
   const rows = tab === 0 ? normalOrders : algoOrders;
 
   return (
-    <PageShell title="当前委托/保护单">
+    <PageShell title={t("当前委托/保护单")}>
       <Stack spacing={2}>
         <PageHeader
-          title="当前委托/保护单"
-          subtitle={`普通委托 ${normalOrders.length} 条，保护单 ${algoOrders.length} 条`}
+          title={t("当前委托/保护单")}
+          subtitle={t('普通委托 {standard} 条，保护单 {protective} 条', {
+            standard: normalOrders.length, protective: algoOrders.length,
+          })}
           actions={
             <Button
               variant="outlined"
@@ -67,7 +71,7 @@ export function CurrentOkxOrderList() {
               onClick={() => void load(true)}
               disabled={refreshing}
             >
-              刷新
+              {t("刷新")}
             </Button>
           }
         />
@@ -76,27 +80,27 @@ export function CurrentOkxOrderList() {
 
         <Box sx={{ ...panel }}>
           <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ px: 1 }}>
-            <Tab label="普通委托" />
-            <Tab label="保护单" />
+            <Tab label={t("普通委托")} />
+            <Tab label={t("保护单")} />
           </Tabs>
           {loading ? (
             <PanelState loading />
           ) : rows.length === 0 ? (
-            <PanelState>暂无记录。</PanelState>
+            <PanelState>{t("暂无记录。")}</PanelState>
           ) : (
-            <ScrollableTable label="当前委托/保护单">
+            <ScrollableTable label={t("当前委托/保护单")}>
               <TableHead>
                 <TableRow>
-                  <TableCell>合约</TableCell>
+                  <TableCell>{t("合约")}</TableCell>
                   <TableCell>ID</TableCell>
-                  <TableCell>角色</TableCell>
-                  <TableCell>方向</TableCell>
-                  <TableCell>类型</TableCell>
-                  <TableCell align="right">数量</TableCell>
-                  <TableCell align="right">价格</TableCell>
-                  <TableCell align="right">触发价</TableCell>
-                  <TableCell>状态</TableCell>
-                  <TableCell>创建时间</TableCell>
+                  <TableCell>{t("角色")}</TableCell>
+                  <TableCell>{t("方向")}</TableCell>
+                  <TableCell>{t("类型")}</TableCell>
+                  <TableCell align="right">{t("数量")}</TableCell>
+                  <TableCell align="right">{t("价格")}</TableCell>
+                  <TableCell align="right">{t("触发价")}</TableCell>
+                  <TableCell>{t("状态")}</TableCell>
+                  <TableCell>{t("创建时间")}</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -133,5 +137,5 @@ export function CurrentOkxOrderList() {
 
 function formatTime(value: unknown) {
   const date = new Date(String(value ?? ''));
-  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString(getLanguage());
 }

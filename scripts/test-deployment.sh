@@ -14,7 +14,9 @@ done
 
 grep -q '^FROM node:20-alpine AS frontend-build$' Dockerfile || fail "frontend build stage missing"
 grep -q '^FROM maven:3\.9\..*-eclipse-temurin-17 AS backend-build$' Dockerfile || fail "backend build stage missing"
-grep -q '^FROM eclipse-temurin:17-jre-jammy$' Dockerfile || fail "Java 17 runtime stage missing"
+grep -q '^FROM eclipse-temurin:17-jre-jammy AS runtime-base$' Dockerfile || fail "Java 17 runtime stage missing"
+grep -q '^FROM runtime-base AS web-runtime$' Dockerfile || fail "Java-only Compose stage missing"
+grep -q -- '--target web-runtime' scripts/build-image.sh || fail "Compose image must select web-runtime"
 grep -q '^USER app$' Dockerfile || fail "runtime must use non-root app user"
 ! grep -Eq 'COPY .*\.env' Dockerfile || fail ".env must not enter image layers"
 if [[ -f target/quant-assistant-0.0.1-SNAPSHOT.jar ]]; then

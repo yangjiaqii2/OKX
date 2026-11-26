@@ -78,6 +78,9 @@ public class TradePlanRecordService {
                 && !"NO_ENTRY".equals(plan.orderType()));
         entity.setDenyReason(denyReason);
         entity.setPlanJson(json(planPayload(plan, status, denyReason, aiPayload)));
+        if (plan.executionPreview() != null) {
+            entity.setCanonicalPlanJson(CanonicalPlanJsonCodec.write(plan.executionPreview()));
+        }
         entity.setStatus(status.name());
         entity.setCreatedAt(Instant.now());
         entity.setExpireAt(plan.expireTime());
@@ -212,6 +215,7 @@ public class TradePlanRecordService {
         catch (IllegalArgumentException ex) { executionMode = TradingMode.DISABLED; }
         payload.put("marketDataContext", MarketDataContext.resolve(executionMode, configuredMode).asMap());
         payload.put("riskRewardRatio", plan.riskRewardRatio());
+        payload.put("executionPreview", plan.executionPreview());
         payload.put("signalScore", plan.signalScore());
         payload.put("reasonList", plan.reasonList());
         payload.put("riskList", plan.riskList());

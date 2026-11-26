@@ -60,6 +60,8 @@ class ContractSignalAnalyzerScenarioTest {
             assertThat(signal.klineAnalysis().trend20m()).isEqualTo("UP");
             assertThat(signal.signalType()).isEqualTo(ContractSignalType.WAIT_RECLAIM);
             assertThat(signal.action()).isEqualTo("WAIT");
+            assertThat(signal.klineAnalysis().withAnalysisDecision(signal.score(), signal.action())
+                    .recentClosed5mCandles()).containsExactlyElementsOf(fast.subList(258, 260));
         }
         ContractCandle last = bars.get(261);
         BigDecimal recovered = new BigDecimal("0.01070");

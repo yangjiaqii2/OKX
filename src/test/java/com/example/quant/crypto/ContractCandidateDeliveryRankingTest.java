@@ -106,6 +106,22 @@ class ContractCandidateDeliveryRankingTest {
     }
 
     @Test
+    void tiedRankingScoreFavorsCompleteEvidenceInDeliveryAndExecution() {
+        ContractCandidate complete = eligibleCandidate("FULL-USDT-SWAP");
+        ContractCandidate incomplete = eligibleCandidate("PARTIAL-USDT-SWAP");
+        var scores = Map.of(
+                complete.instId(), score("63"),
+                incomplete.instId(), new V2SelectionScoreResult(
+                        new BigDecimal("70"), new BigDecimal("63"), new BigDecimal("90"),
+                        new BigDecimal("0.90"), Map.of(), List.of()));
+        List<ContractCandidate> candidates = List.of(incomplete, complete);
+
+        assertThat(OkxContractScanner.rankForDelivery(candidates, scores, new AgentProperties()))
+                .containsExactly(complete, incomplete);
+        assertThat(V2SelectionScoreCalculator.compareForRanking(complete, incomplete, scores)).isNegative();
+    }
+
+    @Test
     @DisplayName("资格优先不放松任何硬门控：不可交易候选仍被标记为不可交易")
     void eligibilityPriorityDoesNotRelaxAnyGate() {
         AgentProperties properties = new AgentProperties();

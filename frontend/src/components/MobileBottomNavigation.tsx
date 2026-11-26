@@ -7,6 +7,7 @@ import { BottomNavigation, BottomNavigationAction, Box, Drawer, List, ListItemBu
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { elevation, mobileNavHeight, radius, safeArea } from '../designTokens';
+import { t, useLanguage } from '../i18n';
 
 const main = [
   { label: '总览', path: '/', icon: <DashboardIcon /> },
@@ -22,13 +23,14 @@ const more = [
 ];
 
 export function MobileBottomNavigation() {
+  useLanguage();
   const location = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const value = main.find((item) => item.path === location.pathname)?.path ?? 'more';
   return (
     <>
-      <Box component="nav" aria-label="主导航" sx={{
+      <Box component="nav" aria-label={t("主导航")} sx={{
         display: { xs: 'block', md: 'none' }, position: 'fixed', zIndex: (theme) => theme.zIndex.appBar,
         inset: 'auto 0 0', bgcolor: 'background.paper', borderTop: 1, borderColor: 'divider',
         pb: safeArea.bottom, pl: safeArea.left, pr: safeArea.right,
@@ -38,9 +40,9 @@ export function MobileBottomNavigation() {
           '& .MuiBottomNavigationAction-root': { minWidth: 44, px: 0.5, pt: 0, gap: 0.5 },
           '& .MuiBottomNavigationAction-label, & .MuiBottomNavigationAction-label.Mui-selected': { fontSize: '0.75rem' },
         }}>
-          {main.map((item) => <BottomNavigationAction key={item.path} value={item.path} label={item.label}
+          {main.map((item) => <BottomNavigationAction key={item.path} value={item.path} label={t(item.label)}
             icon={item.icon} aria-current={value === item.path ? 'page' : undefined} onClick={() => navigate(item.path)} />)}
-          <BottomNavigationAction value="more" label="更多" icon={<MoreHorizIcon />}
+          <BottomNavigationAction value="more" label={t("更多")} icon={<MoreHorizIcon />}
             aria-expanded={open} aria-controls={open ? 'mobile-more-navigation' : undefined} onClick={() => setOpen(true)} />
         </BottomNavigation>
       </Box>
@@ -49,12 +51,12 @@ export function MobileBottomNavigation() {
         borderTopLeftRadius: radius, borderTopRightRadius: radius, boxShadow: elevation.overlay,
         pb: safeArea.bottom, pl: safeArea.left, pr: safeArea.right,
       } }}>
-        <Typography variant="h6" sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>更多功能</Typography>
-        <List component="nav" aria-label="更多功能">
+        <Typography variant="h6" sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>{t("更多功能")}</Typography>
+        <List component="nav" aria-label={t("更多功能")}>
           {more.map(([label, path]) => <ListItemButton key={path} selected={location.pathname === path}
             aria-current={location.pathname === path ? 'page' : undefined}
             sx={{ minHeight: 48 }} onClick={() => { setOpen(false); navigate(path); }}>
-            <ListItemText primary={label} /></ListItemButton>)}
+            <ListItemText primary={t(label)} /></ListItemButton>)}
         </List>
       </Drawer>
     </>

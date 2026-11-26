@@ -32,6 +32,9 @@ public record PendingOrderView(
         BigDecimal executableStopLossAmount,
         BigDecimal maxLossAmount,
         BigDecimal riskRewardRatio,
+        BigDecimal estimatedEntryPrice,
+        BigDecimal estimatedNetStopLossAmount,
+        BigDecimal estimatedNetRiskRewardRatio,
         int signalScore,
         BigDecimal fundingRate,
         BigDecimal volatility,
@@ -48,6 +51,8 @@ public record PendingOrderView(
         Instant expireAt
 ) {
     public static PendingOrderView from(PendingOrder order) {
+        var execution = order.canonicalExecutablePlan();
+        var risk = execution == null ? null : execution.risk();
         return new PendingOrderView(
                 order.id(),
                 order.marketType(),
@@ -67,12 +72,14 @@ public record PendingOrderView(
                 order.stopLossPrice(),
                 order.takeProfitPrice(),
                 order.takeProfitPrice(),
-                order.canonicalExecutablePlan() == null
-                        ? List.of() : order.canonicalExecutablePlan().takeProfitLegs(),
+                execution == null ? List.of() : execution.takeProfitLegs(),
                 order.executableContractQuantity(),
                 order.executableStopLossAmount(),
                 order.maxLossAmount(),
                 order.riskRewardRatio(),
+                risk == null ? null : risk.estimatedEntryPrice(),
+                risk == null ? null : risk.estimatedNetStopLossAmount(),
+                risk == null ? null : risk.estimatedNetRiskRewardRatio(),
                 order.signalScore(),
                 order.fundingRate(),
                 order.volatility(),

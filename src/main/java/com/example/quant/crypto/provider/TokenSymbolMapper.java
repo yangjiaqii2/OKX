@@ -31,10 +31,12 @@ public final class TokenSymbolMapper {
             throw new SymbolMappingException("baseSymbol is null/blank");
         }
         String upper = baseSymbol.toUpperCase();
-        if (upper.startsWith("1000") && upper.length() > 4) {
-            return upper.substring(4);
-        }
-        return upper;
+        return switch (upper) {
+            case "1000PEPE" -> "PEPE";
+            case "1000BONK" -> "BONK";
+            case "1000FLOKI" -> "FLOKI";
+            default -> upper;
+        };
     }
 
     /**

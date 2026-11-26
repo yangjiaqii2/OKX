@@ -6,8 +6,6 @@ import com.example.quant.account.AccountSnapshotService;
 import com.example.quant.account.PositionSnapshotService;
 import com.example.quant.account.dto.AccountSummary;
 import com.example.quant.account.dto.PositionSummary;
-import com.example.quant.agent.entry.WaitingEntryIntentService;
-import com.example.quant.agent.entry.WaitingEntryIntentStatus;
 import com.example.quant.agent.gate.ContractTradeGate;
 import com.example.quant.agent.selection.AiContractSelectionService;
 import com.example.quant.agent.selection.ContractSelectionDecision;
@@ -39,7 +37,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -137,14 +134,16 @@ class AutoTradeServiceTest {
     }
 
     @Test
-    void selectedAiWaitPersistsIntentWithoutBudgetOrOrderSubmission() {
+    void selectedAiWaitSkipsTheRoundWithoutQueuingOrSubmitting() {
         AgentProperties properties = new AgentProperties();
         SystemControlService controls = new SystemControlService(tradingProperties());
         controls.enableAutoTrade(BigDecimal.valueOf(20));
         CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
+        CapturingSelectionRecordService records = new CapturingSelectionRecordService();
+        CapturingPendingOrderService pendingOrders = new CapturingPendingOrderService();
         AutoTradeService service = new AutoTradeService(
-                properties, controls, new FakeTradeOrderRecordService(false), new FakeAutoTradeRecordService(),
-                new CandidateTradePlanService(), new PendingOrderService(120), confirmService,
+                properties, controls, new FakeTradeOrderRecordService(false), records,
+                new CandidateTradePlanService(), pendingOrders, confirmService,
                 new FixedAccountSnapshotService(BigDecimal.valueOf(1000)), new FixedPositionSnapshotService(List.of()));
         ContractCandidate candidate = candidateWithClosedCandle("ETH-USDT-SWAP", Instant.parse("2026-08-12T08:00:00Z"),
                 "WAIT_PULLBACK", "100");
@@ -153,31 +152,22 @@ class AutoTradeServiceTest {
                 "WAIT_PULLBACK");
         AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
         Mockito.when(selector.select(Mockito.anyList())).thenReturn(wait);
-        WaitingEntryIntentService intents = Mockito.mock(WaitingEntryIntentService.class);
-        Mockito.when(intents.evaluate(Mockito.anyString(), Mockito.anyList(), Mockito.any()))
-                .thenReturn(Optional.empty());
-        Mockito.when(intents.createOrGet(Mockito.anyString(), Mockito.anyString(), Mockito.eq(candidate),
-                        Mockito.eq(wait), Mockito.eq("qd-wait"), Mockito.any()))
-                .thenReturn(new WaitingEntryIntentService.Intent(
-                        "intent-1", candidate.instId(), WaitingEntryIntentStatus.WAITING, "qd-wait", true));
         service.configureAiContractSelection(selector);
-        service.configureWaitingEntryIntent(intents);
 
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
-                List.of(candidate), Map.of(candidate.instId(), "qd-wait"));
+                List.of(candidate), Map.of(candidate.instId(), "qd-current"));
 
-        assertThat(result.status()).isEqualTo("WAITING_ENTRY");
-        assertThat(result.instId()).isEqualTo(candidate.instId());
-        assertThat(result.message()).isEqualTo("AI_WAITING_ENTRY");
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).isEqualTo("AI_WAIT_SKIPPED");
+        assertThat(records.candidate).isEqualTo(candidate);
+        assertThat(records.selection).isEqualTo(wait);
+        assertThat(pendingOrders.capturedClientOrderId).isNull();
         assertThat(confirmService.confirmCount).isZero();
-        Mockito.verify(intents).createOrGet(Mockito.anyString(), Mockito.eq("AUTO_CONTRACT_V1"),
-                Mockito.eq(candidate), Mockito.eq(wait), Mockito.eq("qd-wait"), Mockito.any());
     }
 
     @Test
-    void triggeredWaitUsesOriginalClientOrderIdAndExistingHardGuardedExecution() {
+    void currentAiTradeUsesTheCurrentDecisionClientOrderIdInTheSameRound() {
         AgentProperties properties = new AgentProperties();
-        properties.aiSelection().setPolicy("CURRENT_AI_OVERRIDE");
         SystemControlService controls = new SystemControlService(tradingProperties());
         controls.enableAutoTrade(BigDecimal.valueOf(20));
         CapturingPendingOrderService pendingOrders = new CapturingPendingOrderService();
@@ -189,49 +179,17 @@ class AutoTradeServiceTest {
         ContractCandidate candidate = candidateWithClosedCandle("ETH-USDT-SWAP", Instant.parse("2026-08-12T08:05:00Z"),
                 "READY", "99.8");
         AiContractSelectionService selector = Mockito.mock(AiContractSelectionService.class);
-        WaitingEntryIntentService intents = Mockito.mock(WaitingEntryIntentService.class);
-        Mockito.when(intents.evaluate(Mockito.anyString(), Mockito.anyList(), Mockito.any()))
-                .thenReturn(Optional.of(new WaitingEntryIntentService.TriggeredIntent(
-                        "intent-1", candidate.instId(), DirectionBias.BULLISH, "qd-original", candidate)));
+        Mockito.when(selector.select(List.of(candidate))).thenReturn(selectedDecision(
+                ContractSelectionDecision.DecisionSource.AI_PRIMARY, candidate.instId(), DirectionBias.BULLISH,
+                "MARKET"));
         service.configureAiContractSelection(selector);
-        service.configureWaitingEntryIntent(intents);
 
         AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(
                 List.of(candidate), Map.of(candidate.instId(), "qd-current"));
 
         assertThat(result.status()).isEqualTo("EXECUTED");
-        assertThat(pendingOrders.capturedClientOrderId).isEqualTo("qd-original");
-        Mockito.verify(selector, Mockito.never()).select(Mockito.anyList());
-        Mockito.verify(intents).complete("intent-1", WaitingEntryIntentStatus.SUBMITTED,
-                result.pendingOrderId(), result.okxOrderId(), result.message(), result.createdAt());
-    }
-
-    @Test
-    void ruleFirstTriggeredWaitCannotBypassCurrentRuleEligibility() {
-        AgentProperties properties = new AgentProperties();
-        SystemControlService controls = new SystemControlService(tradingProperties());
-        controls.enableAutoTrade(BigDecimal.valueOf(20));
-        CapturingPendingOrderService pendingOrders = new CapturingPendingOrderService();
-        CapturingOrderConfirmService confirmService = new CapturingOrderConfirmService();
-        AutoTradeService service = new AutoTradeService(
-                properties, controls, new FakeTradeOrderRecordService(false), new FakeAutoTradeRecordService(),
-                new CandidateTradePlanService(), pendingOrders, confirmService,
-                new FixedAccountSnapshotService(BigDecimal.valueOf(1000)), new FixedPositionSnapshotService(List.of()));
-        ContractCandidate denied = candidateWithAction("ETH-USDT-SWAP", 60, "WAIT_CONFIRM");
-        WaitingEntryIntentService intents = Mockito.mock(WaitingEntryIntentService.class);
-        Mockito.when(intents.evaluate(Mockito.anyString(), Mockito.anyList(), Mockito.any()))
-                .thenReturn(Optional.of(new WaitingEntryIntentService.TriggeredIntent(
-                        "intent-2", denied.instId(), DirectionBias.BULLISH, "qd-original", denied)));
-        service.configureWaitingEntryIntent(intents);
-
-        AutoTradeService.AutoTradeResult result = service.evaluateAndExecute(List.of(denied));
-
-        assertThat(result.status()).isEqualTo("SKIPPED");
-        assertThat(result.message()).startsWith("WAITING_ENTRY_RULE_INELIGIBLE:");
-        assertThat(confirmService.confirmCount).isZero();
-        assertThat(pendingOrders.capturedClientOrderId).isNull();
-        Mockito.verify(intents).complete(Mockito.eq("intent-2"), Mockito.eq(WaitingEntryIntentStatus.FAILED_SAFE),
-                Mockito.isNull(), Mockito.isNull(), Mockito.contains("WAITING_ENTRY_RULE_INELIGIBLE"), Mockito.any());
+        assertThat(pendingOrders.capturedClientOrderId).isEqualTo("qd-current");
+        assertThat(confirmService.confirmCount).isEqualTo(1);
     }
 
     @Test

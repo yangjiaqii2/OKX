@@ -100,6 +100,62 @@ class OkxContractScannerScanControlTest {
     }
 
     @Test
+    void thinAndMissingBooksCannotClaimTheOnlyDeepAnalysisSlot() {
+        var provider = new StubProvider();
+        for (String base : List.of("THIN", "MISSING", "LIQUID")) provider.snapshot(base, qualitySnapshot(base));
+        var rows = List.of(ticker("THIN-USDT-SWAP", 900_000_000),
+                ticker("MISSING-USDT-SWAP", 800_000_000), ticker("LIQUID-USDT-SWAP", 100_000_000));
+        var deepRequestsForRejected = new AtomicInteger();
+        var client = new FakeTickerClient(rows, false, 0) {
+            @Override
+            public JsonNode publicGet(String path) {
+                if (path.startsWith("/api/v5/market/books") && path.contains("MISSING-USDT")) {
+                    throw new IllegalStateException("book unavailable");
+                }
+                if (path.startsWith("/api/v5/market/books") && path.contains("THIN-USDT")) {
+                    return new ObjectMapper().valueToTree(Map.of("data", List.of(Map.of(
+                            "bids", List.of(List.of("1.4999", "6")), "asks", List.of(List.of("1.5001", "9000"))))));
+                }
+                if (path.contains("/candles") && (path.contains("THIN-USDT") || path.contains("MISSING-USDT"))) {
+                    deepRequestsForRejected.incrementAndGet();
+                }
+                return super.publicGet(path);
+            }
+        };
+        var props = defaultProps();
+        props.selection().setDeepAnalysisLimit(1);
+        var scanner = fixtureWithClient(provider, client, props).scanner;
+        var result = scanner.scan();
+
+        assertThat(result).extracting(c -> c.instId()).containsExactly("LIQUID-USDT-SWAP");
+        assertThat(scanner.lastScanReport().hardFilterPassed()).isEqualTo(1);
+        assertThat(scanner.lastDiagnostics().funnel().stages())
+                .containsEntry("before_order_book", 3).containsEntry("after_order_book", 1)
+                .containsEntry("order_book_unavailable", 1);
+        assertThat(deepRequestsForRejected.get()).isZero();
+    }
+
+    @Test
+    void deadlineDuringBookScreeningDoesNotStartDeepAnalysis() {
+        var provider = new StubProvider();
+        provider.snapshot("SLOW", qualitySnapshot("SLOW"));
+        var client = new FakeTickerClient(List.of(ticker("SLOW-USDT-SWAP", 900_000_000)), false, 0) {
+            @Override
+            public JsonNode publicGet(String path, Duration timeout) {
+                if (path.startsWith("/api/v5/market/books")) sleepBeyondTimeout(timeout);
+                return super.publicGet(path, timeout);
+            }
+        };
+        var scanner = fixtureWithClient(provider, client, defaultProps()).scanner;
+        Instant start = Instant.now();
+        var ctx = ScanContext.forTest("book-deadline", start, start.plusMillis(150));
+        assertThat(scanner.scan(ctx)).isEmpty();
+        assertThat(ctx.status()).isEqualTo(ScanRunStatus.PARTIAL_TIMEOUT);
+        assertThat(ctx.currentStage()).isEqualTo("order_book_prefilter");
+        assertThat(ctx.deepAnalysisStarted()).isZero();
+    }
+
+    @Test
     void providerTimeoutDoesNotFailEntireScan() {
         StubProvider provider = new StubProvider();
         provider.snapshot("A", qualitySnapshot("A"));
@@ -555,8 +611,8 @@ class OkxContractScannerScanControlTest {
                 : BigDecimal.valueOf(volCcy24h).divide(PRICE, 8, java.math.RoundingMode.HALF_UP);
         t.put("volCcy24h", baseVolume.stripTrailingZeros().toPlainString());
         t.put("vol24h", "0");
-        t.put("bidPx", PRICE.subtract(new BigDecimal("0.01")).toPlainString());
-        t.put("askPx", PRICE.add(new BigDecimal("0.01")).toPlainString());
+        t.put("bidPx", PRICE.subtract(new BigDecimal("0.0001")).toPlainString());
+        t.put("askPx", PRICE.add(new BigDecimal("0.0001")).toPlainString());
         return t;
     }
 
@@ -1085,7 +1141,7 @@ class OkxContractScannerScanControlTest {
                 }
                 if (requestPath.startsWith("/api/v5/market/books")) {
                     return objectMapper.readTree("""
-                            {"code":"0","data":[{"bids":[["1.49","10000"],["1.48","8000"]],"asks":[["1.51","10000"],["1.52","8000"]]}]}
+                            {"code":"0","data":[{"bids":[["1.4999","10000"],["1.48","8000"]],"asks":[["1.5001","10000"],["1.52","8000"]]}]}
                             """);
                 }
                 if (requestPath.startsWith("/api/v5/public/funding-rate")) {

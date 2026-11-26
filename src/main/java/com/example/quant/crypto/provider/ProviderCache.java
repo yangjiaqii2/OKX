@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory;
  * 第三方 Provider 的 TTL 缓存。
  *
  * <p>核心规则：<ul>
- *   <li>数据在 {@code freshTtl} 之内 → {@link DataQuality#FRESH}，可参与硬资格</li>
+ *   <li>数据在 {@code freshTtl} 之内 → 保留上游原始质量</li>
  *   <li>数据在 {@code staleTtl} 之内但超过 {@code freshTtl} → {@link DataQuality#STALE}，
  *       仅供观察，禁止通过 Universe 硬资格</li>
  *   <li>超过 {@code staleTtl} → 重新拉取</li>
@@ -25,7 +25,7 @@ import org.slf4j.LoggerFactory;
  */
 public class ProviderCache<K, T> {
     private static final Logger log = LoggerFactory.getLogger(ProviderCache.class);
-    private final ConcurrentHashMap<K, Entry<T>> cache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<K, ProviderResult<T>> cache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<K, ProviderResult<T>> negativeCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<K, Object> inflight = new ConcurrentHashMap<>();
     private final Duration freshTtl;
@@ -44,16 +44,14 @@ public class ProviderCache<K, T> {
         if (negative != null) {
             return negative;
         }
-        Entry<T> existing = cache.get(key);
+        ProviderResult<T> existing = cache.get(key);
         if (existing != null) {
-            Duration age = Duration.between(existing.fetchedAt, now);
-            if (age.compareTo(freshTtl) <= 0) {
-                return new ProviderResult<>(existing.data, DataQuality.FRESH, existing.fetchedAt,
-                        existing.source, null, null);
+            Duration age = existing.age(now);
+            if (!age.isNegative() && age.compareTo(freshTtl) <= 0) {
+                return existing;
             }
-            if (age.compareTo(staleTtl) <= 0) {
-                return new ProviderResult<>(existing.data, DataQuality.STALE, existing.fetchedAt,
-                        existing.source, null, null);
+            if (!age.isNegative() && age.compareTo(staleTtl) <= 0) {
+                return ProviderResult.stale(existing.data(), existing.source(), existing.fetchedAt());
             }
         }
         // single-flight
@@ -62,21 +60,13 @@ public class ProviderCache<K, T> {
         if (prev != null) {
             // another thread is fetching; return stale or unavailable
             if (existing != null) {
-                return new ProviderResult<>(existing.data, DataQuality.STALE, existing.fetchedAt,
-                        existing.source, null, null);
+                return ProviderResult.stale(existing.data(), existing.source(), existing.fetchedAt());
             }
             return ProviderResult.unavailable("Provider " + name + " inflight");
         }
         try {
             ProviderResult<T> result = loader.apply(key);
-            // cache only when data present
-            if (result != null && result.data() != null) {
-                cache.put(key, new Entry<>(result.data(), result.fetchedAt(), result.source()));
-                negativeCache.remove(key);
-            } else if (isStableMiss(result)) {
-                negativeCache.put(key, result);
-                cache.remove(key);
-            }
+            seed(key, result);
             return result;
         } catch (RuntimeException ex) {
             log.warn("Provider {} loader exception for key={} message={}", name, key, ex.getMessage());
@@ -99,24 +89,23 @@ public class ProviderCache<K, T> {
         if (negative != null) {
             return Optional.of(negative);
         }
-        Entry<T> existing = cache.get(key);
-        if (existing == null) {
+        ProviderResult<T> existing = cache.get(key);
+        if (existing == null || !existing.isUsable()) {
             return Optional.empty();
         }
-        Duration age = Duration.between(existing.fetchedAt, now);
+        Duration age = existing.age(now);
         if (age.isNegative() || age.compareTo(staleTtl) > 0) {
             return Optional.empty();
         }
         if (age.compareTo(freshTtl) > 0) {
             return Optional.empty();
         }
-        return Optional.of(new ProviderResult<>(existing.data, DataQuality.FRESH, existing.fetchedAt,
-                existing.source, null, null));
+        return Optional.of(existing);
     }
 
     public void seed(K key, ProviderResult<T> result) {
         if (result != null && result.data() != null) {
-            cache.put(key, new Entry<>(result.data(), result.fetchedAt(), result.source()));
+            cache.put(key, result);
             negativeCache.remove(key);
         } else if (isStableMiss(result)) {
             negativeCache.put(key, result);
@@ -155,6 +144,4 @@ public class ProviderCache<K, T> {
         return result != null && result.data() == null && "NOT_FOUND".equals(result.errorCode());
     }
 
-    private record Entry<T>(T data, Instant fetchedAt, String source) {
-    }
 }

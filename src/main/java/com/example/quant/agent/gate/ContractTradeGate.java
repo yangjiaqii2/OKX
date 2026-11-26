@@ -134,7 +134,7 @@ public final class ContractTradeGate {
         }
     }
 
-    private static boolean isTradableSignal(ContractSignalType signalType) {
+    public static boolean isTradableSignal(ContractSignalType signalType) {
         return signalType == ContractSignalType.STRONG_LONG
                 || signalType == ContractSignalType.PULLBACK_LONG
                 || signalType == ContractSignalType.TREND_SHORT;

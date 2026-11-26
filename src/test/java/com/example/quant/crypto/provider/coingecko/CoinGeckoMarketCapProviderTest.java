@@ -56,10 +56,28 @@ class CoinGeckoMarketCapProviderTest {
         return new CoinGeckoTokenBucket(1000);
     }
 
+    private static CoinGeckoMarketData currentBtc() {
+        var sample = CoinGeckoConstants.sampleBtc();
+        return new CoinGeckoMarketData(sample.id(), sample.symbol(), sample.marketCapUsd(), sample.fdvUsd(),
+                sample.circulatingSupply(), sample.totalSupply(), sample.maxSupply(), Instant.now());
+    }
+
+    @Test
+    void upstreamSnapshotAgeIsNotResetOnFetch() {
+        FakeHttp fake = new FakeHttp();
+        fake.enqueueOk(CoinGeckoConstants.sampleBtc());
+        var provider = new CoinGeckoMarketCapProvider("coingecko", fake, generousBucket());
+
+        var result = provider.fetchBatch(java.util.List.of("BTC")).get("BTC");
+
+        assertThat(result.dataQuality()).isEqualTo(DataQuality.STALE);
+        assertThat(result.fetchedAt()).isEqualTo(CoinGeckoConstants.sampleBtc().lastUpdated());
+    }
+
     @Test
     void fetchSuccessReturnsFreshResult() {
         FakeHttp fake = new FakeHttp();
-        fake.enqueueOk(CoinGeckoConstants.sampleBtc());
+        fake.enqueueOk(currentBtc());
         CoinGeckoMarketCapProvider provider = new CoinGeckoMarketCapProvider(
                 "coingecko", fake, generousBucket());
 
@@ -155,7 +173,7 @@ class CoinGeckoMarketCapProviderTest {
         FakeHttp fake = new FakeHttp();
         fake.errors.add(new CoinGeckoRequestException(
                 CoinGeckoRequestException.Kind.INTERRUPTED, "scan deadline cancelled"));
-        fake.enqueueOk(CoinGeckoConstants.sampleBtc());
+        fake.enqueueOk(currentBtc());
         CoinGeckoMarketCapProvider provider = new CoinGeckoMarketCapProvider(
                 "coingecko", fake, generousBucket());
 
@@ -246,7 +264,7 @@ class CoinGeckoMarketCapProviderTest {
     void fetchUpperCasesBaseSymbol() {
         // 真实 CoinGecko symbols 大小写不敏感；提供方必须把 base 标准化为大写
         FakeHttp fake = new FakeHttp();
-        fake.enqueueOk(CoinGeckoConstants.sampleBtc());
+        fake.enqueueOk(currentBtc());
         CoinGeckoMarketCapProvider provider = new CoinGeckoMarketCapProvider(
                 "coingecko", fake, generousBucket());
 
@@ -259,8 +277,8 @@ class CoinGeckoMarketCapProviderTest {
     @Test
     void deadlineAwareBatchKeepsBatchSemanticsAndConsumesOneToken() {
         FakeHttp fake = new FakeHttp();
-        fake.enqueueOk(CoinGeckoConstants.sampleBtc());
-        fake.enqueueOk(CoinGeckoConstants.sampleBtc());
+        fake.enqueueOk(currentBtc());
+        fake.enqueueOk(currentBtc());
         CoinGeckoTokenBucket oneToken = new CoinGeckoTokenBucket(1);
         CoinGeckoMarketCapProvider provider = new CoinGeckoMarketCapProvider(
                 "coingecko", fake, oneToken);

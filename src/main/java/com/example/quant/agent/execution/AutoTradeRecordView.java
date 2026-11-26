@@ -42,6 +42,8 @@ public record AutoTradeRecordView(
         String aiDirection,
         String aiEntryMode,
         String selectionReason,
+        String aiObservationId,
+        String aiRejectionCode,
         Instant createdAt,
         Instant updatedAt
 ) {
@@ -85,6 +87,8 @@ public record AutoTradeRecordView(
                 entity.getAiDirection(),
                 entity.getAiEntryMode(),
                 entity.getSelectionReason(),
+                entity.getAiObservationId(),
+                entity.getAiRejectionCode(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt()
         );

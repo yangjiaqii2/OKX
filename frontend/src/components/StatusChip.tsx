@@ -1,11 +1,13 @@
 import { Chip } from '@mui/material';
 import { formatStatus, formatTrend } from '../formatters';
+import { useLanguage } from '../i18n';
 
 type StatusChipProps = {
   value?: string | boolean | number | null;
 };
 
 export function StatusChip({ value }: StatusChipProps) {
+  useLanguage();
   const text = String(value ?? 'UNKNOWN');
 
   const colorMap: Record<string, 'success' | 'error' | 'warning' | 'info' | 'default'> = {

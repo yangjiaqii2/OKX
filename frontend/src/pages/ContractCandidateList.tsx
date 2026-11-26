@@ -35,7 +35,8 @@ import { insetPanel, panel, interactivePanel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { positionKey } from '../components/PositionSnapshotTable';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
-import { directionTone, formatLeverage, formatNumber, formatPercent, formatPrice, formatSide, formatTrend, formatUSDT, formatVolume, pnlColor } from '../formatters';
+import { directionTone, formatAutoTradeReason, formatLeverage, formatNumber, formatPercent, formatPrice, formatSide, formatTrend, formatUSDT, formatVolume, pnlColor } from '../formatters';
+import { getLanguage, t, useLanguage } from '../i18n';
 
 type ContractCandidate = Record<string, unknown>;
 type PositionRow = Record<string, unknown>;
@@ -63,6 +64,7 @@ const candlePeriods = [
 ];
 
 export function ContractCandidateList() {
+  useLanguage();
   const notify = useNotify();
   const [contracts, setContracts] = useState<ContractCandidate[]>([]);
   const [positions, setPositions] = useState<PositionRow[]>([]);
@@ -110,7 +112,7 @@ export function ContractCandidateList() {
       setLastUpdatedAt(new Date());
       setError('');
     } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : '合约数据加载失败';
+      const message = loadError instanceof Error ? loadError.message : t("合约数据加载失败");
       setError(message);
       if (!silent) {
         notify(message, { type: 'error' });
@@ -126,10 +128,10 @@ export function ContractCandidateList() {
     setPlanningInstId(instId);
     try {
       const order = (await quantApi.createPendingOrder(instId)) as Record<string, unknown>;
-      notify(`AI计划已创建：${String(order.instId)}，请到待确认订单填写金额`, { type: 'success' });
+      notify(`${t("AI计划已创建：")}${String(order.instId)}${t("，请到待确认订单填写金额")}`, { type: 'success' });
       await load(true);
     } catch (planError) {
-      notify(planError instanceof Error ? planError.message : 'AI计划生成失败', { type: 'error', multiLine: true });
+      notify(planError instanceof Error ? formatAutoTradeReason(planError.message) : t("AI计划生成失败"), { type: 'error', multiLine: true });
     } finally {
       setPlanningInstId('');
     }
@@ -147,11 +149,11 @@ export function ContractCandidateList() {
         posSide: String(closeDialogPosition.posSide ?? ''),
         marginMode: String(closeDialogPosition.marginMode ?? ''),
       });
-      notify(`已提交平仓：${String(closeDialogPosition.instId ?? '-')}`, { type: 'success' });
+      notify(`${t("已提交平仓：")}${String(closeDialogPosition.instId ?? '-')}`, { type: 'success' });
       setCloseDialogPosition(null);
       await load(true);
     } catch (closeError) {
-      notify(closeError instanceof Error ? closeError.message : '平仓提交失败', { type: 'error', multiLine: true });
+      notify(closeError instanceof Error ? closeError.message : t("平仓提交失败"), { type: 'error', multiLine: true });
     } finally {
       setClosingKey('');
     }
@@ -159,19 +161,21 @@ export function ContractCandidateList() {
 
   async function createTopAiPlan() {
     if (contracts.length === 0) {
-      notify('当前没有合约可生成计划', { type: 'warning' });
+      notify(t("当前没有合约可生成计划"), { type: 'warning' });
       return;
     }
     setBatchPlanning(true);
     try {
-      const selectedInstId = aiSelection?.source === 'AI_PRIMARY' ? String(aiSelection.selectedInstId ?? '') : '';
-      const topContract = contracts.find((item) => item.instId === selectedInstId)
-        ?? [...contracts].sort((a, b) => Number(b.finalRankScore ?? b.score ?? 0) - Number(a.finalRankScore ?? a.score ?? 0))[0];
+      const topContract = contracts.find((item) => item.action === 'AUTO_TRADE_ALLOWED');
+      if (!topContract) {
+        notify(t("当前没有可生成交易方案的候选"), { type: 'warning' });
+        return;
+      }
       const order = (await quantApi.createPendingOrder(String(topContract.instId))) as Record<string, unknown>;
-      notify(`最高分计划已创建：${String(order.instId)}，请到待确认订单查看`, { type: 'success' });
+      notify(`${t("推荐方案已创建：")}${String(order.instId)}${t("，请到待确认订单查看")}`, { type: 'success' });
       await load(true);
     } catch (planError) {
-      notify(planError instanceof Error ? planError.message : '最高分计划生成失败', { type: 'error', multiLine: true });
+      notify(planError instanceof Error ? formatAutoTradeReason(planError.message) : t("推荐方案生成失败"), { type: 'error', multiLine: true });
     } finally {
       setBatchPlanning(false);
     }
@@ -230,19 +234,19 @@ export function ContractCandidateList() {
   const totalPnl = heldContracts.reduce((sum, contract) => sum + Number(contract.position?.unrealizedPnl ?? 0), 0);
 
   return (
-    <PageShell title="合约机会">
+    <PageShell title={t("合约机会")}>
       <Stack spacing={2}>
         <PageHeader
-          title="AI 合约机会"
-          subtitle={`${lastUpdatedAt ? `行情刷新 ${lastUpdatedAt.toLocaleTimeString()}` : '行情准备中'}${refreshing ? ' · 更新中' : ''}`}
+          title={t("AI 合约机会")}
+          subtitle={`${lastUpdatedAt ? `${t("行情刷新 ")}${lastUpdatedAt.toLocaleTimeString(getLanguage())}` : t("行情准备中")}${refreshing ? t(" · 更新中") : ''}`}
           filters={
             <>
             <TextField
               size="small"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索合约"
-                inputProps={{ 'aria-label': '搜索合约' }}
+              placeholder={t("搜索合约")}
+                inputProps={{ 'aria-label': t("搜索合约") }}
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
@@ -278,7 +282,7 @@ export function ContractCandidateList() {
               }}
               disabled={batchPlanning}
             >
-              {sortField === 'default' ? '默认排序' : sortField === 'change' ? `涨幅${sortDir === 'asc' ? '↑' : '↓'}` : `价格${sortDir === 'asc' ? '↑' : '↓'}`}
+              {sortField === 'default' ? t("默认排序") : sortField === 'change' ? `${t("涨幅")}${sortDir === 'asc' ? '↑' : '↓'}` : `${t("价格")}${sortDir === 'asc' ? '↑' : '↓'}`}
             </Button>
             <Button
               variant="outlined"
@@ -287,7 +291,7 @@ export function ContractCandidateList() {
               onClick={() => void load(true)}
               disabled={refreshing || batchPlanning}
             >
-              刷新
+              {t("刷新")}
             </Button>
             <Button
               variant="outlined"
@@ -296,7 +300,7 @@ export function ContractCandidateList() {
               onClick={() => void createTopAiPlan()}
               disabled={batchPlanning || contracts.length === 0}
             >
-              {batchPlanning ? '生成中' : '最高分计划'}
+              {batchPlanning ? t("生成中") : t("生成推荐方案")}
             </Button>
             </>
           }
@@ -314,20 +318,20 @@ export function ContractCandidateList() {
             '& > :last-child': { gridColumn: { xs: '1 / -1', sm: 'auto' } },
           }}
         >
-          <MarketStat label="准入候选" value={contracts.length} helper={`当前持仓 ${heldContracts.length}`} />
-          <MarketStat label="最高分候选" value={String(top?.instId ?? '--')} helper={`${formatTrend(top?.trendDirection)} · ${formatNumber(top?.score, 0)}分`} />
-          <MarketStat label="持仓浮盈亏" value={formatUSDT(totalPnl)} helper="OKX未实现盈亏" color={pnlColor(totalPnl)} />
+          <MarketStat label={t("准入候选")} value={contracts.length} helper={`${t("当前持仓 ")}${heldContracts.length}`} />
+          <MarketStat label={t("最高分候选")} value={String(top?.instId ?? '--')} helper={`${formatTrend(top?.trendDirection)} · ${formatNumber(top?.score, 0)}${t("分")}`} />
+          <MarketStat label={t("持仓浮盈亏")} value={formatUSDT(totalPnl)} helper={t("OKX未实现盈亏")} color={pnlColor(totalPnl)} />
         </Box>
 
         <Alert severity="info">
-          AI 在规则准入池内主导合约、方向和入场模式；规则继续计算价格、仓位并执行所有硬风控。
+          {t("AI 在规则准入池内主导合约、方向和入场模式；规则继续计算价格、仓位并执行所有硬风控。")}
         </Alert>
         <Alert severity={aiSelection?.source === 'RULE_FALLBACK' ? 'warning' : 'info'}>
           {aiSelection?.source === 'AI_PRIMARY'
-            ? `AI 主选 ${String(aiSelection.selectedInstId)} · ${formatSide(aiSelection.direction)} · ${String(aiSelection.entryMode)} · 置信度 ${formatPercent(Number(aiSelection.confidence ?? 0) * 100)}`
-            : aiSelection?.source === 'AI_WAIT' ? 'AI 本轮选择等待，不会触发规则保底下单。'
-              : aiSelection?.source === 'RULE_FALLBACK' ? `AI 不可用，已进入规则保底：${String(aiSelection.fallbackReason ?? '原因不可用')}`
-                : 'AI 尚未完成本轮选择。'}
+            ? `${t("AI 主选 ")}${String(aiSelection.selectedInstId)} · ${formatSide(aiSelection.direction)} · ${String(aiSelection.entryMode)}${t(" · 置信度 ")}${formatPercent(Number(aiSelection.confidence ?? 0) * 100)}`
+            : aiSelection?.source === 'AI_WAIT' ? t("AI 本轮选择等待，不会触发规则保底下单。")
+              : aiSelection?.source === 'RULE_FALLBACK' ? `${t("AI 不可用，已进入规则保底：")}${String(aiSelection.fallbackReason ?? t("原因不可用"))}`
+                : t("AI 尚未完成本轮选择。")}
         </Alert>
 
         {loading ? (
@@ -358,7 +362,7 @@ export function ContractCandidateList() {
               />
             ))}
             {filtered.length === 0 && (
-              <PanelState sx={{ ...panel, gridColumn: '1 / -1' }}>当前没有满足数据准入条件的合约候选。</PanelState>
+              <PanelState sx={{ ...panel, gridColumn: '1 / -1' }}>{t("当前没有满足数据准入条件的合约候选。")}</PanelState>
             )}
           </Box>
         )}
@@ -392,6 +396,7 @@ function ContractCard({
   onClosePosition: () => void;
   onOpenChart: () => void;
 }) {
+  useLanguage();
   const change = Number(contract.changePercent24h);
   const position = contract.position ?? {};
   const held = Boolean(contract.position);
@@ -402,7 +407,7 @@ function ContractCard({
   return (
     <Box component="article" sx={{ ...panel, ...interactivePanel, position: 'relative', p: 2 }}>
       <ButtonBase
-        aria-label={`${String(contract.instId ?? '--')} K线图`}
+        aria-label={`${String(contract.instId ?? '--')}${t(" K线图")}`}
         onClick={onOpenChart}
         disableRipple
         sx={{ position: 'absolute', inset: 0, zIndex: 1, borderRadius: 1 }}
@@ -438,7 +443,7 @@ function ContractCard({
         >
           <Box>
             <Typography variant="caption" color="text.secondary">
-              {held ? '未实现盈亏' : '最新价格'}
+              {held ? t("未实现盈亏") : t("最新价格")}
             </Typography>
             <Typography sx={{ fontSize: '1.375rem', fontWeight: 750, color: held ? pnlColor(position.unrealizedPnl) : 'text.primary' }}>
               {held ? formatUSDT(position.unrealizedPnl) : formatPrice(contract.lastPrice)}
@@ -453,16 +458,16 @@ function ContractCard({
         </Box>
 
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
-          <MiniMetric label="持仓数量" value={held ? formatNumber(position.size) : '未持仓'} />
-          <MiniMetric label="持仓均价" value={held ? formatPrice(position.avgPrice) : '不可用'} />
-          <MiniMetric label="真实保证金" value={held ? formatUSDT(position.margin) : '不可用'} />
-          <MiniMetric label="保证金模式" value={held ? `${formatSide(position.marginMode)} ${formatLeverage(position.leverage)}` : '不可用'} />
-          <MiniMetric label="最新价" value={formatPrice(contract.lastPrice)} />
-          <MiniMetric label="综合评分" value={formatNumber(contract.score, 0)} />
-          <MiniMetric label="建议杠杆" value={formatLeverage(contract.suggestedLeverage)} />
-          <MiniMetric label="24h成交量" value={formatVolume(contract.volume24h)} />
-          <MiniMetric label="量能放大" value={`${formatNumber(contract.volumeSpikeRatio, 2)}x`} />
-          <MiniMetric label="方向" value={formatTrend(contract.trendDirection)} />
+          <MiniMetric label={t("持仓数量")} value={held ? formatNumber(position.size) : t("未持仓")} />
+          <MiniMetric label={t("持仓均价")} value={held ? formatPrice(position.avgPrice) : t("不可用")} />
+          <MiniMetric label={t("真实保证金")} value={held ? formatUSDT(position.margin) : t("不可用")} />
+          <MiniMetric label={t("保证金模式")} value={held ? `${formatSide(position.marginMode)} ${formatLeverage(position.leverage)}` : t("不可用")} />
+          <MiniMetric label={t("最新价")} value={formatPrice(contract.lastPrice)} />
+          <MiniMetric label={t("综合评分")} value={formatNumber(contract.score, 0)} />
+          <MiniMetric label={t("建议杠杆")} value={formatLeverage(contract.suggestedLeverage)} />
+          <MiniMetric label={t("24h成交量")} value={formatVolume(contract.volume24h)} />
+          <MiniMetric label={t("量能放大")} value={`${formatNumber(contract.volumeSpikeRatio, 2)}x`} />
+          <MiniMetric label={t("方向")} value={formatTrend(contract.trendDirection)} />
         </Box>
 
         <Stack direction="row" gap={1} flexWrap="wrap" sx={{ minHeight: 26 }}>
@@ -483,7 +488,7 @@ function ContractCard({
             onClick={onClosePosition}
             sx={{ minWidth: 72 }}
           >
-            {closing ? '提交中' : '平仓'}
+            {closing ? t("提交中") : t("平仓")}
           </Button>}
           <Button
             size="small"
@@ -493,7 +498,7 @@ function ContractCard({
             onClick={onCreatePlan}
             sx={{ minWidth: 88 }}
           >
-            {planning ? '推理中' : 'AI计划'}
+            {planning ? t("推理中") : t("AI计划")}
           </Button>
         </Stack>
       </Stack>
@@ -502,6 +507,7 @@ function ContractCard({
 }
 
 function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean; onClose: () => void }) {
+  useLanguage();
   const notify = useNotify();
   const [bar, setBar] = useState('15m');
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -527,7 +533,7 @@ function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean
         }
       } catch (error) {
         if (active) {
-          notify(error instanceof Error ? error.message : 'K线加载失败', { type: 'error' });
+          notify(error instanceof Error ? error.message : t("K线加载失败"), { type: 'error' });
           setCandles([]);
         }
       } finally {
@@ -555,12 +561,12 @@ function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="lg">
       <DialogTitle>
         <Box sx={{ pr: 6 }}>
-          <Typography component="span" variant="h6">{instId} K线图</Typography>
+          <Typography component="span" variant="h6">{instId} {t("K线图")}</Typography>
           <Typography display="block" variant="caption" color={positive ? 'success.main' : 'error.main'}>
-            {positive ? '多头结构更明显' : '空头结构更明显'}
+            {positive ? t("多头结构更明显") : t("空头结构更明显")}
           </Typography>
         </Box>
-        <IconButton aria-label="关闭" onClick={onClose} sx={{ position: 'absolute', right: 8, top: 8 }}>
+        <IconButton aria-label={t("关闭")} onClick={onClose} sx={{ position: 'absolute', right: 8, top: 8 }}>
           <CloseIcon fontSize="small" />
         </IconButton>
       </DialogTitle>
@@ -570,7 +576,7 @@ function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean
             size="small"
             exclusive
             value={bar}
-            aria-label="K线周期"
+            aria-label={t("K线周期")}
             onChange={(_, value) => value && setBar(value)}
             sx={{
               display: 'flex',
@@ -580,7 +586,7 @@ function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean
             }}
           >
             {candlePeriods.map((period) => (
-              <ToggleButton key={period.bar} value={period.bar}>{period.label}</ToggleButton>
+              <ToggleButton key={period.bar} value={period.bar}>{t(period.label)}</ToggleButton>
             ))}
           </ToggleButtonGroup>
           {loading ? <PanelState loading sx={insetPanel} /> : <CandleChart candles={candles} bar={bar} />}
@@ -591,6 +597,7 @@ function CandleDialog({ instId, open, onClose }: { instId: string; open: boolean
 }
 
 function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
+  useLanguage();
   const chartRef = useRef<HTMLDivElement>(null);
   const [chartWidth, setChartWidth] = useState(0);
   useEffect(() => {
@@ -621,7 +628,7 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
 
   if (data.length === 0) {
     return (
-      <PanelState sx={insetPanel}>暂无K线数据</PanelState>
+      <PanelState sx={insetPanel}>{t("暂无K线数据")}</PanelState>
     );
   }
 
@@ -646,13 +653,13 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
   return (
     <Box ref={chartRef} sx={{ ...panel, overflow: 'hidden' }}>
       <Stack direction="row" flexWrap="wrap" gap={1} alignItems="baseline" sx={{ px: 1.5, py: 1, borderBottom: 1, borderColor: 'divider' }}>
-        <Typography variant="caption" color="text.secondary">实时最新价</Typography>
+        <Typography variant="caption" color="text.secondary">{t("实时最新价")}</Typography>
         <Typography fontWeight={750}>{formatPrice(last.close)}</Typography>
         <Typography variant="body2" fontWeight={700} color={trendPositive ? 'success.main' : 'error.main'}>
           {formatPercent(changePercent)}
         </Typography>
       </Stack>
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img" aria-label="价格K线及成交量" style={{ display: 'block' }}>
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img" aria-label={t("价格K线及成交量")} style={{ display: 'block' }}>
         {grid.map((price) => {
           const lineY = y(price);
           return (
@@ -667,7 +674,7 @@ function CandleChart({ candles, bar }: { candles: Candle[]; bar: string }) {
         <line x1={padding.left} y1={priceHeight} x2={width - padding.right} y2={priceHeight} stroke={colors.divider} strokeWidth="1" />
         <line x1={padding.left} y1={volumeTop - 10} x2={width - padding.right} y2={volumeTop - 10} stroke={colors.divider} strokeWidth="1" />
         <text x={padding.left} y={volumeTop - 18} fill={colors.muted} fontSize="12">
-          分时量
+          {t("分时量")}
         </text>
         <path
           d={data.map((item, index) => `${index === 0 ? 'M' : 'L'} ${padding.left + index * step + step / 2} ${y(item.close)}`).join(' ')}
@@ -794,6 +801,7 @@ function formatCandleTime(date: Date, bar: string) {
 }
 
 function MarketStat({ label, value, helper, color }: { label: string; value: unknown; helper: string; color?: string }) {
+  useLanguage();
   return (
     <Box sx={{ ...insetPanel, p: 2, bgcolor: 'background.paper' }}>
       <Typography variant="caption" color="text.secondary" fontWeight={800}>
@@ -808,6 +816,7 @@ function MarketStat({ label, value, helper, color }: { label: string; value: unk
 }
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
+  useLanguage();
   return (
     <Box sx={{ ...insetPanel, p: 1 }}>
       <Typography variant="caption" color="text.secondary" fontWeight={800}>

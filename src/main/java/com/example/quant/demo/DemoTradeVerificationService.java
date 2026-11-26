@@ -27,7 +27,7 @@ import org.springframework.stereotype.Service;
 public class DemoTradeVerificationService {
     private static final BigDecimal MARGIN = new BigDecimal("5");
     private static final BigDecimal STOP_RATE = new BigDecimal("0.01");
-    private static final BigDecimal TWO = BigDecimal.valueOf(2);
+    private static final BigDecimal VERIFICATION_TARGET_R = BigDecimal.valueOf(5);
 
     private final TradingProperties trading;
     private final ContractAnalysisService analysis;
@@ -86,13 +86,13 @@ public class DemoTradeVerificationService {
         boolean shortSide = candidate.trendDirection() == DirectionBias.BEARISH;
         BigDecimal distance = entry.multiply(STOP_RATE);
         BigDecimal stop = shortSide ? entry.add(distance) : entry.subtract(distance);
-        BigDecimal takeProfit = shortSide ? entry.subtract(distance.multiply(TWO))
-                : entry.add(distance.multiply(TWO));
+        BigDecimal takeProfit = shortSide ? entry.subtract(distance.multiply(VERIFICATION_TARGET_R))
+                : entry.add(distance.multiply(VERIFICATION_TARGET_R));
         return new TradePlan(
                 UUID.randomUUID(), candidate.instId(), shortSide ? TradePlanType.OPEN_SHORT : TradePlanType.OPEN_LONG,
                 "MARKET", shortSide ? DirectionBias.BEARISH : DirectionBias.BULLISH, BigDecimal.ONE,
                 entry, stop, takeProfit, 1, MARGIN.divide(entry, 8, RoundingMode.DOWN), MARGIN,
-                MARGIN.multiply(STOP_RATE), TWO, 100,
+                MARGIN.multiply(STOP_RATE), VERIFICATION_TARGET_R, 100,
                 value(candidate.fundingRate()), value(candidate.volatility()), value(candidate.volume24h()), "cross",
                 List.of("仅用于OKX Demo交易基础设施E2E验证，不代表策略信号"),
                 List.of("固定5 USDT保证金、1倍杠杆、1%止损；LIVE模式不可调用"),

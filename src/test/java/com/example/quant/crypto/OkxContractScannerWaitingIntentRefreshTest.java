@@ -250,7 +250,7 @@ class OkxContractScannerWaitingIntentRefreshTest {
                 }
                 if (requestPath.startsWith("/api/v5/market/books")) {
                     return objectMapper.readTree("""
-                            {"code":"0","data":[{"bids":[["1.49","10000"],["1.48","8000"]],"asks":[["1.51","10000"],["1.52","8000"]]}]}
+                            {"code":"0","data":[{"bids":[["1.4999","10000"],["1.48","8000"]],"asks":[["1.5001","10000"],["1.52","8000"]]}]}
                             """);
                 }
                 if (requestPath.startsWith("/api/v5/public/funding-rate")) {
@@ -287,7 +287,7 @@ class OkxContractScannerWaitingIntentRefreshTest {
                         .append(",\"low24h\":\"").append(PRICE.toPlainString()).append("\"")
                         .append(",\"volCcy24h\":\"").append(baseVolume).append("\"")
                         .append(",\"vol24h\":\"0\"")
-                        .append(",\"bidPx\":\"1.49\",\"askPx\":\"1.51\"}");
+                        .append(",\"bidPx\":\"1.4999\",\"askPx\":\"1.5001\"}");
             }
             return sb.append("]}").toString();
         }

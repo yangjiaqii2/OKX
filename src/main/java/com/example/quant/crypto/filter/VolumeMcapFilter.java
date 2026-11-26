@@ -1,9 +1,13 @@
 package com.example.quant.crypto.filter;
 
+import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.provider.DataQuality;
 import com.example.quant.crypto.provider.ProviderResult;
 import com.example.quant.crypto.provider.dto.MarketCapSnapshot;
 import java.math.BigDecimal;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * Phase B 流通量-市值比 Filter。
@@ -17,6 +21,8 @@ import java.math.BigDecimal;
  *   <li>DataQuality 状态：UNAVAILABLE → _MCAP_UNAVAILABLE；STALE → _MCAP_STALE</li>
  * </ol>
  */
+@Component
+@ConditionalOnProperty(prefix = "quant.agent.selection.universe", name = "volume-mcap-enabled", havingValue = "true")
 public final class VolumeMcapFilter implements UniverseFilter {
 
     public static final String NAME = "volume_mcap";
@@ -28,6 +34,11 @@ public final class VolumeMcapFilter implements UniverseFilter {
     public static final String REASON_VOLUME_MISSING = "VOLUME_MCAP_VOLUME_MISSING";
 
     private final BigDecimal minVolumeMcapRatio;
+
+    @Autowired
+    public VolumeMcapFilter(AgentProperties properties) {
+        this(properties.selection().universe().minVolumeMcapRatio());
+    }
 
     public VolumeMcapFilter(BigDecimal minVolumeMcapRatio) {
         if (minVolumeMcapRatio == null) {

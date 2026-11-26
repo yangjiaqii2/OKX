@@ -22,20 +22,24 @@ import java.util.Map;
 
 public final class V2SelectionScoreCalculator {
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
-    // Weight-derived evidence bands: 50 = CapitalFlow + Derivatives + News;
-    // 85 = the five largest dimensions. This avoids treating one arbitrary
-    // dimension count as information coverage.
-    private static final BigDecimal MEDIUM_COVERAGE_WEIGHT = weightOf(
-            V2ScoreDimension.CAPITAL_FLOW, V2ScoreDimension.DERIVATIVES, V2ScoreDimension.NEWS);
-    private static final BigDecimal HIGH_COVERAGE_WEIGHT = weightOf(
-            V2ScoreDimension.CAPITAL_FLOW, V2ScoreDimension.DERIVATIVES,
-            V2ScoreDimension.RELATIVE_STRENGTH, V2ScoreDimension.MARKET_STRUCTURE,
-            V2ScoreDimension.VOLUME_QUALITY);
+    private static final BigDecimal OI_MAGNITUDE_FULL_SCORE_RATE = new BigDecimal("0.20");
 
     public V2SelectionScoreResult calculate(ContractCandidate c) {
         Map<V2ScoreDimension, BigDecimal> scores = new EnumMap<>(V2ScoreDimension.class);
+        List<V2ScoreDimension> missing = new ArrayList<>();
+        BigDecimal applicableWeight = BigDecimal.ZERO;
         for (V2ScoreDimension dimension : V2ScoreDimension.values()) {
-            score(dimension, c).ifPresent(value -> scores.put(dimension, clamp(value)));
+            // ATH proximity describes long-side breakouts.
+            if (dimension == V2ScoreDimension.BREAKOUT && c.trendDirection() == DirectionBias.BEARISH) {
+                continue;
+            }
+            applicableWeight = applicableWeight.add(dimension.weight());
+            var value = score(dimension, c);
+            if (value.isPresent()) {
+                scores.put(dimension, clamp(value.get()));
+            } else {
+                missing.add(dimension);
+            }
         }
         BigDecimal available = scores.keySet().stream().map(V2ScoreDimension::weight)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -44,14 +48,10 @@ public final class V2SelectionScoreCalculator {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal normalizedScore = available.signum() == 0 ? null
                 : weighted.divide(available, 6, RoundingMode.HALF_UP);
-        BigDecimal coverageRatio = available.divide(HUNDRED, 6, RoundingMode.HALF_UP);
+        BigDecimal coverageRatio = available.divide(applicableWeight, 6, RoundingMode.HALF_UP);
+        // Keep applicable weight in the denominator when an input is missing.
         BigDecimal rankingScore = normalizedScore == null ? null
-                : normalizedScore.multiply(coverageConfidence(coverageRatio))
-                        .setScale(6, RoundingMode.HALF_UP);
-        List<V2ScoreDimension> missing = new ArrayList<>();
-        for (V2ScoreDimension d : V2ScoreDimension.values()) {
-            if (!scores.containsKey(d)) missing.add(d);
-        }
+                : weighted.divide(applicableWeight, 6, RoundingMode.HALF_UP);
         return new V2SelectionScoreResult(normalizedScore, rankingScore, available, coverageRatio,
                 Map.copyOf(scores), List.copyOf(missing));
     }
@@ -77,6 +77,9 @@ public final class V2SelectionScoreCalculator {
                 .compare(rankingScore(leftResult), rankingScore(rightResult));
         if (score != 0) return score;
         score = Comparator.<BigDecimal>nullsLast(Comparator.reverseOrder())
+                .compare(coverageRatio(leftResult), coverageRatio(rightResult));
+        if (score != 0) return score;
+        score = Comparator.<BigDecimal>nullsLast(Comparator.reverseOrder())
                 .compare(normalizedScore(leftResult), normalizedScore(rightResult));
         if (score != 0) return score;
         score = Comparator.<BigDecimal>nullsLast(Comparator.reverseOrder())
@@ -93,6 +96,10 @@ public final class V2SelectionScoreCalculator {
 
     private static BigDecimal rankingScore(V2SelectionScoreResult result) {
         return result == null ? null : result.rankingScore();
+    }
+
+    private static BigDecimal coverageRatio(V2SelectionScoreResult result) {
+        return result == null ? null : result.coverageRatio();
     }
 
     private static BigDecimal normalizedScore(V2SelectionScoreResult result) {
@@ -213,9 +220,6 @@ public final class V2SelectionScoreCalculator {
      * 可用权重与覆盖率按真实情况结算，不伪造中性分。
      */
     private java.util.Optional<BigDecimal> breakout(ContractCandidate c) {
-        if (c.trendDirection() == DirectionBias.BEARISH) {
-            return java.util.Optional.empty();
-        }
         AthBreakoutSnapshot ath = c.athBreakout();
         if (ath == null || ath.dataQuality() == null || ath.dataQuality() == DataQuality.UNAVAILABLE
                 || ath.dataQuality() == DataQuality.TIMEOUT || ath.breakoutLevel() == null) {
@@ -249,7 +253,7 @@ public final class V2SelectionScoreCalculator {
 
     private static BigDecimal oiMagnitudeAdjustment(DirectionalOiRegime regime, BigDecimal oiChange) {
         if (oiChange == null || oiChange.signum() == 0) return BigDecimal.ZERO;
-        BigDecimal magnitude = boundedLinear(oiChange.abs(), BigDecimal.ZERO, BigDecimal.valueOf(20), 10);
+        BigDecimal magnitude = boundedLinear(oiChange.abs(), BigDecimal.ZERO, OI_MAGNITUDE_FULL_SCORE_RATE, 10);
         return switch (regime) {
             case TREND_WITH_OI_EXPANSION -> magnitude;
             case TREND_WITH_OI_CONTRACTION, COUNTER_MOVE_WITH_OI_EXPANSION,
@@ -305,33 +309,6 @@ public final class V2SelectionScoreCalculator {
         COUNTER_MOVE_WITH_OI_EXPANSION,
         /** 价格逆候选方向移动，且持仓收缩。 */
         COUNTER_MOVE_WITH_OI_CONTRACTION
-    }
-
-    private static BigDecimal coverageConfidence(BigDecimal coverageRatio) {
-        if (coverageRatio.signum() == 0) return BigDecimal.ZERO;
-        BigDecimal mediumCoverage = MEDIUM_COVERAGE_WEIGHT.divide(HUNDRED, 6, RoundingMode.HALF_UP);
-        BigDecimal highCoverage = HIGH_COVERAGE_WEIGHT.divide(HUNDRED, 6, RoundingMode.HALF_UP);
-        if (coverageRatio.compareTo(highCoverage) >= 0) {
-            return new BigDecimal("0.98").add(
-                    coverageRatio.subtract(highCoverage)
-                            .divide(BigDecimal.ONE.subtract(highCoverage), 6, RoundingMode.HALF_UP)
-                            .multiply(new BigDecimal("0.02")));
-        }
-        if (coverageRatio.compareTo(mediumCoverage) >= 0) {
-            return new BigDecimal("0.85").add(
-                    coverageRatio.subtract(mediumCoverage)
-                            .divide(highCoverage.subtract(mediumCoverage), 6, RoundingMode.HALF_UP)
-                            .multiply(new BigDecimal("0.13")));
-        }
-        return new BigDecimal("0.50").add(coverageRatio.multiply(new BigDecimal("0.70")));
-    }
-
-    private static BigDecimal weightOf(V2ScoreDimension... dimensions) {
-        BigDecimal total = BigDecimal.ZERO;
-        for (V2ScoreDimension dimension : dimensions) {
-            total = total.add(dimension.weight());
-        }
-        return total;
     }
 
     private static BigDecimal breakoutQualityConfidence(DataQuality quality, BigDecimal rawScore) {

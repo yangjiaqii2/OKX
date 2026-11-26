@@ -22,6 +22,7 @@ import com.example.quant.risk.ContractRiskRequest;
 import com.example.quant.risk.DailyRiskService;
 import com.example.quant.risk.RiskCheckResult;
 import com.example.quant.risk.RiskService;
+import com.example.quant.tradeplan.PlanExecutionRisk;
 import com.example.quant.system.SystemControlService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -56,8 +57,7 @@ public class OrderConfirmService {
     private final AutoTradeBudgetService budgetService;
     private final Clock clock;
     private DailyRiskService dailyRiskService;
-    @Autowired
-    private com.example.quant.agent.exit.NetProfitExitPolicy exitCosts;
+    private PlanExecutionRisk executionRisk;
     private OkxInstrumentRulesProvider instrumentRulesProvider;
     private CanonicalPlanCompiler canonicalPlanCompiler;
 
@@ -129,6 +129,11 @@ public class OrderConfirmService {
     @Autowired(required = false)
     void configureCanonicalPlanCompiler(CanonicalPlanCompiler compiler) {
         this.canonicalPlanCompiler = compiler;
+    }
+
+    @Autowired
+    void configureExecutionRisk(PlanExecutionRisk executionRisk) {
+        this.executionRisk = executionRisk;
     }
 
     public OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount) {
@@ -218,10 +223,10 @@ public class OrderConfirmService {
             }
             try {
                 order.applyMarginAmount(effectiveMargin);
-                normalizeExecutableQuantity(order);
+                if (executionRisk == null) normalizeExecutableQuantity(order);
             } catch (IllegalArgumentException ex) {
                 log.warn("Confirm order rejected id={} instId={} reason={}", order.id(), order.instId(), ex.getMessage());
-                releaseBudget(order, "MARGIN_INVALID");
+                rejectBeforeSubmit(order, ex.getMessage(), autoFixedMargin, "MARGIN_INVALID");
                 return OrderExecutionResult.rejected(ex.getMessage());
             }
             OrderBookLiquiditySnapshot liquidity = currentLiquidity(order);
@@ -257,7 +262,7 @@ public class OrderConfirmService {
                 int adjustedLeverage = risk.adjustedLeverage();
                 try {
                     order.adjustLeverage(adjustedLeverage);
-                    normalizeExecutableQuantity(order);
+                    if (executionRisk == null) normalizeExecutableQuantity(order);
                 } catch (IllegalArgumentException ex) {
                     rejectBeforeSubmit(order, ex.getMessage(), true, "MARGIN_INVALID");
                     return OrderExecutionResult.rejected(ex.getMessage());
@@ -267,56 +272,45 @@ public class OrderConfirmService {
                 riskRequest = riskRequestFor(order, order.marginAmount(), liquidity, true, account);
                 risk = riskService.check(riskRequest);
             }
+            if (executionRisk != null && "MAX_LOSS_EXCEEDED".equals(risk.rejectCode())) {
+                risk = riskService.check(riskRequest.withSuggestedMargin(BigDecimal.ZERO));
+            }
             if (!risk.passed()) {
                 rejectBeforeSubmit(order, risk.rejectReason(), autoFixedMargin, "RISK_REJECTED");
                 log.warn("Confirm order rejected by risk id={} instId={} reason={} riskLevel={}",
                         order.id(), order.instId(), risk.rejectReason(), risk.riskLevel());
                 return OrderExecutionResult.rejected(risk.rejectReason());
             }
-            OrderExecutionResult canonicalResult = compileAndBindCanonicalPlan(order, autoFixedMargin);
-            if (canonicalResult != null) {
-                rejectBeforeSubmit(order, canonicalResult.message(), autoFixedMargin, "CANONICAL_PLAN_REJECTED");
-                log.warn("Confirm order rejected by canonical plan compiler id={} instId={} reason={}",
-                        order.id(), order.instId(), canonicalResult.message());
-                return canonicalResult;
+            if (executionRisk != null) {
+                var estimate = estimateExecution(order, riskRequest, risk, account, autoFixedMargin);
+                if (!estimate.accepted()) {
+                    rejectBeforeSubmit(order, estimate.denial(), autoFixedMargin, "EXECUTION_RISK_REJECTED");
+                    return OrderExecutionResult.rejected(estimate.denial());
+                }
+                order.bindCanonicalExecution(estimate.executable(), estimate.baseQuantity(), estimate.margin());
+                recordCanonicalPlan(order, estimate.executable());
+            } else {
+                OrderExecutionResult canonicalResult = compileAndBindCanonicalPlan(order, autoFixedMargin);
+                if (canonicalResult != null) {
+                    rejectBeforeSubmit(order, canonicalResult.message(), autoFixedMargin, "CANONICAL_PLAN_REJECTED");
+                    return canonicalResult;
+                }
             }
             stopped = rejectStoppedAutoTrade(order, autoFixedMargin);
             if (stopped != null) {
                 return stopped;
             }
+            if (order.isExpired(clock.instant())) {
+                order.markExpired();
+                releaseBudget(order, "ORDER_EXPIRED");
+                return OrderExecutionResult.rejected("待确认订单已过期");
+            }
             String owner = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
             if (dailyRiskService != null) {
                 DailyRiskService.Decision dailyRisk;
                 try {
-                    if (autoFixedMargin) {
-                        AgentProperties limits = agentProperties == null ? new AgentProperties() : agentProperties;
-                        var rates = exitCosts.feeRates(order.instId());
-                        BigDecimal openFee = order.price().multiply(order.size()).multiply(rates.taker().max(rates.maker()));
-                        if (account == null || account.availableBalance() == null
-                                || account.availableBalance().compareTo(order.marginAmount().add(openFee)) < 0) {
-                            rejectBeforeSubmit(order, "ACCOUNT_OPEN_FEE_BUFFER_INSUFFICIENT", true, "COST_GATE");
-                            return OrderExecutionResult.rejected("ACCOUNT_OPEN_FEE_BUFFER_INSUFFICIENT");
-                        }
-                        BigDecimal fees = rates.roundTrip();
-                        BigDecimal costs = fees.max(percentRate(limits.profitProtection().roundTripFeePct()))
-                                .add(percentRate(limits.profitProtection().estimatedSlippagePct()))
-                                .add(limits.market().maxFundingAbs());
-                        // Both fills pay on traded notional; use the largest planned notional.
-                        BigDecimal maxPrice = order.price().max(order.stopLossPrice()).max(order.takeProfitPrice());
-                        BigDecimal costBudget = maxPrice.multiply(order.size()).multiply(costs);
-                        BigDecimal weightedMove = order.canonicalExecutablePlan().takeProfitLegs().stream()
-                                .map(leg -> leg.executableTargetPrice().subtract(order.price()).abs()
-                                        .multiply(leg.executableContractQuantity()))
-                                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                                .divide(order.canonicalExecutablePlan().entry().executableContractQuantity(),
-                                        java.math.MathContext.DECIMAL128);
-                        BigDecimal reward = weightedMove.multiply(order.size());
-                        if (!limits.lifecycle().isNetProfitExitEnabled()) reward = reward.subtract(costBudget);
-                        BigDecimal loss = order.canonicalExecutablePlan().risk().executableStopLossAmount().add(costBudget);
-                        if (reward.compareTo(loss.multiply(riskRequest.minRiskRewardRatio())) < 0) {
-                            rejectBeforeSubmit(order, "NET_RISK_REWARD_AFTER_COSTS_TOO_LOW", true, "COST_GATE");
-                            return OrderExecutionResult.rejected("NET_RISK_REWARD_AFTER_COSTS_TOO_LOW");
-                        }
+                    if (executionRisk != null) {
+                        BigDecimal loss = order.canonicalExecutablePlan().risk().estimatedNetStopLossAmount();
                         dailyRisk = dailyRiskService.claimAutomaticEntry(owner, order.id().toString(),
                                 riskRequest.accountEquity(), now, loss);
                     } else {
@@ -385,6 +379,23 @@ public class OrderConfirmService {
                 throw new OrderSubmitStatusUnknownException(ex.getMessage(), ex);
             }
         }
+    }
+
+    private PlanExecutionRisk.Estimate estimateExecution(PendingOrder order, ContractRiskRequest request,
+                                                         RiskCheckResult risk, AccountSummary account, boolean automatic) {
+        AgentProperties properties = agentProperties == null ? new AgentProperties() : agentProperties;
+        TradeIntent intent = TradeIntent.fromPendingOrder(order, properties.takeProfit().tp1Ratio(),
+                properties.takeProfit().tp2Ratio(), properties.takeProfit().tp3Ratio(), "trade-plan-v1");
+        BigDecimal budget = risk.maxLossAmount();
+        var previous = order.canonicalExecutablePlan();
+        if (budget != null && previous != null && previous.risk() != null
+                && previous.risk().estimatedNetStopLossAmount() != null && previous.risk().riskBudget() != null) {
+            budget = budget.min(previous.risk().riskBudget());
+        }
+        var limits = new PlanExecutionRisk.Limits(budget, order.marginAmount(),
+                account == null ? BigDecimal.ZERO : account.availableBalance(),
+                order.leverage(), request.minRiskRewardRatio(), request);
+        return executionRisk.estimate(intent, limits, automatic);
     }
 
     private void normalizeExecutableQuantity(PendingOrder order) {
@@ -644,6 +655,7 @@ public class OrderConfirmService {
             return null;
         }
         OrderBookLiquiditySnapshot liquidity = orderBookLiquidityService.snapshot(order.instId());
+        if (liquidity == null) return OrderBookLiquiditySnapshot.unavailable(order.instId(), "盘口不可用");
         log.info("Confirm order live liquidity id={} instId={} spreadBps={} bidDepth={} askDepth={} tradable={}",
                 order.id(), order.instId(), liquidity.spreadBps(), liquidity.bidDepthUsdt(),
                 liquidity.askDepthUsdt(), liquidity.tradable());
@@ -666,7 +678,7 @@ public class OrderConfirmService {
         if (liquidity.spreadBps().compareTo(maxSpread) > 0) {
             return "spread_bps_above_" + maxSpread.stripTrailingZeros().toPlainString();
         }
-        if (autoFixedMargin && "MARKET".equalsIgnoreCase(order.orderType())) {
+        if (executionRisk == null && autoFixedMargin && "MARKET".equalsIgnoreCase(order.orderType())) {
             if (order.price() == null || order.price().signum() <= 0
                     || liquidity.midPrice() == null || liquidity.midPrice().signum() <= 0) {
                 return "market_price_unavailable";

@@ -23,6 +23,7 @@ import { panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { TradeMetricCard } from '../components/TradeMetricCard';
 import { StatusChip } from '../components/StatusChip';
+import { t, useLanguage } from '../i18n';
 
 type BindingStatus = {
   bound?: boolean;
@@ -45,6 +46,7 @@ const emptyForm = {
 };
 
 export function AccountBindingPage() {
+  useLanguage();
   const notify = useNotify();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -53,14 +55,14 @@ export function AccountBindingPage() {
   const [form, setForm] = useState(emptyForm);
   const [unbindOpen, setUnbindOpen] = useState(false);
   const [showSecrets, setShowSecrets] = useState(false);
-  const username = getAuthUser() || '当前用户';
+  const username = getAuthUser() || t("当前用户");
 
   async function load() {
     setLoading(true);
     try {
       setStatus((await quantApi.accountBindingStatus()) as BindingStatus);
     } catch (error) {
-      notify(error instanceof Error ? error.message : '加载绑定状态失败', { type: 'error' });
+      notify(error instanceof Error ? error.message : t("加载绑定状态失败"), { type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -78,9 +80,9 @@ export function AccountBindingPage() {
       const nextStatus = (await quantApi.bindOkxAccount(form)) as BindingStatus;
       setStatus(nextStatus);
       setForm(emptyForm);
-      notify('OKX账号已绑定，请点击“验证接口”确认API可用', { type: 'success' });
+      notify(t("OKX账号已绑定，请点击“验证接口”确认API可用"), { type: 'success' });
     } catch (error) {
-      notify(error instanceof Error ? error.message : '绑定失败', { type: 'error' });
+      notify(error instanceof Error ? error.message : t("绑定失败"), { type: 'error' });
     } finally {
       setSubmitting(false);
     }
@@ -92,11 +94,11 @@ export function AccountBindingPage() {
     try {
       const result = (await quantApi.verifyOkxAccount()) as VerificationResult;
       setVerification(result);
-      notify(result.ok ? 'OKX接口验证通过' : String(result.message ?? 'OKX接口验证失败'), {
+      notify(result.ok ? t("OKX接口验证通过") : String(result.message ?? t("OKX接口验证失败")), {
         type: result.ok ? 'success' : 'warning',
       });
     } catch (error) {
-      notify(error instanceof Error ? error.message : 'OKX接口验证失败', { type: 'error' });
+      notify(error instanceof Error ? error.message : t("OKX接口验证失败"), { type: 'error' });
     } finally {
       setSubmitting(false);
     }
@@ -109,9 +111,9 @@ export function AccountBindingPage() {
       setStatus(nextStatus);
       setVerification(null);
       setForm(emptyForm);
-      notify('OKX账号已解绑', { type: 'success' });
+      notify(t("OKX账号已解绑"), { type: 'success' });
     } catch (error) {
-      notify(error instanceof Error ? error.message : '解绑失败', { type: 'error' });
+      notify(error instanceof Error ? error.message : t("解绑失败"), { type: 'error' });
     } finally {
       setSubmitting(false);
       setUnbindOpen(false);
@@ -119,15 +121,15 @@ export function AccountBindingPage() {
   }
 
   if (loading) {
-    return <PageShell title="账号绑定" maxWidth={1040}><PanelState loading sx={panel} /></PageShell>;
+    return <PageShell title={t("账号绑定")} maxWidth={1040}><PanelState loading sx={panel} /></PageShell>;
   }
 
   return (
-    <PageShell title="账号绑定" maxWidth={1040}>
+    <PageShell title={t("账号绑定")} maxWidth={1040}>
       <Stack spacing={3}>
         <PageHeader
-          title="OKX账号绑定"
-          subtitle={`当前绑定对象：${username}。API Key会保存到后端数据库并按登录用户隔离；Secret和Passphrase不会回显。绑定后请立即验证接口，确认读取权限、交易权限和IP白名单正确。`}
+          title={t("OKX账号绑定")}
+          subtitle={`${t("当前绑定对象：")}${username}${t("。API Key会保存到后端数据库并按登录用户隔离；Secret和Passphrase不会回显。绑定后请立即验证接口，确认读取权限、交易权限和IP白名单正确。")}`}
           status={<StatusChip value={Boolean(status.bound)} />}
         />
 
@@ -138,23 +140,23 @@ export function AccountBindingPage() {
             gap: 2,
           }}
         >
-          <TradeMetricCard label="绑定状态" value={<StatusChip value={Boolean(status.bound)} />} />
-          <TradeMetricCard label="API Key" value={status.maskedApiKey || '-'} helper="Secret和Passphrase不会回显" />
+          <TradeMetricCard label={t("绑定状态")} value={<StatusChip value={Boolean(status.bound)} />} />
+          <TradeMetricCard label="API Key" value={status.maskedApiKey || '-'} helper={t("Secret和Passphrase不会回显")} />
           <TradeMetricCard
-            label="交易模式"
-            value={status.tradingMode === 'LIVE' ? 'LIVE · 真实资金' : status.tradingMode === 'DEMO' ? 'DEMO · 模拟交易' : 'DISABLED · 已关闭'}
-            helper="交易请求严格按后端单一 TradingMode 执行"
+            label={t("交易模式")}
+            value={status.tradingMode === 'LIVE' ? t("LIVE · 真实资金") : status.tradingMode === 'DEMO' ? t("DEMO · 模拟交易") : t("DISABLED · 已关闭")}
+            helper={t("交易请求严格按后端单一 TradingMode 执行")}
           />
         </Box>
 
         {verification && (
           <Alert severity={verification.ok ? 'success' : 'error'}>
             {verification.message}
-            {verification.ok ? ` 可用余额：${verification.availableBalance ?? '不可用'}` : ''}
+            {verification.ok ? `${t(" 可用余额：")}${verification.availableBalance ?? t("不可用")}` : ''}
           </Alert>
         )}
         <Alert severity="warning">
-          OKX返回401时，优先检查三项：API Key/Secret/Passphrase是否属于同一个API，API是否开启读取和交易权限，IP白名单是否包含当前后端服务器出口IP。生产环境请为数据库和后端配置访问控制。
+          {t("OKX返回401时，优先检查三项：API Key/Secret/Passphrase是否属于同一个API，API是否开启读取和交易权限，IP白名单是否包含当前后端服务器出口IP。生产环境请为数据库和后端配置访问控制。")}
         </Alert>
 
         <Card>
@@ -178,7 +180,7 @@ export function AccountBindingPage() {
                   endAdornment: (
                     <InputAdornment position="end">
                       <IconButton
-                        aria-label={showSecrets ? '隐藏密钥' : '显示密钥'}
+                        aria-label={showSecrets ? t("隐藏密钥") : t("显示密钥")}
                         edge="end"
                         onClick={() => setShowSecrets((value) => !value)}
                       >
@@ -198,7 +200,7 @@ export function AccountBindingPage() {
               />
               <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
                 <Button type="submit" variant="contained" startIcon={<SaveIcon />} disabled={submitting} sx={{ width: { xs: '100%', sm: 'auto' } }}>
-                  绑定账号
+                  {t("绑定账号")}
                 </Button>
                 <Button
                   type="button"
@@ -208,7 +210,7 @@ export function AccountBindingPage() {
                   onClick={() => void verify()}
                   sx={{ width: { xs: '100%', sm: 'auto' } }}
                 >
-                  验证接口
+                  {t("验证接口")}
                 </Button>
                 <Button
                   type="button"
@@ -219,7 +221,7 @@ export function AccountBindingPage() {
                   onClick={() => setUnbindOpen(true)}
                   sx={{ width: { xs: '100%', sm: 'auto' } }}
                 >
-                  解绑
+                  {t("解绑")}
                 </Button>
               </Stack>
             </Stack>
@@ -227,11 +229,11 @@ export function AccountBindingPage() {
         </Card>
         <Confirm
           isOpen={unbindOpen}
-          title="解绑 OKX 账号"
-          content="解绑后前端不会再显示当前 OKX API 绑定状态，私有交易接口需要重新绑定后才能验证。"
-          confirm="解绑"
+          title={t("解绑 OKX 账号")}
+          content={t("解绑后前端不会再显示当前 OKX API 绑定状态，私有交易接口需要重新绑定后才能验证。")}
+          confirm={t("解绑")}
           confirmColor="warning"
-          cancel="返回"
+          cancel={t("返回")}
           onConfirm={() => void unbind()}
           onClose={() => setUnbindOpen(false)}
         />

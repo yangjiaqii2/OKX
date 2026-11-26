@@ -9,12 +9,14 @@ import { panel } from '../components/surfaces';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { StatusChip } from '../components/StatusChip';
 import { formatPrice, formatSide, formatUSDT, pnlColor } from '../formatters';
+import { getLanguage, t, useLanguage } from '../i18n';
 
 type CloseRecord = Record<string, unknown>;
 type CloseRecordPage = { items: CloseRecord[]; total: number; page: number; size: number };
 const pageSize = 100;
 
 export function ClosePositionRecordList() {
+  useLanguage();
   const notify = useNotify();
   const [page, setPage] = useState<CloseRecordPage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -27,11 +29,11 @@ export function ClosePositionRecordList() {
       const result = await quantApi.closePositionRecords({ page: nextPage, size: pageSize }) as CloseRecordPage;
       if (!Array.isArray(result.items) || !Number.isSafeInteger(result.total) || result.total < 0
         || result.page !== nextPage || !Number.isSafeInteger(result.size) || result.size < 1) {
-        throw new Error('平仓记录响应格式异常');
+        throw new Error(t("平仓记录响应格式异常"));
       }
       setPage(result);
     } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : '平仓记录加载失败';
+      const message = loadError instanceof Error ? loadError.message : t("平仓记录加载失败");
       setError(message);
       notify(message, { type: 'error' });
     } finally {
@@ -44,14 +46,14 @@ export function ClosePositionRecordList() {
   }, []);
 
   return (
-    <PageShell title="平仓记录">
+    <PageShell title={t("平仓记录")}>
       <Stack spacing={2}>
         <PageHeader
-          title="平仓记录"
-          subtitle={page ? `共 ${page.total} 条平仓请求` : loading ? '正在加载平仓记录' : '平仓记录不可用'}
+          title={t("平仓记录")}
+          subtitle={page ? `${t("共 ")}${page.total}${t(" 条平仓请求")}` : loading ? t("正在加载平仓记录") : t("平仓记录不可用")}
           actions={
             <Button variant="outlined" size="small" startIcon={loading ? <CircularProgress size={14} /> : <RefreshIcon />} onClick={() => void load()} disabled={loading}>
-              刷新
+              {t("刷新")}
             </Button>
           }
         />
@@ -60,21 +62,21 @@ export function ClosePositionRecordList() {
           {loading && !page ? (
             <PanelState loading />
           ) : page == null ? null : page.items.length === 0 ? (
-            <PanelState>暂无记录。</PanelState>
+            <PanelState>{t("暂无记录。")}</PanelState>
           ) : (
-            <ScrollableTable label="平仓记录">
+            <ScrollableTable label={t("平仓记录")}>
               <TableHead>
                 <TableRow>
-                  <TableCell>时间</TableCell>
-                  <TableCell>状态</TableCell>
-                  <TableCell>合约</TableCell>
-                  <TableCell>方向</TableCell>
-                  <TableCell align="right">数量</TableCell>
-                  <TableCell align="right">均价</TableCell>
-                  <TableCell align="right">已实现盈亏</TableCell>
-                  <TableCell>来源</TableCell>
-                  <TableCell>OKX订单号</TableCell>
-                  <TableCell>错误</TableCell>
+                  <TableCell>{t("时间")}</TableCell>
+                  <TableCell>{t("状态")}</TableCell>
+                  <TableCell>{t("合约")}</TableCell>
+                  <TableCell>{t("方向")}</TableCell>
+                  <TableCell align="right">{t("数量")}</TableCell>
+                  <TableCell align="right">{t("均价")}</TableCell>
+                  <TableCell align="right">{t("已实现盈亏")}</TableCell>
+                  <TableCell>{t("来源")}</TableCell>
+                  <TableCell>{t("OKX订单号")}</TableCell>
+                  <TableCell>{t("错误")}</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -101,13 +103,13 @@ export function ClosePositionRecordList() {
             <Stack direction="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" gap={1}
               sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
               <Typography variant="body2" color="text.secondary">
-                第 {page.page + 1} / {Math.ceil(page.total / page.size)} 页
+                {t("第")} {page.page + 1} / {Math.ceil(page.total / page.size)} {t("页")}
               </Typography>
               <Stack direction="row" gap={1}>
                 <Button variant="outlined" size="small" disabled={loading || page.page === 0}
-                  onClick={() => void load(page.page - 1)}>上一页</Button>
+                  onClick={() => void load(page.page - 1)}>{t("上一页")}</Button>
                 <Button variant="outlined" size="small" disabled={loading || (page.page + 1) * page.size >= page.total}
-                  onClick={() => void load(page.page + 1)}>下一页</Button>
+                  onClick={() => void load(page.page + 1)}>{t("下一页")}</Button>
               </Stack>
             </Stack>
           ) : null}
@@ -119,5 +121,5 @@ export function ClosePositionRecordList() {
 
 function formatTime(value: unknown) {
   const date = new Date(String(value ?? ''));
-  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString(getLanguage());
 }

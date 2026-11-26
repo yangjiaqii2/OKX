@@ -33,7 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ContractCandidateScoreRecorder {
-    public static final String V2_SCORING_VERSION = "V2_WAVE_4_5";
+    public static final String V2_SCORING_VERSION = "V2_WAVE_4_6";
     private static final Logger log = LoggerFactory.getLogger(ContractCandidateScoreRecorder.class);
 
     private final AgentProperties agentProperties;

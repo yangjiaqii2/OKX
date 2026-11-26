@@ -91,9 +91,9 @@ class V2SelectionScoreDirectionalTest {
     @DisplayName("derivatives：价格下跌伴随 OI 增加对做空候选不再被机械压低")
     void derivativesDoesNotMechanicallyPenalizeShortWithRisingOpenInterest() {
         BigDecimal shortTrendExpansion = dimension(
-                derivativesCandidate(DirectionBias.BEARISH, "-8", "20"), V2ScoreDimension.DERIVATIVES);
+                derivativesCandidate(DirectionBias.BEARISH, "-8", "0.20"), V2ScoreDimension.DERIVATIVES);
         BigDecimal shortTrendContraction = dimension(
-                derivativesCandidate(DirectionBias.BEARISH, "-8", "-20"), V2ScoreDimension.DERIVATIVES);
+                derivativesCandidate(DirectionBias.BEARISH, "-8", "-0.20"), V2ScoreDimension.DERIVATIVES);
 
         assertThat(shortTrendExpansion)
                 .as("顺势下跌 + 持仓扩张应优于顺势下跌 + 持仓收缩")
@@ -104,9 +104,9 @@ class V2SelectionScoreDirectionalTest {
     @DisplayName("derivatives：LONG/SHORT 在镜像的价格与 OI 输入下取得相同分数")
     void derivativesIsMirroredBetweenLongAndShort() {
         BigDecimal longTrendExpansion = dimension(
-                derivativesCandidate(DirectionBias.BULLISH, "8", "20"), V2ScoreDimension.DERIVATIVES);
+                derivativesCandidate(DirectionBias.BULLISH, "8", "0.20"), V2ScoreDimension.DERIVATIVES);
         BigDecimal shortTrendExpansion = dimension(
-                derivativesCandidate(DirectionBias.BEARISH, "-8", "20"), V2ScoreDimension.DERIVATIVES);
+                derivativesCandidate(DirectionBias.BEARISH, "-8", "0.20"), V2ScoreDimension.DERIVATIVES);
 
         assertThat(shortTrendExpansion).isEqualByComparingTo(longTrendExpansion);
     }
@@ -115,9 +115,9 @@ class V2SelectionScoreDirectionalTest {
     @DisplayName("derivatives：OI 增加不被当作所有方向的最佳状态")
     void risingOpenInterestIsNotUnconditionallyBestForEveryDirection() {
         BigDecimal shortAgainstTrend = dimension(
-                derivativesCandidate(DirectionBias.BEARISH, "8", "20"), V2ScoreDimension.DERIVATIVES);
+                derivativesCandidate(DirectionBias.BEARISH, "8", "0.20"), V2ScoreDimension.DERIVATIVES);
         BigDecimal shortWithTrend = dimension(
-                derivativesCandidate(DirectionBias.BEARISH, "-8", "20"), V2ScoreDimension.DERIVATIVES);
+                derivativesCandidate(DirectionBias.BEARISH, "-8", "0.20"), V2ScoreDimension.DERIVATIVES);
 
         assertThat(shortAgainstTrend)
                 .as("价格逆着做空方向上行时，OI 增加不构成做空机会")
@@ -128,9 +128,9 @@ class V2SelectionScoreDirectionalTest {
     @DisplayName("derivatives：同一行情下做空分不是 100 减去做多分")
     void derivativesShortScoreIsNotAnArithmeticInversionOfLongScore() {
         BigDecimal longScore = dimension(
-                derivativesCandidate(DirectionBias.BULLISH, "8", "20"), V2ScoreDimension.DERIVATIVES);
+                derivativesCandidate(DirectionBias.BULLISH, "8", "0.20"), V2ScoreDimension.DERIVATIVES);
         BigDecimal shortScore = dimension(
-                derivativesCandidate(DirectionBias.BEARISH, "8", "20"), V2ScoreDimension.DERIVATIVES);
+                derivativesCandidate(DirectionBias.BEARISH, "8", "0.20"), V2ScoreDimension.DERIVATIVES);
 
         assertThat(shortScore).isNotEqualByComparingTo(BigDecimal.valueOf(100).subtract(longScore));
     }
@@ -170,12 +170,12 @@ class V2SelectionScoreDirectionalTest {
                 breakoutCandidate(DirectionBias.BEARISH, "-60", "DEEP_BELOW"));
 
         assertThat(shortDeepBelow.dimensionScores()).doesNotContainKey(V2ScoreDimension.BREAKOUT);
-        assertThat(shortDeepBelow.missingDimensions()).contains(V2ScoreDimension.BREAKOUT);
+        assertThat(shortDeepBelow.missingDimensions()).doesNotContain(V2ScoreDimension.BREAKOUT);
     }
 
     @Test
-    @DisplayName("breakout：退出做空评分后按真实可用权重与覆盖率结算，不伪造中性分")
-    void excludedBreakoutReducesAvailableWeightHonestly() {
+    @DisplayName("breakout：做空侧无需 ATH 数据即可达到完整覆盖率")
+    void completeShortHasNoCoveragePenaltyForInapplicableBreakout() {
         V2SelectionScoreResult longResult = CALC.calculate(breakoutCandidate(DirectionBias.BULLISH, "-1", "AT_ATH"));
         V2SelectionScoreResult shortResult = CALC.calculate(breakoutCandidate(DirectionBias.BEARISH, "-1", "AT_ATH"));
 
@@ -183,8 +183,8 @@ class V2SelectionScoreDirectionalTest {
         assertThat(shortResult.availableWeight())
                 .as("BREAKOUT 权重 10 必须真实从可用权重中扣除")
                 .isEqualByComparingTo("90");
-        assertThat(shortResult.coverageRatio()).isEqualByComparingTo("0.9");
-        assertThat(shortResult.rankingScore()).isLessThan(shortResult.normalizedScore());
+        assertThat(shortResult.coverageRatio()).isEqualByComparingTo("1");
+        assertThat(shortResult.rankingScore()).isEqualByComparingTo(shortResult.normalizedScore());
     }
 
     @Test
@@ -306,7 +306,7 @@ class V2SelectionScoreDirectionalTest {
                                                        String instId) {
         String structure = direction == DirectionBias.BEARISH ? "LOWER_HIGH_LOWER_LOW" : "HIGHER_HIGH_HIGHER_LOW";
         BigDecimal priceChange = direction == DirectionBias.BEARISH ? new BigDecimal("-8") : new BigDecimal("8");
-        String oiChange = "12";
+        String oiChange = "0.12";
         String rs = direction == DirectionBias.BEARISH ? "-10" : "10";
         return candidate(instId, priceChange, direction, structure, RiskLevel.LOW,
                 new BigDecimal("500000000"), new BigDecimal("2"), new BigDecimal("0.5"),

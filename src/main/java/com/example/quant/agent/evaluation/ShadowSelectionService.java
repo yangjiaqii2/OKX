@@ -34,7 +34,7 @@ public class ShadowSelectionService {
     public void recordScan(String scanId, List<ContractCandidate> candidates, String executionVenue) {
         List<ContractCandidate> safe = candidates == null ? List.of() : candidates.stream()
                 .filter(candidate -> ContractTradeGate.aiHardDenyReasons(candidate, properties).isEmpty()).toList();
-        ContractSelectionDecision ai = aiSelection.select(safe);
+        ContractSelectionDecision ai = aiSelection.selectForShadow(safe, scanId);
         List<String> ranked = ai.rankedCandidates().stream()
                 .map(ContractSelectionDecision.RankedCandidate::instId).toList();
         for (String policy : POLICIES) {

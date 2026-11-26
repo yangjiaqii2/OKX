@@ -26,6 +26,7 @@ class TokenSymbolMapperTest {
         assertThat(TokenSymbolMapper.mapToCoinGeckoSymbol("BTC")).isEqualTo("BTC");
         assertThat(TokenSymbolMapper.mapToCoinGeckoSymbol("1000PEPE")).isEqualTo("PEPE");
         assertThat(TokenSymbolMapper.mapToCoinGeckoSymbol("1000BONK")).isEqualTo("BONK");
+        assertThat(TokenSymbolMapper.mapToCoinGeckoSymbol("1000SATS")).isEqualTo("1000SATS");
     }
 
     @Test

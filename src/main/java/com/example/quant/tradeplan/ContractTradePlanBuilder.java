@@ -5,12 +5,13 @@ import com.example.quant.account.dto.AccountSummary;
 import com.example.quant.agent.entry.SmartEntryMode;
 import com.example.quant.agent.entry.SmartEntryModeDecision;
 import com.example.quant.agent.entry.SmartEntryModeResolver;
+import com.example.quant.agent.execution.LiveMarketRefreshService;
 import com.example.quant.agent.gate.ContractTradeGate;
 import com.example.quant.agent.plan.TradePlanRecordService;
 import com.example.quant.agent.selection.ContractSelectionDecision;
 import com.example.quant.ai.AiAnalysisService;
 import com.example.quant.config.AgentProperties;
-import com.example.quant.crypto.OkxContractScanner;
+import com.example.quant.crypto.ContractAnalysisService;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.crypto.dto.ContractScoreBreakdown;
 import com.example.quant.leverage.LeverageDecisionRequest;
@@ -30,12 +31,12 @@ import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -43,7 +44,7 @@ public class ContractTradePlanBuilder {
     private static final BigDecimal MIN_RISK_REWARD = BigDecimal.valueOf(1.5);
     private static final String STRATEGY_VERSION = "contract-analysis-s1s2-v2";
 
-    private final OkxContractScanner scanner;
+    private final ContractAnalysisService analysisService;
     private final AiAnalysisService aiAnalysisService;
     private final AccountSnapshotService accountSnapshotService;
     private final PositionSizingService positionSizingService;
@@ -51,9 +52,11 @@ public class ContractTradePlanBuilder {
     private final RiskService riskService;
     private final AgentProperties agentProperties;
     private final TradePlanRecordService tradePlanRecordService;
+    private LiveMarketRefreshService marketRefresh;
+    private PlanExecutionRisk executionRisk;
 
     public ContractTradePlanBuilder(
-            OkxContractScanner scanner,
+            ContractAnalysisService analysisService,
             AiAnalysisService aiAnalysisService,
             AccountSnapshotService accountSnapshotService,
             PositionSizingService positionSizingService,
@@ -62,7 +65,7 @@ public class ContractTradePlanBuilder {
             AgentProperties agentProperties,
             TradePlanRecordService tradePlanRecordService
     ) {
-        this.scanner = scanner;
+        this.analysisService = analysisService;
         this.aiAnalysisService = aiAnalysisService;
         this.accountSnapshotService = accountSnapshotService;
         this.positionSizingService = positionSizingService;
@@ -72,21 +75,38 @@ public class ContractTradePlanBuilder {
         this.tradePlanRecordService = tradePlanRecordService;
     }
 
+    @Autowired
+    void configureExecutionPreview(LiveMarketRefreshService marketRefresh, PlanExecutionRisk executionRisk) {
+        this.marketRefresh = marketRefresh;
+        this.executionRisk = executionRisk;
+    }
+
     public TradePlan buildPlan(String instId) {
-        List<ContractCandidate> candidates = scanner.scan();
-        return buildPlan(requireRequestedCandidate(instId, candidates));
+        return buildRefreshedPlan(requireRequestedCandidate(instId, analysisService.candidates()));
+    }
+
+    private TradePlan buildRefreshedPlan(ContractCandidate candidate) {
+        if (marketRefresh == null || watchOnlyCandidate(candidate)) {
+            return buildPlan(candidate);
+        }
+        var refreshed = marketRefresh.refresh(candidate);
+        if (!refreshed.passed()) {
+            return rejectPlan(candidate, ContractTradeGate.planDenyReasons(candidate, agentProperties),
+                    watchDraft(candidate), String.join("；", refreshed.reasons()));
+        }
+        return buildPlan(refreshed.candidate());
     }
 
     /**
-     * 自动推荐入口：在未指定标的时选取当前扫描最高分候选。
-     * 指定标的请走 {@link #buildPlan(String)}，缺失时拒绝而不是静默换币。
+     * 未指定标的时按已发布候选的顺序选择第一个可交易候选。
      */
     public TradePlan buildTopCandidatePlan() {
-        List<ContractCandidate> candidates = scanner.scan();
+        List<ContractCandidate> candidates = analysisService.candidates();
         ContractCandidate top = candidates.stream()
-                .max(Comparator.comparing(ContractCandidate::score))
-                .orElseThrow(() -> new IllegalStateException("OKX did not return contract candidates"));
-        return buildPlan(top);
+                .filter(candidate -> !watchOnlyCandidate(candidate))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("当前扫描没有可生成交易方案的候选"));
+        return buildRefreshedPlan(top);
     }
 
     static ContractCandidate requireRequestedCandidate(String instId, List<ContractCandidate> candidates) {
@@ -102,11 +122,15 @@ public class ContractTradePlanBuilder {
     }
 
     public TradePlan buildPlan(ContractCandidate candidate) {
-        return buildPlan(candidate, false);
+        return buildPlan(candidate, false, null, false, false);
+    }
+
+    public TradePlan buildAutomaticPlan(ContractCandidate candidate) {
+        return buildPlan(candidate, false, null, false, true);
     }
 
     public TradePlan buildNoRiskPlan(ContractCandidate candidate) {
-        return buildPlan(candidate, true);
+        return buildPlan(candidate, true, null, false, false);
     }
 
     public TradePlan buildSelectedPlan(ContractCandidate candidate, ContractSelectionDecision selection) {
@@ -114,19 +138,15 @@ public class ContractTradePlanBuilder {
                 || !candidate.instId().equals(selection.selectedInstId())) {
             throw new IllegalArgumentException("AI selection does not match candidate");
         }
-        return buildPlan(candidate, false, selectedDraft(candidate, selection), true);
+        return buildPlan(candidate, false, selectedDraft(candidate, selection), true, true);
     }
 
     public TradePlan buildRuleFallbackPlan(ContractCandidate candidate) {
-        return buildPlan(candidate, false, rulePlan(candidate, "AI选币不可用，使用确定性规则保底"), false);
-    }
-
-    private TradePlan buildPlan(ContractCandidate candidate, boolean noRiskMode) {
-        return buildPlan(candidate, noRiskMode, null, false);
+        return buildPlan(candidate, false, rulePlan(candidate, "AI选币不可用，使用确定性规则保底"), false, true);
     }
 
     private TradePlan buildPlan(ContractCandidate candidate, boolean noRiskMode, PlanDraft selectedDraft,
-                                boolean aiPrimary) {
+                                boolean aiPrimary, boolean automatic) {
         List<String> gateWarnings = ContractTradeGate.planDenyReasons(candidate, agentProperties);
         if (noRiskMode) {
             PlanDraft draft = noRiskPlanOrFallback(candidate);
@@ -136,7 +156,10 @@ public class ContractTradePlanBuilder {
             return shadowPlan;
         }
         if (!noRiskMode && !aiPrimary && watchOnlyCandidate(candidate)) {
-            TradePlan watchPlan = watchTradePlan(candidate, gateWarnings, "候选不满足自动交易计划条件，输出观察计划");
+            String reason = gateWarnings.isEmpty()
+                    ? "候选动作或信号不允许生成交易方案"
+                    : String.join("；", gateWarnings);
+            TradePlan watchPlan = watchTradePlan(candidate, gateWarnings, reason);
             tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED, String.join(",", gateWarnings),
                     auditPayload(candidate, gateWarnings, watchDraft(candidate)));
             return watchPlan;
@@ -237,17 +260,32 @@ public class ContractTradePlanBuilder {
                 Instant.now().plusSeconds(300)
         );
 
-        RiskCheckResult risk = riskService.check(riskRequestFor(
-                tradePlan, account, leverageDecision.riskLevel(), candidate.createdAt(), aiPrimary));
+        ContractRiskRequest riskRequest = riskRequestFor(tradePlan, account, leverageDecision.riskLevel(),
+                candidate.createdAt(), aiPrimary || (executionRisk != null && "MARKET".equalsIgnoreCase(draft.orderType())));
+        RiskCheckResult risk = riskService.check(executionRisk == null
+                ? riskRequest : riskRequest.withSuggestedMargin(BigDecimal.ZERO));
         if (!risk.passed()) {
-            String denyReason = risk.rejectCode() + ": " + risk.rejectReason();
-            TradePlan watchPlan = watchTradePlan(candidate, gateWarnings, "规则风控失败关闭：" + denyReason);
-            tradePlanRecordService.record(watchPlan, TradePlanStatus.CREATED, denyReason,
-                    auditPayload(candidate, gateWarnings, draft));
-            return watchPlan;
+            return rejectPlan(candidate, gateWarnings, draft, risk.rejectCode() + ": " + risk.rejectReason());
+        }
+        if (executionRisk != null) {
+            var intent = TradeIntent.fromPlan(tradePlan, agentProperties.takeProfit().tp1Ratio(),
+                    agentProperties.takeProfit().tp2Ratio(), agentProperties.takeProfit().tp3Ratio(), "trade-plan-v1");
+            var limits = new PlanExecutionRisk.Limits(risk.maxLossAmount(), tradePlan.suggestedMargin(),
+                    usableBalance(account), tradePlan.suggestedLeverage(), MIN_RISK_REWARD, riskRequest);
+            var estimate = executionRisk.estimate(intent, limits, automatic);
+            if (!estimate.accepted()) {
+                return rejectPlan(candidate, gateWarnings, draft, estimate.denial());
+            }
+            tradePlan = tradePlan.withExecutionPreview(estimate);
         }
         tradePlanRecordService.record(tradePlan, TradePlanStatus.CREATED, null, auditPayload(candidate, gateWarnings, draft));
         return tradePlan;
+    }
+
+    private TradePlan rejectPlan(ContractCandidate candidate, List<String> gateWarnings, PlanDraft draft, String reason) {
+        TradePlan plan = watchTradePlan(candidate, gateWarnings, reason, draft);
+        tradePlanRecordService.record(plan, TradePlanStatus.CREATED, reason, auditPayload(candidate, gateWarnings, draft));
+        return plan;
     }
 
     private PlanDraft aiPlanOrFallback(ContractCandidate candidate) {
@@ -562,7 +600,7 @@ public class ContractTradePlanBuilder {
                 0,
                 List.of("候选信号或外部风险未满足自动交易条件，输出观察计划"),
                 List.of("action=" + candidate.action(), "signalType=" + candidate.signalType(),
-                        "newsRiskLevel=" + candidate.newsAnalysis().newsRiskLevel()),
+                        "newsRiskLevel=" + (candidate.newsAnalysis() == null ? "UNKNOWN" : candidate.newsAnalysis().newsRiskLevel())),
                 "等待20m结构、5m入场节奏、新闻风险和流动性重新确认",
                 "LOCAL_WATCH"
         );
@@ -603,7 +641,7 @@ public class ContractTradePlanBuilder {
                 candidate.volume24h(),
                 "cross",
                 reasons,
-                Stream.concat(risks.stream(), Stream.of(reason)).distinct().toList(),
+                Stream.concat(risks.stream().filter(item -> !item.equals(reason)), Stream.of(reason)).toList(),
                 draft.invalidCondition(),
                 false,
                 Instant.now().plusSeconds(300)

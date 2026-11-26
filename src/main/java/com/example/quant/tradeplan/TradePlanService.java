@@ -21,7 +21,7 @@ public class TradePlanService {
     }
 
     public TradePlan createContractPlan(ContractCandidate candidate) {
-        return builder.buildPlan(candidate);
+        return builder.buildAutomaticPlan(candidate);
     }
 
     public TradePlan createNoRiskContractPlan(ContractCandidate candidate) {

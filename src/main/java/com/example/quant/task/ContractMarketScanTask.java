@@ -18,6 +18,7 @@ import com.example.quant.strategydecision.StrategyDecisionStatus;
 import com.example.quant.system.SystemControlService;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -155,7 +156,7 @@ public class ContractMarketScanTask {
                 }
                 return result;
             }
-            DecisionBatch decisionBatch = claimDecisions(candidates, Instant.now());
+            DecisionBatch decisionBatch = claimDecisions(scanResult, Instant.now());
             Duration elapsed = Duration.between(runningScanStartedAt, Instant.now());
             boolean slowScan = elapsed.compareTo(
                     Duration.ofSeconds(agentProperties.timeout().scanRoundTimeoutSeconds())) > 0;
@@ -189,7 +190,8 @@ public class ContractMarketScanTask {
             ScanTaskLog result = new ScanTaskLog(
                     "contract-market-scan",
                     "SUCCESS",
-                    buildFinishedMessage(scanId, report, candidates.size(), autoTrade, false) + timingMessage,
+                    buildFinishedMessage(scanId, report, candidates.size(), autoTrade, false)
+                            + ", executionCandidates=" + decisionBatch.candidates().size() + timingMessage,
                     Instant.now()
             );
             log.info("{}: {}", result.taskName(), result.message());
@@ -317,19 +319,24 @@ public class ContractMarketScanTask {
         }
     }
 
-    private DecisionBatch claimDecisions(List<ContractCandidate> candidates, Instant now) {
+    private DecisionBatch claimDecisions(ContractScanResult scanResult, Instant now) {
+        List<ContractCandidate> published = scanResult.candidates();
         if (strategyDecisionService == null || systemControlService == null) {
-            return new DecisionBatch(candidates == null ? List.of() : candidates, Map.of(), Map.of());
+            return new DecisionBatch(published, Map.of(), Map.of());
         }
         String owner = systemControlService.autoTradeOwnerUsername();
         if (owner == null || owner.isBlank()) {
             owner = "local-admin";
         }
-        List<ContractCandidate> safe = candidates == null ? List.of() : candidates;
-        List<ContractCandidate> claimedCandidates = new java.util.ArrayList<>();
+        List<ContractCandidate> ordered = new ArrayList<>(published);
+        ordered.addAll(scanResult.reserveCandidates());
+        List<ContractCandidate> claimedCandidates = new ArrayList<>();
         Map<String, String> clientOrderIds = new LinkedHashMap<>();
         Map<String, StrategyDecisionService.DecisionClaim> claims = new LinkedHashMap<>();
-        for (ContractCandidate candidate : safe) {
+        for (ContractCandidate candidate : ordered) {
+            if (claimedCandidates.size() >= published.size()) {
+                break;
+            }
             Instant candle = candidate == null || candidate.klineAnalysis() == null
                     ? null : candidate.klineAnalysis().decisionCandleTimestamp();
             if (candidate == null || candidate.instId() == null || candle == null) {

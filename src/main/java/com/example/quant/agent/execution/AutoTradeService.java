@@ -12,8 +12,6 @@ import com.example.quant.agent.budget.BudgetReservation;
 import com.example.quant.agent.event.TradeEventPayload;
 import com.example.quant.agent.event.TradeEventService;
 import com.example.quant.agent.event.TradeEventType;
-import com.example.quant.agent.entry.WaitingEntryIntentService;
-import com.example.quant.agent.entry.WaitingEntryIntentStatus;
 import com.example.quant.agent.gate.ContractTradeGate;
 import com.example.quant.agent.selection.AiContractSelectionService;
 import com.example.quant.agent.selection.ContractSelectionDecision;
@@ -69,7 +67,6 @@ public class AutoTradeService {
     private final OkxCurrentOrderSyncService currentOrderSyncService;
     private final TradeEventService tradeEventService;
     private AiContractSelectionService aiContractSelectionService;
-    private WaitingEntryIntentService waitingEntryIntentService;
     private LiveMarketRefreshService liveMarketRefreshService;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Map<String, Instant> inFlightUntilByInstId = new ConcurrentHashMap<>();
@@ -162,11 +159,6 @@ public class AutoTradeService {
     @Autowired
     public void configureLiveMarketRefresh(LiveMarketRefreshService liveMarketRefreshService) {
         this.liveMarketRefreshService = liveMarketRefreshService;
-    }
-
-    @Autowired(required = false)
-    public void configureWaitingEntryIntent(WaitingEntryIntentService waitingEntryIntentService) {
-        this.waitingEntryIntentService = waitingEntryIntentService;
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -348,57 +340,17 @@ public class AutoTradeService {
                                     left, right, safeV2Scores)))
                     .limit(Math.max(1, agentProperties.ranking().maxAutoTradeFallbackRank()))
                     .toList();
-            String owner = currentOwner();
-            Optional<WaitingEntryIntentService.TriggeredIntent> triggeredIntent = waitingEntryIntentService == null
-                    ? Optional.empty()
-                    : waitingEntryIntentService.evaluate(owner, safeCandidates, Instant.now());
-            ContractSelectionDecision selection;
-            if (triggeredIntent.isPresent()) {
-                WaitingEntryIntentService.TriggeredIntent triggered = triggeredIntent.orElseThrow();
-                if ("RULE_FIRST_AI_RANK".equals(agentProperties.aiSelection().policy())) {
-                    List<String> denyReasons = ContractTradeGate.planDenyReasons(triggered.candidate(), agentProperties);
-                    if (!denyReasons.isEmpty()) {
-                        AutoTradeResult denied = new AutoTradeResult(
-                                "SKIPPED", triggered.instId(), null, null, null, null,
-                                triggered.direction() == com.example.quant.market.DirectionBias.BEARISH
-                                        ? "short" : "long",
-                                null, BigDecimal.ZERO, triggered.candidate().entryPrice(),
-                                "WAITING_ENTRY_RULE_INELIGIBLE:" + String.join(",", denyReasons), Instant.now());
-                        completeTriggeredIntent(triggeredIntent, WaitingEntryIntentStatus.FAILED_SAFE, denied);
-                        return recordAndReturn(denied, candidateCount, triggered.candidate(), executableSelection(triggered));
-                    }
-                }
-                stableDecisionIds.put(triggered.instId(), triggered.clientOrderId());
-                selection = executableSelection(triggered);
-                orderedCandidates = List.of(triggered.candidate());
-            } else {
-                List<ContractCandidate> aiPool = aiEligibleCandidates(safeCandidates, safeV2Scores);
-                selection = aiContractSelectionService == null
-                        ? null
-                        : safeV2Scores.isEmpty()
-                        ? aiContractSelectionService.select(aiPool)
-                        : aiContractSelectionService.select(aiPool, safeV2Scores);
-            }
+            List<ContractCandidate> aiPool = aiEligibleCandidates(safeCandidates, safeV2Scores);
+            ContractSelectionDecision selection = aiContractSelectionService == null
+                    ? null
+                    : safeV2Scores.isEmpty()
+                    ? aiContractSelectionService.select(aiPool)
+                    : aiContractSelectionService.select(aiPool, safeV2Scores);
             if (selection != null && selection.source() == ContractSelectionDecision.DecisionSource.AI_WAIT) {
                 ContractCandidate selected = safeCandidates.stream()
-                        .filter(candidate -> selection.selectedInstId() != null
-                                && selection.selectedInstId().equals(candidate.instId()))
-                        .findFirst().orElse(null);
-                String clientOrderId = selected == null ? null : stableDecisionIds.get(selected.instId());
-                if (waitingEntryIntentService == null || selected == null || clientOrderId == null) {
-                    return recordAndReturn(AutoTradeResult.skipped("ai_primary_wait"), candidateCount,
-                            selected == null ? topCandidate(safeCandidates, safeV2Scores).orElse(null) : selected, selection);
-                }
-                WaitingEntryIntentService.Intent intent = waitingEntryIntentService.createOrGet(
-                        owner, "AUTO_CONTRACT_V1", selected, selection, clientOrderId, Instant.now());
-                AutoTradeResult waiting = new AutoTradeResult(
-                        "WAITING_ENTRY", selected.instId(), null, null, null, null,
-                        selection.direction() == null ? null
-                                : selection.direction() == com.example.quant.market.DirectionBias.BEARISH ? "short" : "long",
-                        null, BigDecimal.ZERO, selected.entryPrice(), "AI_WAITING_ENTRY", Instant.now());
-                log.warn("AutoTrade waiting intent persisted scanId={} intentId={} symbol={} mode={} created={}",
-                        scanId, intent.intentId(), selected.instId(), selection.entryMode(), intent.created());
-                return recordAndReturn(waiting, candidateCount, selected, selection);
+                        .filter(candidate -> candidate.instId().equals(selection.selectedInstId()))
+                        .findFirst().orElseGet(() -> topCandidate(safeCandidates, safeV2Scores).orElse(null));
+                return recordAndReturn(AutoTradeResult.skipped("AI_WAIT_SKIPPED"), candidateCount, selected, selection);
             }
             if (selection != null && selection.source() == ContractSelectionDecision.DecisionSource.AI_PRIMARY) {
                 orderedCandidates = aiOrderedCandidates(safeCandidates, selection);
@@ -501,11 +453,12 @@ public class AutoTradeService {
                                     && selection.source() == ContractSelectionDecision.DecisionSource.RULE_FALLBACK
                                     ? tradePlanService.createRuleFallbackPlan(planningCandidate)
                                     : tradePlanService.createContractPlan(planningCandidate);
+                    String planRejection = plan.rejectionReason();
                     recordEvent(candidate, null, plan, TradeEventType.PLAN_CREATED, null, null,
-                            "PLAN_CREATED", "自动交易计划已生成", null);
-                    if (plan.action() == com.example.quant.tradeplan.TradePlanType.WATCH
-                            || "NO_ENTRY".equals(plan.orderType())) {
-                        String reason = "智能入场或计划输出为观察，不提交OKX";
+                            planRejection == null ? "PLAN_CREATED" : "PLAN_NOT_EXECUTABLE",
+                            planRejection == null ? "自动交易计划已生成" : planRejection, null);
+                    if (planRejection != null) {
+                        String reason = "PLAN_NOT_EXECUTABLE: " + planRejection;
                         skipReasonsBySymbol.put(candidate.instId(), reason);
                         recordCandidateSkipped(candidate, reason);
                         inFlightUntilByInstId.remove(candidate.instId());
@@ -538,15 +491,19 @@ public class AutoTradeService {
                             .max(BigDecimal.ZERO);
                     maxMarginForCandidate = min(min(maxMarginForCandidate, availableForThisRound),
                             accountSingleMarginCap);
-                    BigDecimal costRate = percentRate(stopLossPct(plan)
-                            .add(agentProperties.profitProtection().roundTripFeePct())
-                            .add(agentProperties.profitProtection().estimatedSlippagePct()))
-                            .add(candidate.fundingRate() == null ? agentProperties.market().maxFundingAbs() : candidate.fundingRate().abs());
-                    BigDecimal riskBudget = effectiveEquity(accountAtRoundStart.orElseThrow())
-                            .multiply(percentRate(agentProperties.risk().singleTradeRiskPercent()));
-                    if (costRate.signum() > 0 && plan.suggestedLeverage() > 0) {
-                        maxMarginForCandidate = maxMarginForCandidate.min(riskBudget.divide(
-                                costRate.multiply(BigDecimal.valueOf(plan.suggestedLeverage())), 8, RoundingMode.DOWN));
+                    if (plan.executionPreview() == null) {
+                        // Preserve sizing limits for callers supplying a plan without an execution preview.
+                        BigDecimal costRate = percentRate(stopLossPct(plan)
+                                .add(agentProperties.profitProtection().roundTripFeePct())
+                                .add(agentProperties.profitProtection().estimatedSlippagePct()))
+                                .add(candidate.fundingRate() == null
+                                        ? agentProperties.market().maxFundingAbs() : candidate.fundingRate().abs());
+                        BigDecimal riskBudget = effectiveEquity(accountAtRoundStart.orElseThrow())
+                                .multiply(percentRate(agentProperties.risk().singleTradeRiskPercent()));
+                        if (costRate.signum() > 0 && plan.suggestedLeverage() > 0) {
+                            maxMarginForCandidate = maxMarginForCandidate.min(riskBudget.divide(
+                                    costRate.multiply(BigDecimal.valueOf(plan.suggestedLeverage())), 8, RoundingMode.DOWN));
+                        }
                     }
                     BudgetAllocation allocation = budgetService.allocate(new BudgetAllocationRequest(
                             totalBudgetUsdt,
@@ -559,7 +516,8 @@ public class AutoTradeService {
                             candidate.newsAnalysis().newsRiskLevel(),
                             positionQualityPolicy.marketRegimeFor(candidate),
                             candidate.fundingRate(),
-                            candidate.riskRewardRatio()
+                            plan.executionPreview() == null ? plan.riskRewardRatio()
+                                    : plan.executionPreview().risk().estimatedNetRiskRewardRatio()
                     ));
                     orderMarginUsdt = allocation.finalOrderMarginUsdt();
                     if (orderMarginUsdt.compareTo(agentProperties.budget().minOrderMarginUsdt()) < 0) {
@@ -627,7 +585,6 @@ public class AutoTradeService {
                             ex.getMessage(),
                             Instant.now()
                     );
-                    completeTriggeredIntent(triggeredIntent, WaitingEntryIntentStatus.RECONCILING, unknown);
                     recordExecution(unknown, candidateCount, candidate, selection);
                     return unknown;
                 } catch (org.springframework.dao.OptimisticLockingFailureException stale) {
@@ -662,8 +619,7 @@ public class AutoTradeService {
                             scanId, plan.instId(), plan.id(), order.id(), result.externalOrderId());
                     AutoTradeResult executed = new AutoTradeResult(submittedStatus, plan.instId(), plan.id().toString(),
                             order.id().toString(), result.externalOrderId(), plan.action().name(), order.posSide(),
-                            order.leverage(), orderMarginUsdt, plan.entryPrice(), result.message(), Instant.now());
-                    completeTriggeredIntent(triggeredIntent, WaitingEntryIntentStatus.SUBMITTED, executed);
+                            order.leverage(), order.marginAmount(), plan.entryPrice(), result.message(), Instant.now());
                     recordExecution(executed, candidateCount, candidate, selection);
                     executedResults.add(executed);
                     heldInstIds.add(candidate.instId());
@@ -673,11 +629,6 @@ public class AutoTradeService {
                 }
                 log.warn("Auto trade rejected after plan scanId={} instId={} tradePlanId={} reason={}",
                         scanId, plan.instId(), plan.id(), result.message());
-                AutoTradeResult rejectedIntentResult = new AutoTradeResult(
-                        "REJECTED", plan.instId(), plan.id().toString(), order.id().toString(), null,
-                        plan.action().name(), order.posSide(), order.leverage(), orderMarginUsdt,
-                        plan.entryPrice(), result.message(), Instant.now());
-                completeTriggeredIntent(triggeredIntent, WaitingEntryIntentStatus.FAILED_SAFE, rejectedIntentResult);
                 inFlightUntilByInstId.remove(candidate.instId());
                 if (reservation != null) {
                     budgetService.release(reservation.reservationId(), "CONFIRM_REJECTED");
@@ -951,7 +902,13 @@ public class AutoTradeService {
             Map<String, V2SelectionScoreResult> v2ScoreSnapshot
     ) {
         return candidates.stream()
-                .filter(candidate -> aiHardGate(candidate).isEmpty())
+                .filter(candidate -> {
+                    List<String> denials = aiHardGate(candidate);
+                    if (!denials.isEmpty() && aiContractSelectionService != null) {
+                        aiContractSelectionService.observeHardDeny(candidate, denials);
+                    }
+                    return denials.isEmpty();
+                })
                 .filter(candidate -> !"RULE_FIRST_AI_RANK".equals(agentProperties.aiSelection().policy())
                         || ContractTradeGate.planDenyReasons(candidate, agentProperties).isEmpty())
                 .sorted((left, right) -> V2SelectionScoreCalculator.compareForRanking(
@@ -987,29 +944,6 @@ public class AutoTradeService {
         return new ContractSelectionDecision(
                 selection.source(), selection.decision(), candidate.instId(), ranked.direction(), ranked.entryMode(),
                 ranked.confidence(), List.of(ranked), ranked.reasonList(), ranked.riskList(), selection.fallbackReason());
-    }
-
-    private static ContractSelectionDecision executableSelection(
-            WaitingEntryIntentService.TriggeredIntent triggered) {
-        BigDecimal confidence = new BigDecimal("0.75");
-        ContractSelectionDecision.RankedCandidate ranked = new ContractSelectionDecision.RankedCandidate(
-                triggered.instId(), 1, triggered.direction(), "MARKET", confidence);
-        return new ContractSelectionDecision(
-                ContractSelectionDecision.DecisionSource.AI_PRIMARY,
-                ContractSelectionDecision.SelectionAction.TRADE,
-                triggered.instId(), triggered.direction(), "MARKET", confidence,
-                List.of(ranked), List.of("等待入场条件已由新收盘K线触发"), List.of(), "");
-    }
-
-    private void completeTriggeredIntent(Optional<WaitingEntryIntentService.TriggeredIntent> triggeredIntent,
-                                         WaitingEntryIntentStatus status, AutoTradeResult result) {
-        if (waitingEntryIntentService == null || triggeredIntent == null || triggeredIntent.isEmpty()
-                || result == null || !triggeredIntent.orElseThrow().instId().equals(result.instId())) {
-            return;
-        }
-        WaitingEntryIntentService.TriggeredIntent triggered = triggeredIntent.orElseThrow();
-        waitingEntryIntentService.complete(triggered.intentId(), status, result.pendingOrderId(), result.okxOrderId(),
-                result.message(), result.createdAt());
     }
 
     private String currentOwner() {

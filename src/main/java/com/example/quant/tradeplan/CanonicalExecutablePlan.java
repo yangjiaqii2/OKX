@@ -1,6 +1,7 @@
 package com.example.quant.tradeplan;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -82,8 +83,21 @@ public record CanonicalExecutablePlan(
 
     public record Risk(
             BigDecimal riskBudget,
-            BigDecimal executableStopLossAmount
-    ) {}
+            BigDecimal executableStopLossAmount,
+            BigDecimal estimatedEntryPrice,
+            BigDecimal estimatedNetStopLossAmount,
+            BigDecimal estimatedNetRiskRewardRatio,
+            Instant quoteTime
+    ) {
+        public Risk(BigDecimal riskBudget, BigDecimal executableStopLossAmount) {
+            this(riskBudget, executableStopLossAmount, null, null, null, null);
+        }
+    }
+
+    CanonicalExecutablePlan withRisk(Risk estimate) {
+        return new CanonicalExecutablePlan(planId, instId, action, strategyVersion, compilerVersion,
+                entry, stopLoss, takeProfitLegs, estimate, instrument, status, decisions);
+    }
 
     public record InstrumentSnapshot(
             String instId,

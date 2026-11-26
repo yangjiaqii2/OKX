@@ -60,6 +60,18 @@ class ProviderCacheTest {
     }
 
     @Test
+    void recentStaleDataRemainsStaleAndDoesNotSatisfyFreshPeek() {
+        ProviderCache<String, MarketCapSnapshot> cache = new ProviderCache<>(
+                "test", Duration.ofMinutes(10), Duration.ofMinutes(30));
+        var stale = ProviderResult.stale(mcap("BTC"), "disk", Instant.now().minusSeconds(90));
+        cache.seed("BTC", stale);
+
+        assertThat(cache.peek("BTC")).isEmpty();
+        assertThat(cache.get("BTC", key -> { throw new AssertionError("existing fallback expected"); }))
+                .isEqualTo(stale);
+    }
+
+    @Test
     void staleEntryStillServedWithinStaleTtl() {
         ProviderCache<String, MarketCapSnapshot> cache = new ProviderCache<>(
                 "test", Duration.ZERO, Duration.ofMinutes(10));

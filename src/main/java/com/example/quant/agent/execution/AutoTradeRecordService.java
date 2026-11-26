@@ -6,12 +6,14 @@ import com.example.quant.auth.AuthUserContext;
 import com.example.quant.common.PageResult;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.agent.selection.ContractSelectionDecision;
+import com.example.quant.agent.selection.AiEntryObservationService;
 import jakarta.persistence.criteria.Predicate;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -24,6 +26,12 @@ public class AutoTradeRecordService {
     private static final Logger log = LoggerFactory.getLogger(AutoTradeRecordService.class);
 
     private final AutoTradeRecordRepository repository;
+    private AiEntryObservationService observations;
+
+    @Autowired
+    void configureEntryObservations(AiEntryObservationService observations) {
+        this.observations = observations;
+    }
 
     public AutoTradeRecordService(AutoTradeRecordRepository repository) {
         this.repository = repository;
@@ -40,8 +48,9 @@ public class AutoTradeRecordService {
         if (repository == null || result == null) {
             return;
         }
+        Instant now = result.createdAt() == null ? Instant.now() : result.createdAt();
+        observeWait(result, candidate, selection, now);
         try {
-            Instant now = result.createdAt() == null ? Instant.now() : result.createdAt();
             AutoTradeRecordEntity entity = new AutoTradeRecordEntity();
             entity.setScanId(org.slf4j.MDC.get("coverageScanId"));
             entity.setScanCoverage(org.slf4j.MDC.get("scanCoverage"));
@@ -86,12 +95,27 @@ public class AutoTradeRecordService {
         }
     }
 
+    private void observeWait(AutoTradeResult result, ContractCandidate candidate,
+                             ContractSelectionDecision selection, Instant at) {
+        if (observations == null || selection == null || candidate == null
+                || selection.source() != ContractSelectionDecision.DecisionSource.AI_WAIT
+                || !"AI_WAIT_SKIPPED".equals(result.message())) return;
+        try {
+            observations.track(selection.observationId(), currentUsername(), candidate.instId(),
+                    candidate.trendDirection(), candidate.lastPrice(), candidate.createdAt(), at);
+        } catch (RuntimeException ex) {
+            log.warn("AI entry tracking skipped errorType={}", ex.getClass().getSimpleName());
+        }
+    }
+
     private static void applySelection(AutoTradeRecordEntity entity, AutoTradeResult result,
                                        ContractSelectionDecision selection) {
         if (selection == null) {
             return;
         }
         entity.setDecisionSource(selection.source().name());
+        entity.setAiObservationId(selection.observationId());
+        entity.setAiRejectionCode(selection.rejectionCode());
         ContractSelectionDecision.RankedCandidate ranked = selection.rankedCandidates().stream()
                 .filter(item -> result.instId() != null && result.instId().equals(item.instId()))
                 .findFirst()

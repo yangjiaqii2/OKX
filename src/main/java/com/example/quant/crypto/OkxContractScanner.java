@@ -9,6 +9,7 @@ import com.example.quant.agent.scan.ScanDiagnostics;
 import com.example.quant.agent.scan.ScanRunReport;
 import com.example.quant.agent.scan.ScanRunStatus;
 import com.example.quant.agent.gate.ContractTradeGate;
+import com.example.quant.okxtrade.OkxInstrumentRulesService;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.crypto.scan.ActiveEntryIntentInstIds;
 import com.example.quant.crypto.scan.DeepAnalysisTargetAllocator;
@@ -25,6 +26,7 @@ import com.example.quant.crypto.dto.ContractSignal;
 import com.example.quant.crypto.dto.ContractSignalType;
 import com.example.quant.crypto.filter.FilterContext;
 import com.example.quant.crypto.filter.FilterOutcome;
+import com.example.quant.crypto.filter.OrderBookPrefilter;
 import com.example.quant.crypto.filter.UniverseHardFilter;
 import com.example.quant.crypto.provider.DataQuality;
 import com.example.quant.crypto.provider.FundingHistoryProvider;
@@ -85,6 +87,7 @@ public class OkxContractScanner {
     private final AgentProperties agentProperties;
     private final MarketCapProvider marketCapProvider;
     private final UniverseHardFilter universeHardFilter;
+    private final OrderBookPrefilter orderBookPrefilter;
     private final OpenInterestHistoryProvider openInterestHistoryProvider;
     private final FundingHistoryProvider fundingHistoryProvider;
     private final ProviderCache<String, MarketCapSnapshot> marketCapCache;
@@ -96,6 +99,7 @@ public class OkxContractScanner {
     private final DeepAnalysisTargetAllocator deepAnalysisTargetAllocator = new DeepAnalysisTargetAllocator();
     @Autowired
     private ScanCoverageStore coverageStore;
+    private OkxInstrumentRulesService instrumentRulesService;
     private final Map<String, Visit> localVisits = new ConcurrentHashMap<>();
     private volatile ActiveEntryIntentInstIds activeEntryIntentInstIds = Set::of;
     private final AtomicReference<ScanDiagnostics> lastDiagnostics = new AtomicReference<>();
@@ -155,6 +159,7 @@ public class OkxContractScanner {
         this.signalAnalyzer = signalAnalyzer;
         this.contractNewsAnalysisService = contractNewsAnalysisService;
         this.orderBookLiquidityService = orderBookLiquidityService;
+        this.orderBookPrefilter = new OrderBookPrefilter(orderBookLiquidityService);
         this.marketEnvironmentService = marketEnvironmentService;
         this.agentProperties = agentProperties;
         this.marketCapProvider = marketCapProvider == null
@@ -245,6 +250,11 @@ public class OkxContractScanner {
         this.activeEntryIntentInstIds = source == null ? Set::of : source;
     }
 
+    @Autowired
+    void configureInstrumentRulesService(OkxInstrumentRulesService service) {
+        this.instrumentRulesService = service;
+    }
+
     /** 等待意图查询失败不得中断扫描：退回空集合，行为与未注入一致。 */
     private Set<String> pinnedInstIds() {
         try {
@@ -289,8 +299,6 @@ public class OkxContractScanner {
             BigDecimal low24h = decimal(item, "low24h");
             BigDecimal volCcy24h = nullableDecimal(item, "volCcy24h");
             BigDecimal vol24h = nullableDecimal(item, "vol24h");
-            BigDecimal bidPx = decimal(item, "bidPx");
-            BigDecimal askPx = decimal(item, "askPx");
             BigDecimal change24h = BigDecimal.ZERO;
             if (open24h.signum() > 0) {
                 change24h = last.subtract(open24h)
@@ -304,11 +312,8 @@ public class OkxContractScanner {
             BigDecimal range24h = last.signum() > 0 && high24h.signum() > 0 && low24h.signum() > 0
                     ? high24h.subtract(low24h).multiply(BigDecimal.valueOf(100)).divide(last, 4, RoundingMode.HALF_UP)
                     : BigDecimal.ZERO;
-            BigDecimal spreadPct = last.signum() > 0 && bidPx.signum() > 0 && askPx.signum() > 0
-                    ? askPx.subtract(bidPx).multiply(BigDecimal.valueOf(100)).divide(last, 4, RoundingMode.HALF_UP)
-                    : BigDecimal.ZERO;
             snapshots.add(new TickerSnapshot(instId, baseCurrency(instId), last, open24h, turnover24h,
-                    change24h, range24h, spreadPct));
+                    change24h, range24h, null));
         }
         List<ContractCandidate> ranked = snapshots.stream()
                 .filter(snapshot -> snapshot.volume24h() != null
@@ -326,9 +331,10 @@ public class OkxContractScanner {
                         .thenComparing(ContractCandidate::volume24h, Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(agentProperties.topCandidateLimit())
                 .toList();
-        lastDiagnostics.set(ScanDiagnostics.fromV1(null, snapshots.size(), Map.of(), ranked.size()));
-        lastScanReport.set(buildCompletedReport(ctx, snapshots.size(), ranked.size(), ranked.size(), ranked.size(),
-                lastDiagnostics.get()));
+        ScanDiagnostics diagnostics = ScanDiagnostics.fromV1(null, snapshots.size(), Map.of(), ranked.size());
+        ScanRunReport report = buildCompletedReport(ctx, snapshots.size(), ranked.size(), ranked.size(), ranked.size(),
+                diagnostics);
+        recordScanResult(ctx, new ContractScanResult(ranked, report));
         return ranked;
     }
 
@@ -465,16 +471,25 @@ public class OkxContractScanner {
                     snapshots.add(s);
                 }
             }
+            if (instrumentRulesService != null && !snapshots.isEmpty()) {
+                ctx.setStage("instrument_metadata");
+                Set<String> liveCrypto = instrumentRulesService.liveCryptoUsdtSwapIds(ctx.requestTimeout());
+                int usdtSwaps = snapshots.size();
+                snapshots.removeIf(ticker -> !liveCrypto.contains(ticker.instId()));
+                log.info("scanV2 instrument universe scanId={} usdtSwaps={} eligibleCrypto={} excluded={}",
+                        ctx.scanId(), usdtSwaps, snapshots.size(), usdtSwaps - snapshots.size());
+            }
         } catch (Exception ex) {
-            log.warn("scanV2 tickers fetch failed scanId={} message={}", ctx.scanId(), ex.getMessage());
+            log.warn("scanV2 universe fetch failed scanId={} stage={} message={}",
+                    ctx.scanId(), ctx.currentStage(), ex.getMessage());
             if (ctx.isExpired()) {
                 return finishDeadlineExceeded(ctx, ctx.currentStage());
             }
             ctx.markFailed();
-            lastDiagnostics.set(emptyDiagnostics());
-            lastScanReport.set(ScanRunReport.failed(ctx.scanId(), ctx.startedAt(), ctx.currentStage(),
-                    lastDiagnostics.get()));
-            logScanFinished(ctx, lastScanReport.get());
+            ScanRunReport report = ScanRunReport.failed(ctx.scanId(), ctx.startedAt(), ctx.currentStage(),
+                    emptyDiagnostics());
+            recordScanResult(ctx, new ContractScanResult(List.of(), report));
+            logScanFinished(ctx, report);
             return List.of();
         }
         if (ctx.isExpired()) {
@@ -482,10 +497,10 @@ public class OkxContractScanner {
         }
         if (snapshots.isEmpty()) {
             ctx.markFailed();
-            lastDiagnostics.set(emptyDiagnostics());
-            lastScanReport.set(ScanRunReport.failed(ctx.scanId(), ctx.startedAt(), ctx.currentStage(),
-                    lastDiagnostics.get()));
-            logScanFinished(ctx, lastScanReport.get());
+            ScanRunReport report = ScanRunReport.failed(ctx.scanId(), ctx.startedAt(), ctx.currentStage(),
+                    emptyDiagnostics());
+            recordScanResult(ctx, new ContractScanResult(List.of(), report));
+            logScanFinished(ctx, report);
             return List.of();
         }
         ctx.setStage("collect_market_cap");
@@ -501,7 +516,16 @@ public class OkxContractScanner {
         List<FilterContext> contexts = snapshots.stream()
                 .map(s -> toFilterContext(s, mcapByBase.get(safeBaseOf(s.instId()))))
                 .collect(Collectors.toList());
-        FilterOutcome outcome = universeHardFilter.applyBatch(contexts);
+        FilterOutcome tickerOutcome = universeHardFilter.applyBatch(contexts);
+        ctx.setStage("order_book_prefilter");
+        FilterOutcome outcome = orderBookPrefilter.apply(tickerOutcome, ctx);
+        if (ctx.status() == ScanRunStatus.PARTIAL_TIMEOUT || ctx.isExpired()) {
+            var diagnostics = ScanDiagnostics.fromV2(outcome, snapshots.size(), Map.of(),
+                    0, 0, agentProperties.deepAnalysisLimit(), 0, 0, 0);
+            ctx.markPartialTimeout();
+            return finishPartialTimeout(ctx, snapshots.size(), outcome.passed().size(),
+                    agentProperties.deepAnalysisLimit(), List.of(), diagnostics);
+        }
         Map<String, TickerSnapshot> snapshotByInstId = new LinkedHashMap<>();
         for (TickerSnapshot s : snapshots) {
             snapshotByInstId.put(s.instId(), s);
@@ -638,17 +662,19 @@ public class OkxContractScanner {
                 v2Scores.size(), scoreAvailable, scoreUnavailable);
         // 8. 交易资格优先 + V2 selection score 排序，然后才截断到 topCandidateLimit。
         //    截断发生在资格判断之后，合法交易候选不会被"仅可观察"的高分候选挤出交付列表。
-        List<ContractCandidate> ranked = rankForDelivery(candidates, v2Scores, agentProperties, pinnedInstIds);
+        List<ContractCandidate> rankedAll = rankCandidates(candidates, v2Scores, agentProperties, pinnedInstIds);
+        int publishedCount = Math.min(rankedAll.size(), agentProperties.topCandidateLimit());
+        List<ContractCandidate> ranked = rankedAll.subList(0, publishedCount);
         // 5. 记录 diagnostics（含 V2 漏斗扩展）
         //    after_deep_analysis: 实际完成 deep analysis 的数量
         //    after_signal:        产生 V1 tradable signal 的数量
-        //    after_trade_gate:    action != "NO_TRADE" 的数量
+        //    after_trade_gate:    通过当前扫描层自动交易门槛的数量
         //    after_final_rank:    排序后取 topCandidateLimit 的最终数量
         int signalPassed = (int) candidates.stream()
-                .filter(c -> isTradableSignal(c.signalType()))
+                .filter(c -> ContractTradeGate.isTradableSignal(c.signalType()))
                 .count();
         int tradeGatePassed = (int) candidates.stream()
-                .filter(c -> !"NO_TRADE".equals(c.action()))
+                .filter(c -> tradableNow(c, agentProperties))
                 .count();
         ScanDiagnostics diagnostics = ScanDiagnostics.fromV2(
                 outcome, snapshots.size(),
@@ -660,10 +686,8 @@ public class OkxContractScanner {
                 signalPassed,
                 tradeGatePassed,
                 ranked.size());
-        lastDiagnostics.set(diagnostics);
         ScanRunReport report = buildScanReport(ctx, diagnostics, snapshots.size(), outcome.passed().size(),
                 deepTargetLimit, ranked.size());
-        lastScanReport.set(report);
         long deliveredEligible = ranked.stream().filter(c -> tradableNow(c, agentProperties)).count();
         log.info("scanV2 universe={} passed={} rejected={} deepTargetLimit={} deepTargets={} "
                         + "pinnedWaiting={} turnoverHead={} rotation={} deepCompleted={} "
@@ -677,9 +701,13 @@ public class OkxContractScanner {
                 outcome.funnel().stages());
         logScanFinished(ctx, report);
         if (ctx.status() != ScanRunStatus.COMPLETED) {
+            recordScanResult(ctx, new ContractScanResult(List.of(), report));
             return List.of();
         }
-        return ranked;
+        ContractScanResult result = new ContractScanResult(ranked, report, v2Scores,
+                rankedAll.subList(publishedCount, rankedAll.size()));
+        recordScanResult(ctx, result);
+        return result.candidates();
     }
 
     /**
@@ -714,6 +742,14 @@ public class OkxContractScanner {
                                                    Map<String, V2SelectionScoreResult> v2Scores,
                                                    AgentProperties agentProperties,
                                                    Set<String> pinnedInstIds) {
+        List<ContractCandidate> ranked = rankCandidates(candidates, v2Scores, agentProperties, pinnedInstIds);
+        return ranked.subList(0, Math.min(ranked.size(), agentProperties.topCandidateLimit()));
+    }
+
+    private static List<ContractCandidate> rankCandidates(List<ContractCandidate> candidates,
+                                                          Map<String, V2SelectionScoreResult> v2Scores,
+                                                          AgentProperties agentProperties,
+                                                          Set<String> pinnedInstIds) {
         Set<String> pinned = pinnedInstIds == null ? Set.of() : pinnedInstIds;
         // 档位判断每个候选只做一次：排序键在比较过程中会被反复取值。
         Map<String, Integer> tiers = new LinkedHashMap<>();
@@ -722,8 +758,7 @@ public class OkxContractScanner {
         }
         return candidates.stream()
                 .sorted(deliveryComparator(v2Scores, tiers))
-                .limit(agentProperties.topCandidateLimit())
-                .collect(Collectors.toList());
+                .toList();
     }
 
     private static final int TIER_OBSERVE_ONLY = 0;
@@ -779,37 +814,14 @@ public class OkxContractScanner {
                                                                     Map<String, Integer> tiers) {
         return Comparator.comparing((ContractCandidate c) -> tiers.getOrDefault(c.instId(), TIER_OBSERVE_ONLY))
                 .reversed()
-                .thenComparing(c -> rankingScoreOf(v2Scores, c),
-                        Comparator.nullsLast(Comparator.reverseOrder()))
-                .thenComparing(c -> normalizedScoreOf(v2Scores, c), Comparator.nullsLast(Comparator.reverseOrder()))
-                .thenComparing(c -> availableWeightOf(v2Scores, c), Comparator.nullsLast(Comparator.reverseOrder()))
-                .thenComparing(ContractCandidate::finalRankScore, Comparator.nullsLast(Comparator.reverseOrder()))
-                .thenComparing(ContractCandidate::score, Comparator.reverseOrder())
-                .thenComparing(ContractCandidate::volume24h, Comparator.nullsLast(Comparator.reverseOrder()))
-                .thenComparing(ContractCandidate::instId, Comparator.nullsLast(Comparator.naturalOrder()));
-    }
-
-    private static BigDecimal rankingScoreOf(Map<String, V2SelectionScoreResult> scores, ContractCandidate c) {
-        V2SelectionScoreResult result = scores.get(c.instId());
-        return result == null ? null : result.rankingScore();
-    }
-
-    private static BigDecimal normalizedScoreOf(Map<String, V2SelectionScoreResult> scores, ContractCandidate c) {
-        V2SelectionScoreResult result = scores.get(c.instId());
-        return result == null ? null : result.normalizedScore();
-    }
-
-    private static BigDecimal availableWeightOf(Map<String, V2SelectionScoreResult> scores, ContractCandidate c) {
-        V2SelectionScoreResult result = scores.get(c.instId());
-        return result == null ? null : result.availableWeight();
+                .thenComparing((left, right) -> V2SelectionScoreCalculator.compareForRanking(left, right, v2Scores));
     }
 
     private List<ContractCandidate> finishDeadlineExceeded(ScanContext ctx, String stage) {
         ctx.setStage(stage);
         ctx.markPartialTimeout();
-        lastDiagnostics.set(emptyDiagnostics());
-        ScanRunReport report = buildScanReport(ctx, lastDiagnostics.get(), 0, 0, 0, 0);
-        lastScanReport.set(report);
+        ScanRunReport report = buildScanReport(ctx, emptyDiagnostics(), 0, 0, 0, 0);
+        recordScanResult(ctx, new ContractScanResult(List.of(), report));
         logScanFinished(ctx, report);
         return List.of();
     }
@@ -1084,12 +1096,17 @@ public class OkxContractScanner {
                                                          int deepTargetLimit, List<ContractCandidate> candidates,
                                                          ScanDiagnostics diagnostics) {
         ctx.markPartialTimeout();
-        lastDiagnostics.set(diagnostics);
         ScanRunReport report = buildScanReport(ctx, diagnostics, universeCount, hardFilterPassed,
                 deepTargetLimit, candidates.size());
-        lastScanReport.set(report);
+        recordScanResult(ctx, new ContractScanResult(candidates, report));
         logScanFinished(ctx, report);
         return candidates;
+    }
+
+    private void recordScanResult(ScanContext context, ContractScanResult result) {
+        context.recordResult(result);
+        lastDiagnostics.set(result.report().diagnostics());
+        lastScanReport.set(result.report());
     }
 
     private ScanRunReport buildScanReport(ScanContext ctx, ScanDiagnostics diagnostics, int universeCount,
@@ -1222,12 +1239,12 @@ public class OkxContractScanner {
         }
         BigDecimal last = decimal(item, "last");
         BigDecimal open24h = decimal(item, "open24h");
-        BigDecimal high24h = decimal(item, "high24h");
-        BigDecimal low24h = decimal(item, "low24h");
+        BigDecimal high24h = nullableDecimal(item, "high24h");
+        BigDecimal low24h = nullableDecimal(item, "low24h");
         BigDecimal volCcy24h = nullableDecimal(item, "volCcy24h");
         BigDecimal vol24h = nullableDecimal(item, "vol24h");
-        BigDecimal bidPx = decimal(item, "bidPx");
-        BigDecimal askPx = decimal(item, "askPx");
+        BigDecimal bidPx = nullableDecimal(item, "bidPx");
+        BigDecimal askPx = nullableDecimal(item, "askPx");
         BigDecimal change24h = BigDecimal.ZERO;
         if (open24h.signum() > 0) {
             change24h = last.subtract(open24h)
@@ -1238,20 +1255,20 @@ public class OkxContractScanner {
         if (turnover24h == null) {
             return null;
         }
-        BigDecimal range24h = last.signum() > 0 && high24h.signum() > 0 && low24h.signum() > 0
+        BigDecimal range24h = low24h != null && low24h.signum() > 0
+                && high24h != null && high24h.compareTo(low24h) >= 0
                 ? high24h.subtract(low24h).multiply(BigDecimal.valueOf(100)).divide(last, 4, RoundingMode.HALF_UP)
-                : BigDecimal.ZERO;
-        BigDecimal spreadPct = last.signum() > 0 && bidPx.signum() > 0 && askPx.signum() > 0
-                ? askPx.subtract(bidPx).multiply(BigDecimal.valueOf(100)).divide(last, 4, RoundingMode.HALF_UP)
-                : BigDecimal.ZERO;
+                : null;
+        BigDecimal spreadBps = bidPx != null && bidPx.signum() > 0
+                && askPx != null && askPx.compareTo(bidPx) > 0
+                ? askPx.subtract(bidPx).multiply(BigDecimal.valueOf(20_000))
+                        .divide(askPx.add(bidPx), 4, RoundingMode.HALF_UP)
+                : null;
         return new TickerSnapshot(instId, baseCurrency(instId), last, open24h, turnover24h,
-                change24h, range24h, spreadPct);
+                change24h, range24h, spreadBps);
     }
 
     private FilterContext toFilterContext(TickerSnapshot s, ProviderResult<MarketCapSnapshot> mcap) {
-        BigDecimal range24hPct = s.range24hPct() != null
-                ? s.range24hPct().divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP)
-                : null;
         ProviderResult<MarketCapSnapshot> mcapSafe = mcap == null
                 ? ProviderResult.unavailable("no marketcap data") : mcap;
         // Phase B V2：从 snapshot absolute supply 提前算 ratio，传给 CirculationFilter /
@@ -1279,8 +1296,8 @@ public class OkxContractScanner {
                 safeBaseOf(s.instId()),
                 s.lastPrice(),
                 s.volume24h(),
-                range24hPct,
-                null, null, null,
+                s.range24hPct(),
+                s.spreadBps(), null, null,
                 mcapSafe,
                 circulationRatio,
                 volumeMcapRatio
@@ -1560,7 +1577,7 @@ public class OkxContractScanner {
     private BigDecimal finalRankScore(int adjustedScore, ContractScoreBreakdown scoreBreakdown, ContractSignal signal,
                                       OrderBookLiquiditySnapshot liquidity) {
         BigDecimal finalScore = BigDecimal.valueOf(adjustedScore);
-        if (!liquidity.tradable() || !isTradableSignal(signal.signalType())) {
+        if (!liquidity.tradable() || !ContractTradeGate.isTradableSignal(signal.signalType())) {
             finalScore = finalScore.min(BigDecimal.valueOf(60));
         }
         if (scoreBreakdown.liquidity() < 50) {
@@ -1795,20 +1812,13 @@ public class OkxContractScanner {
     }
 
     private boolean firstPlaceEligible(ContractCandidate candidate) {
-        return isTradableSignal(candidate.signalType())
+        return ContractTradeGate.isTradableSignal(candidate.signalType())
                 && "AUTO_TRADE_ALLOWED".equals(candidate.action())
                 && candidate.scoreBreakdown().liquidity() >= 70
                 && candidate.scoreBreakdown().volume() >= 60
                 && candidate.riskRewardRatio().compareTo(agentProperties.ranking().minRiskReward()) >= 0
                 && candidate.stopLossPct().compareTo(BigDecimal.valueOf(5)) <= 0
                 && candidate.fundingRate().abs().compareTo(agentProperties.market().maxFundingAbs().multiply(BigDecimal.valueOf(2))) <= 0;
-    }
-
-    private static boolean isTradableSignal(ContractSignalType signalType) {
-        return signalType == ContractSignalType.STRONG_LONG
-                || signalType == ContractSignalType.PULLBACK_LONG
-                || signalType == ContractSignalType.TREND_SHORT
-                || signalType == ContractSignalType.REVERSAL_SHORT;
     }
 
     private record TickerSnapshot(
@@ -1819,7 +1829,7 @@ public class OkxContractScanner {
             BigDecimal volume24h,
             BigDecimal change24h,
             BigDecimal range24hPct,
-            BigDecimal spreadPct
+            BigDecimal spreadBps
     ) {
     }
 }

@@ -101,21 +101,23 @@ public class ContractAnalysisService {
         Instant startedAt = context.startedAt();
         try {
             List<ContractCandidate> scanned = scanner.scan(context);
-            ScanRunReport report = scanner.lastScanReport();
+            ContractScanResult outcome = context.result();
+            ScanRunReport report = outcome == null ? scanner.lastScanReport() : outcome.report();
             if (report == null) {
                 log.warn("scanId={} status=UNKNOWN reason=SCAN_REPORT_MISSING", context.scanId());
                 Instant finishedAt = Instant.now();
-                persistScanOutcome(null, List.of(), startedAt, finishedAt, ScanRunStatus.UNKNOWN);
+                persistScanOutcome(null, List.of(), startedAt, finishedAt, ScanRunStatus.UNKNOWN, Map.of());
                 return new ContractScanResult(List.of(), null);
             }
             ScanRunStatus status = report.status();
             Instant finishedAt = Instant.now();
-            persistScanOutcome(report, scanned, startedAt, finishedAt, status);
+            Map<String, V2SelectionScoreResult> v2Scores = status != ScanRunStatus.COMPLETED ? Map.of()
+                    : outcome == null ? scanner.lastV2ScoreResults() : outcome.v2Scores();
+            persistScanOutcome(report, scanned, startedAt, finishedAt, status, v2Scores);
             if (status == ScanRunStatus.COMPLETED) {
                 List<ContractCandidate> published = scanned == null
                         ? List.of()
                         : scanned.stream().filter(Objects::nonNull).toList();
-                Map<String, V2SelectionScoreResult> v2Scores = scanner.lastV2ScoreResults();
                 LiveScanSnapshot previous = liveSnapshot.get();
                 if (published.isEmpty() && !previous.candidates().isEmpty()) {
                     log.warn("scanId={} completed with zero candidates; retaining prior live snapshot scanId={} candidates={}",
@@ -128,8 +130,7 @@ public class ContractAnalysisService {
                         v2Scores == null ? Map.of() : Map.copyOf(v2Scores),
                         startedAt,
                         finishedAt));
-                return new ContractScanResult(published, report,
-                        v2Scores == null ? Map.of() : Map.copyOf(v2Scores));
+                return outcome == null ? new ContractScanResult(published, report, v2Scores) : outcome;
             }
             return new ContractScanResult(List.of(), report);
         } finally {
@@ -138,14 +139,15 @@ public class ContractAnalysisService {
     }
 
     private void persistScanOutcome(ScanRunReport report, List<ContractCandidate> scanned,
-                                    Instant startedAt, Instant finishedAt, ScanRunStatus status) {
+                                    Instant startedAt, Instant finishedAt, ScanRunStatus status,
+                                    Map<String, V2SelectionScoreResult> v2Scores) {
         if (scoreRecorder == null) {
             return;
         }
         try {
             if (status == ScanRunStatus.COMPLETED) {
                 scoreRecorder.recordScanOutcome(report, scanned, startedAt, finishedAt,
-                        scanner.isV2Mode(), scanner.lastV2ScoreResults());
+                        scanner.isV2Mode(), v2Scores);
             } else {
                 scoreRecorder.recordScanOutcome(report, List.of(), startedAt, finishedAt,
                         scanner.isV2Mode(), Map.of());

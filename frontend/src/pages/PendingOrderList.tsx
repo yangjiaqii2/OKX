@@ -27,7 +27,8 @@ import { PageHeader, PageShell } from '../components/PageShell';
 import { PendingOrderReviewDialog } from '../components/PendingOrderReviewDialog';
 import { StatusChip } from '../components/StatusChip';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
-import { directionTone, formatAction, formatLeverage, formatPrice, formatSide } from '../formatters';
+import { directionTone, formatAction, formatAutoTradeReason, formatLeverage, formatPrice, formatSide } from '../formatters';
+import { t, useLanguage } from '../i18n';
 
 type PendingOrderState = {
   risk?: Record<string, unknown>;
@@ -50,6 +51,7 @@ const PendingOrderActions = ({
   onChanged: () => void;
   tradingMode: string;
 }) => {
+  useLanguage();
   const notify = useNotify();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -61,12 +63,12 @@ const PendingOrderActions = ({
     try {
       const result = (await quantApi.confirmOrder(id, marginAmount)) as Record<string, unknown>;
       if (result.executed !== true) {
-        throw new Error(String(result.message ?? '订单未提交OKX'));
+        throw new Error(String(result.message ?? t("订单未提交OKX")));
       }
-      notify(String(result.message ?? 'OKX委托已提交，等待成交，请到OKX当前委托/持仓确认'), { type: 'info' });
+      notify(String(result.message ?? t("OKX委托已提交，等待成交，请到OKX当前委托/持仓确认")), { type: 'info' });
       onChanged();
     } catch (error) {
-      notify(error instanceof Error ? error.message : '确认订单失败', { type: 'error' });
+      notify(error instanceof Error ? formatAutoTradeReason(error.message) : t("确认订单失败"), { type: 'error' });
     } finally {
       setSubmitting(false);
       setConfirmOpen(false);
@@ -77,10 +79,10 @@ const PendingOrderActions = ({
     setSubmitting(true);
     try {
       await quantApi.cancelOrder(id);
-      notify('订单已取消', { type: 'success' });
+      notify(t("订单已取消"), { type: 'success' });
       onChanged();
     } catch (error) {
-      notify(error instanceof Error ? error.message : '取消订单失败', { type: 'error' });
+      notify(error instanceof Error ? error.message : t("取消订单失败"), { type: 'error' });
     } finally {
       setSubmitting(false);
       setCancelOpen(false);
@@ -97,10 +99,10 @@ const PendingOrderActions = ({
         onClick={() => setConfirmOpen(true)}
         disabled={tradingMode === 'DISABLED'}
       >
-        {tradingMode === 'LIVE' ? 'LIVE 确认' : tradingMode === 'DEMO' ? 'DEMO 确认' : '交易已关闭'}
+        {tradingMode === 'LIVE' ? t("LIVE 确认") : tradingMode === 'DEMO' ? t("DEMO 确认") : t("交易已关闭")}
       </Button>
       <Button size="small" variant="outlined" color="warning" startIcon={<CancelIcon />} onClick={() => setCancelOpen(true)}>
-        取消
+        {t("取消")}
       </Button>
       <PendingOrderReviewDialog
         open={confirmOpen}
@@ -112,10 +114,10 @@ const PendingOrderActions = ({
       />
       <Confirm
         isOpen={cancelOpen}
-        title="取消待确认订单"
-        content={`取消 ${String(record.instId)} 的待确认订单。`}
-        confirm="取消订单"
-        cancel="返回"
+        title={t("取消待确认订单")}
+        content={t('取消 {instrument} 的待确认订单。', { instrument: String(record.instId) })}
+        confirm={t("取消订单")}
+        cancel={t("返回")}
         onConfirm={() => void cancelOrder()}
         onClose={() => setCancelOpen(false)}
       />
@@ -124,6 +126,7 @@ const PendingOrderActions = ({
 };
 
 export function PendingOrderList() {
+  useLanguage();
   const notify = useNotify();
   const [state, setState] = useState<PendingOrderState>(emptyState);
   const [loading, setLoading] = useState(true);
@@ -152,7 +155,7 @@ export function PendingOrderList() {
       });
       setError('');
     } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : '待确认订单加载失败';
+      const message = loadError instanceof Error ? loadError.message : t("待确认订单加载失败");
       setError(message);
       if (!silent) {
         notify(message, { type: 'error' });
@@ -182,19 +185,19 @@ export function PendingOrderList() {
   }, [query, state.orders]);
 
   return (
-    <PageShell title="待确认订单">
+    <PageShell title={t("待确认订单")}>
       <Stack spacing={2}>
         <PageHeader
-          title="待确认订单"
-          subtitle="这里是 OKX 订单提交前的人工审核台。确认前必须填写保证金并复核方向、杠杆、止损和止盈。"
+          title={t("待确认订单")}
+          subtitle={t("这里是 OKX 订单提交前的人工审核台。确认前必须填写保证金并复核方向、杠杆、止损和止盈。")}
           filters={
             <>
               <TextField
                 size="small"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索合约、方向、状态"
-                inputProps={{ 'aria-label': '搜索合约、方向、状态' }}
+                placeholder={t("搜索合约、方向、状态")}
+                inputProps={{ 'aria-label': t("搜索合约、方向、状态") }}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
@@ -211,7 +214,7 @@ export function PendingOrderList() {
                 onClick={() => void load(true)}
                 disabled={refreshing}
               >
-                刷新
+                {t("刷新")}
               </Button>
             </>
           }
@@ -220,7 +223,7 @@ export function PendingOrderList() {
         <TradingStatusStrip risk={state.risk} account={state.account} pendingCount={state.orders.length} />
 
         <Alert severity={state.tradingMode === 'LIVE' ? 'error' : state.tradingMode === 'DEMO' ? 'info' : 'warning'}>
-          当前模式：{state.tradingMode}。{state.tradingMode === 'LIVE' ? '确认会操作真实资金。' : state.tradingMode === 'DEMO' ? '确认只提交 OKX 模拟交易。' : '交易写请求已关闭。'}
+          {t("当前模式：")}{state.tradingMode}。{state.tradingMode === 'LIVE' ? t("确认会操作真实资金。") : state.tradingMode === 'DEMO' ? t("确认只提交 OKX 模拟交易。") : t("交易写请求已关闭。")}
         </Alert>
 
         {error ? <Alert severity="error">{error}</Alert> : null}
@@ -229,20 +232,20 @@ export function PendingOrderList() {
           {loading ? (
             <PanelState loading />
           ) : filtered.length === 0 ? (
-            <PanelState>当前没有匹配的待确认订单。</PanelState>
+            <PanelState>{t("当前没有匹配的待确认订单。")}</PanelState>
           ) : (
-            <ScrollableTable label="待确认订单">
+            <ScrollableTable label={t("待确认订单")}>
               <TableHead>
                 <TableRow>
-                  <TableCell>合约</TableCell>
-                  <TableCell>动作</TableCell>
-                  <TableCell>方向</TableCell>
-                  <TableCell align="right">价格</TableCell>
-                  <TableCell align="right">杠杆</TableCell>
-                  <TableCell align="right">止损</TableCell>
-                  <TableCell align="right">止盈</TableCell>
-                  <TableCell>状态</TableCell>
-                  <TableCell align="right">操作</TableCell>
+                  <TableCell>{t("合约")}</TableCell>
+                  <TableCell>{t("动作")}</TableCell>
+                  <TableCell>{t("方向")}</TableCell>
+                  <TableCell align="right">{t("价格")}</TableCell>
+                  <TableCell align="right">{t("杠杆")}</TableCell>
+                  <TableCell align="right">{t("止损")}</TableCell>
+                  <TableCell align="right">{t("止盈")}</TableCell>
+                  <TableCell>{t("状态")}</TableCell>
+                  <TableCell align="right">{t("操作")}</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -272,7 +275,7 @@ export function PendingOrderList() {
 
         <Box sx={{ ...insetPanel, borderRadius: 1, p: 1.5 }}>
           <Typography variant="caption" color="text.secondary">
-            显示 {filtered.length} / {state.orders.length} 条待确认订单。
+            {t("显示")} {filtered.length} / {state.orders.length} {t("条待确认订单。")}
           </Typography>
         </Box>
       </Stack>

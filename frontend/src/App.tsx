@@ -8,6 +8,7 @@ import { AppLayout, appIcons } from './layout';
 import { Dashboard } from './pages/Dashboard';
 import { LoginPage } from './pages/LoginPage';
 import { theme } from './theme';
+import { t, useAdminI18n } from './i18n';
 
 const AccountBindingPage = lazy(() => import('./pages/AccountBindingPage').then((module) => ({ default: module.AccountBindingPage })));
 const AccountRiskPage = lazy(() => import('./pages/AccountRiskPage').then((module) => ({ default: module.AccountRiskPage })));
@@ -22,12 +23,14 @@ const SystemControlPage = lazy(() => import('./pages/SystemControlPage').then((m
 const PositionsPage = lazy(() => import('./pages/PositionsPage').then((module) => ({ default: module.PositionsPage })));
 
 export default function App() {
+  const i18nProvider = useAdminI18n();
   return (
     <Suspense fallback={<Box display="grid" minHeight="100vh" sx={{ placeItems: 'center' }}><CircularProgress size={28} /></Box>}>
     <Admin
-      title="量化交易终端"
+      title={t('量化交易终端')}
       dataProvider={quantDataProvider}
       authProvider={authProvider}
+      i18nProvider={i18nProvider}
       dashboard={Dashboard}
       loginPage={LoginPage}
       layout={AppLayout}
@@ -38,37 +41,37 @@ export default function App() {
         name="contractCandidates"
         list={ContractCandidateList}
         icon={appIcons.contract}
-        options={{ label: 'OKX合约' }}
+        options={{ label: t("OKX合约") }}
       />
       <Resource
         name="pendingOrders"
         list={PendingOrderList}
         icon={appIcons.pending}
-        options={{ label: '待确认订单' }}
+        options={{ label: t("待确认订单") }}
       />
       <Resource
         name="autoTradeRecords"
         list={AutoTradeRecordList}
         icon={appIcons.autoTrade}
-        options={{ label: '自动交易复盘' }}
+        options={{ label: t("自动交易复盘") }}
       />
       <Resource
         name="autoTradeLifecycle"
         list={AutoTradeLifecycleList}
         icon={appIcons.lifecycle}
-        options={{ label: '交易生命周期' }}
+        options={{ label: t("交易生命周期") }}
       />
       <Resource
         name="currentOkxOrders"
         list={CurrentOkxOrderList}
         icon={appIcons.okxOrders}
-        options={{ label: '当前委托/保护单' }}
+        options={{ label: t("当前委托/保护单") }}
       />
       <Resource
         name="closePositionRecords"
         list={ClosePositionRecordList}
         icon={appIcons.pending}
-        options={{ label: '平仓记录' }}
+        options={{ label: t("平仓记录") }}
       />
       <CustomRoutes>
         <Route path="/account-binding" element={<AccountBindingPage />} />

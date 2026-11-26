@@ -1,6 +1,7 @@
 package com.example.quant.agent.selection;
 
 import com.example.quant.market.DirectionBias;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -14,8 +15,29 @@ public record ContractSelectionDecision(
         List<RankedCandidate> rankedCandidates,
         List<String> reasonList,
         List<String> riskList,
-        String fallbackReason
+        String fallbackReason,
+        @JsonIgnore AiEntryObservation.Reference observation
 ) {
+    public ContractSelectionDecision(DecisionSource source, SelectionAction decision, String selectedInstId,
+                                     DirectionBias direction, String entryMode, BigDecimal confidence,
+                                     List<RankedCandidate> rankedCandidates, List<String> reasonList,
+                                     List<String> riskList, String fallbackReason) {
+        this(source, decision, selectedInstId, direction, entryMode, confidence, rankedCandidates,
+                reasonList, riskList, fallbackReason, null);
+    }
+
+    ContractSelectionDecision withObservation(AiEntryObservation.Reference reference) {
+        return new ContractSelectionDecision(source, decision, selectedInstId, direction, entryMode, confidence,
+                rankedCandidates, reasonList, riskList, fallbackReason, reference);
+    }
+
+    public String observationId() {
+        return observation == null ? null : observation.id();
+    }
+
+    public String rejectionCode() {
+        return observation == null ? null : observation.reasonCode();
+    }
     public ContractSelectionDecision {
         rankedCandidates = rankedCandidates == null ? List.of() : List.copyOf(rankedCandidates);
         reasonList = reasonList == null ? List.of() : List.copyOf(reasonList);
