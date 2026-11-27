@@ -123,6 +123,22 @@ class OkxRestOrderGatewayTest {
     }
 
     @Test
+    void closePositionSnapshotFailureIsKnownBeforeThePost() {
+        OkxRestClient client = mock(OkxRestClient.class);
+        PositionSnapshotService positions = mock(PositionSnapshotService.class);
+        when(positions.positions()).thenThrow(new IllegalStateException("OKX HTTP 429"));
+        var trading = new TradingProperties(TradingMode.DEMO, true, 120, false);
+        var gateway = new OkxRestOrderGateway(client, trading);
+        gateway.configureExposureReductionGuard(new ExposureReductionGuard(positions, trading));
+        var context = TradingOperationContext.of(TradingOperationType.CLOSE_POSITION, "alice", "pending-1", "plan-1");
+
+        assertThatThrownBy(() -> AuthUserContext.runAs("alice", () -> gateway.closePosition(closePayload(), context)))
+                .isInstanceOf(OrderNotSubmittedException.class)
+                .hasMessageContaining("POSITION_SNAPSHOT_UNAVAILABLE");
+        verifyNoInteractions(client);
+    }
+
+    @Test
     void degradedAllowsOnlyVerifiedContextualRiskReduction() {
         OkxRestClient client = mock(OkxRestClient.class);
         TradingReadinessService readiness = new TradingReadinessService();

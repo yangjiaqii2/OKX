@@ -157,18 +157,20 @@ public class OrderConfirmService {
             if (order.requiresLegacyAccountingReconciliation()) {
                 return OrderExecutionResult.unknown("历史受理订单需要先核对预算与每日风险记账，不能仅凭ACK恢复入场");
             }
-            OrderExecutionResult recovered = okxTradeAdapter.recoverUnknownSubmitStatus(order);
+            OrderExecutionResult recovered;
+            try {
+                recovered = okxTradeAdapter.recoverUnknownSubmitStatus(order);
+            } catch (RuntimeException ex) {
+                log.warn("Unknown OKX submit query failed id={} instId={} clOrdId={} message={}",
+                        order.id(), order.instId(), order.clientOrderId(), ex.getMessage());
+                return OrderExecutionResult.unknown(ex.getMessage());
+            }
             if (recovered.submitted()) {
                 order.markSubmitted(clock.instant(), recovered.externalOrderId());
+                if (recovered.filled()) {
+                    markBudgetUsed(order);
+                }
                 return recovered;
-            }
-            if (recovered.message() != null
-                    && recovered.message().contains("OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT")) {
-                String owner = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
-                order.markRejected(recovered.message() + "; EXPLICIT_EXCHANGE_NOT_FOUND_RESOLUTION");
-                releaseBudget(order, "UNKNOWN_SUBMIT_EXCHANGE_NOT_FOUND");
-                releaseDailyRiskClaim(owner, order);
-                return OrderExecutionResult.rejected(order.rejectReason());
             }
             return OrderExecutionResult.unknown(recovered.message());
         }

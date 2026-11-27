@@ -3,6 +3,9 @@ package com.example.quant.account;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -30,6 +33,7 @@ import com.example.quant.tradeplan.TradePlan;
 import com.example.quant.tradeplan.TradePlanType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -150,6 +154,80 @@ class ClosePositionRecoveryServiceTest {
         verify(dailyRisk).recordReconciledOutcome(
                 "local-admin", order.id().toString(), new BigDecimal("-1.02"),
                 Instant.parse("2026-06-18T00:10:00Z"));
+    }
+
+    @Test
+    void partialCloseFillPageRetainsBudgetUntilDistinctTradesMatchOrderTotal() throws Exception {
+        var repository = mock(ClosePositionRecordRepository.class);
+        var orders = new PendingOrderService(120);
+        var budget = new AutoTradeBudgetService(new AgentProperties());
+        PendingOrder order = autoOrder(orders, budget);
+        order.markCloseSubmitted("close-1", "MANUAL_CLOSE_SUBMITTED");
+        ClosePositionRecordEntity record = closeRecord(order);
+        when(repository.findByUserNameAndStatus("local-admin", "CLOSE_SUBMITTED"))
+                .thenAnswer(call -> "CLOSE_SUBMITTED".equals(record.getStatus()) ? List.of(record) : List.of());
+        when(repository.save(any(ClosePositionRecordEntity.class))).thenAnswer(call -> call.getArgument(0));
+
+        var gateway = mock(OkxOrderGateway.class);
+        ObjectMapper json = new ObjectMapper();
+        JsonNode detail = json.readTree("""
+                {"data":[{"instId":"BTC-USDT-SWAP","ordId":"close-1","clOrdId":"CLOSE123",
+                          "state":"filled","sz":"2","accFillSz":"2","avgPx":"101"}]}
+                """);
+        JsonNode first = json.readTree("""
+                {"instId":"BTC-USDT-SWAP","ordId":"close-1","tradeId":"trade-1","side":"sell",
+                 "posSide":"long","fillPx":"101","fillSz":"1","fillPnl":"-1.00",
+                 "fee":"-0.02","feeCcy":"USDT","ts":"2000"}
+                """);
+        var incompletePage = json.createObjectNode();
+        ObjectNode foreignFill = first.deepCopy();
+        foreignFill.put("ordId", "different-close").put("tradeId", "foreign-trade");
+        incompletePage.putArray("data").add(first).add(first).add(foreignFill);
+        var completePage = incompletePage.deepCopy();
+        completePage.withArray("data").add(json.readTree("""
+                {"instId":"BTC-USDT-SWAP","ordId":"close-1","tradeId":"trade-2","side":"sell",
+                 "posSide":"long","fillPx":"101","fillSz":"1","fillPnl":"-2.00",
+                 "fee":"-0.03","feeCcy":"USDT","ts":"3000"}
+                """));
+        when(gateway.queryOrder(Map.of("instId", order.instId(), "ordId", "close-1", "clOrdId", "CLOSE123")))
+                .thenReturn(detail);
+        when(gateway.fills(Map.of("instType", "SWAP", "instId", order.instId(), "ordId", "close-1")))
+                .thenReturn(incompletePage, completePage);
+        var ledger = mock(TradeFillLedgerService.class);
+        var risk = mock(DailyRiskService.class);
+        var service = new ClosePositionRecoveryService(repository, mock(TradeOrderRepository.class),
+                orders, budget, new FixedPositionSnapshotService(List.of()), gateway);
+        service.configureCloseLedger(new OkxCurrentOrderService(gateway), ledger);
+        service.configureDailyRisk(risk);
+        Instant now = Instant.parse("2026-06-18T00:10:00Z");
+
+        assertThat(service.runOnce(now).closed()).isZero();
+        assertThat(record.getStatus()).isEqualTo("CLOSE_SUBMITTED");
+        assertThat(record.getPnlCompleteness()).isEqualTo("PARTIAL");
+        assertThat(record.getRealizedPnl()).isNull();
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSE_SUBMITTED);
+        assertThat(budget.reservation(order.budgetReservationId()).orElseThrow().status())
+                .isEqualTo(BudgetReservationStatus.USED);
+        verifyNoInteractions(ledger, risk);
+
+        assertThat(service.runOnce(now.plusSeconds(30)).closed()).isEqualTo(1);
+        assertThat(record.getStatus()).isEqualTo("CLOSED");
+        assertThat(record.getPnlCompleteness()).isEqualTo("COMPLETE");
+        assertThat(record.getCloseOrderId()).isEqualTo("close-1");
+        assertThat(record.getRealizedPnl()).isEqualByComparingTo("-3.00");
+        assertThat(record.getFee()).isEqualByComparingTo("-0.05");
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+        assertThat(budget.reservation(order.budgetReservationId()).orElseThrow().status())
+                .isEqualTo(BudgetReservationStatus.RELEASED);
+        ArgumentCaptor<OkxCurrentOrderService.Fill> recorded = ArgumentCaptor.forClass(OkxCurrentOrderService.Fill.class);
+        verify(ledger, times(2)).record(org.mockito.ArgumentMatchers.eq(record),
+                org.mockito.ArgumentMatchers.eq("close-1"), recorded.capture());
+        assertThat(recorded.getAllValues()).extracting(OkxCurrentOrderService.Fill::tradeId)
+                .containsExactly("trade-1", "trade-2");
+        verify(risk).recordReconciledOutcome("local-admin", order.id().toString(), new BigDecimal("-3.05"),
+                now.plusSeconds(30));
+        verify(gateway, never()).closePosition(any(), any());
+        verify(gateway, never()).placeOrder(any());
     }
 
     @Test

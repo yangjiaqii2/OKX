@@ -7,7 +7,9 @@ import com.example.quant.agent.event.TradeEventType;
 import com.example.quant.agent.execution.AutoTradeRecordRepository;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.common.PageResult;
+import com.example.quant.okxtrade.OkxApiRejectedException;
 import com.example.quant.okxtrade.OkxTradeAdapter;
+import com.example.quant.okxtrade.OrderNotSubmittedException;
 import com.example.quant.okxtrade.TradingOperationContext;
 import com.example.quant.okxtrade.TradingOperationType;
 import com.example.quant.order.OrderStatus;
@@ -128,15 +130,16 @@ public class PositionCloseService {
             return result;
         } catch (RuntimeException ex) {
             boolean beforeSend = beforeSendFailure(ex);
-            boolean rejected = exchangeRejected(ex);
+            boolean rejected = ex instanceof OkxApiRejectedException;
             record.setStatus(beforeSend ? "CLOSE_FAILED_BEFORE_SEND" : rejected ? "CLOSE_REJECTED" : "CLOSE_SUBMIT_UNKNOWN");
             record.setRequestSent(!beforeSend);
             record.setErrorClass(beforeSend ? "LOCAL_VALIDATION" : rejected ? "EXCHANGE_REJECTED" : "UNKNOWN_AFTER_SEND");
             record.setRecoveryResult(beforeSend ? "NOT_SENT" : rejected ? "TERMINAL_REJECTED" : "QUERY_REQUIRED");
             record.setErrorMessage(compact(ex.getMessage()));
             record.setUpdatedAt(Instant.now());
-            boundOrder.ifPresent(order -> order.markCloseSubmitted(null,
-                    beforeSend ? "MANUAL_CLOSE_FAILED_BEFORE_SEND" : "MANUAL_CLOSE_SUBMIT_UNKNOWN"));
+            if (!beforeSend && !rejected) {
+                boundOrder.ifPresent(order -> order.markCloseSubmitted(null, "MANUAL_CLOSE_SUBMIT_UNKNOWN"));
+            }
             save(record);
             throw ex;
         }
@@ -426,7 +429,7 @@ public class PositionCloseService {
 
     private static boolean beforeSendFailure(RuntimeException ex) {
         String message = ex == null ? "" : String.valueOf(ex.getMessage()).toLowerCase();
-        return message.contains("未发送") || message.contains("未向交易所发送") || message.contains("not sent")
+        return ex instanceof OrderNotSubmittedException || message.contains("未发送") || message.contains("未向交易所发送") || message.contains("not sent")
                 || message.contains("position_not_confirmed")
                 || message.contains("trading_mode_mismatch")
                 || message.contains("owner_mismatch")

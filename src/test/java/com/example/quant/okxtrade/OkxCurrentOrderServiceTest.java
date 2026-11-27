@@ -5,9 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class OkxCurrentOrderServiceTest {
 
@@ -56,6 +59,26 @@ class OkxCurrentOrderServiceTest {
         assertThat(detail.algoId()).isEqualTo("algo-parent");
         assertThat(detail.childOrderIds()).containsExactly("child-1", "child-2");
         assertThat(detail.childOrderIds()).doesNotContain(detail.algoId());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"1750, 1750", "'', 2000"})
+    void usesActualExecutionTimeAndFallsBackToRecordTime(String fillTime, long expectedMillis) {
+        var gateway = new CurrentOrderGateway() {
+            @Override
+            public JsonNode fills(Map<String, String> payload) {
+                ObjectNode root = new ObjectMapper().createObjectNode();
+                ObjectNode fill = root.putArray("data").addObject();
+                fill.put("instId", "BTC-USDT-SWAP").put("ordId", "ord-1").put("tradeId", "trade-1")
+                        .put("fillSz", "3").put("fillPx", "100").put("ts", "2000");
+                if (!fillTime.isEmpty()) fill.put("fillTime", fillTime);
+                return root;
+            }
+        };
+
+        assertThat(new OkxCurrentOrderService(gateway).fills("BTC-USDT-SWAP", "ord-1"))
+                .extracting(OkxCurrentOrderService.Fill::timestamp)
+                .containsExactly(Instant.ofEpochMilli(expectedMillis));
     }
 
     private static class CurrentOrderGateway implements OkxOrderGateway {

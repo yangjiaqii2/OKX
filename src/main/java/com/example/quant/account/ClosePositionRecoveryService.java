@@ -11,6 +11,8 @@ import com.example.quant.agent.review.TradeReviewService;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.ledger.TradeFillLedgerService;
 import com.example.quant.ledger.TradeFillEntity;
+import com.example.quant.okxtrade.AlgoFillReconciliation;
+import com.example.quant.okxtrade.LedgerCompleteness;
 import com.example.quant.okxtrade.OkxCurrentOrderService;
 import com.example.quant.okxtrade.OkxOrderGateway;
 import com.example.quant.okxtrade.OkxCancelAcknowledgement;
@@ -203,42 +205,66 @@ public class ClosePositionRecoveryService {
                 record.setRecoveryResult("CURRENT_ORDER_FOUND");
             }
             if (detail == null || !hasText(detail.ordId()) || detail.filledSize() == null
-                    || detail.filledSize().signum() <= 0) {
+                    || detail.filledSize().signum() <= 0
+                    || !record.getCloseClOrdId().equals(detail.clOrdId())
+                    || (hasText(orderId) && !orderId.equals(detail.ordId()))
+                    || !isTerminalCloseState(detail.state())) {
                 record.setErrorMessage("CLOSE_ORDER_RECONCILIATION_PENDING");
-                closePositionRecordRepository.save(record);
-                return false;
-            }
-            List<OkxCurrentOrderService.Fill> fills = currentOrderService.fills(record.getInstId(), detail.ordId());
-            if (fills.isEmpty()) {
-                record.setErrorMessage("CLOSE_FILL_RECONCILIATION_PENDING");
                 closePositionRecordRepository.save(record);
                 return false;
             }
             record.setCloseOrderId(detail.ordId());
             record.setSize(detail.filledSize());
             record.setAvgPx(detail.averageFillPrice());
-            if (fills.stream().anyMatch(fill -> fill.fillPnl() == null || fill.fee() == null)) {
-                record.setPnlCompleteness("PARTIAL");
-                record.setErrorMessage("CLOSE_FILL_PNL_OR_FEE_INCOMPLETE");
-                closePositionRecordRepository.save(record);
-                return false;
+            Map<String, OkxCurrentOrderService.Fill> distinctFills = new LinkedHashMap<>();
+            for (var fill : currentOrderService.fills(record.getInstId(), detail.ordId())) {
+                if (fill == null || !hasText(fill.tradeId())) {
+                    return closeFillsPending(record, "CLOSE_FILL_TRADE_ID_MISSING");
+                }
+                var previous = distinctFills.putIfAbsent(fill.tradeId(), fill);
+                if (previous != null && !previous.equals(fill)) {
+                    return closeFillsPending(record, "CLOSE_FILL_TRADE_ID_CONFLICT: " + fill.tradeId());
+                }
             }
-            record.setRealizedPnl(fills.stream().map(OkxCurrentOrderService.Fill::fillPnl)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add));
-            record.setFee(fills.stream().map(OkxCurrentOrderService.Fill::fee)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add));
-            record.setPnlCompleteness("COMPLETE");
-            record.setErrorMessage(null);
+            var fills = List.copyOf(distinctFills.values());
+            var summary = AlgoFillReconciliation.summarize(detail.filledSize(), fills);
+            if (summary.totalSize().compareTo(detail.filledSize()) != 0) {
+                return closeFillsPending(record, "CLOSE_FILL_SIZE_MISMATCH: expected="
+                        + detail.filledSize() + ", actual=" + summary.totalSize());
+            }
+            if (summary.completeness() != LedgerCompleteness.COMPLETE) {
+                return closeFillsPending(record, "CLOSE_FILL_FACTS_INCOMPLETE");
+            }
+            String currency = fills.get(0).feeCurrency();
+            if (!hasText(currency) || fills.stream().anyMatch(fill -> !currency.equalsIgnoreCase(fill.feeCurrency()))) {
+                return closeFillsPending(record, "CLOSE_FILL_FEE_CURRENCY_MISMATCH");
+            }
             if (fillLedgerService != null) {
                 String detailOrderId = detail.ordId();
                 fills.forEach(fill -> fillLedgerService.record(record, detailOrderId, fill));
             }
+            record.setRealizedPnl(summary.grossPnl());
+            record.setFee(summary.fee());
+            record.setPnlCompleteness("COMPLETE");
+            record.setErrorMessage(null);
             return true;
         } catch (RuntimeException ex) {
             record.setErrorMessage("CLOSE_ORDER_RECONCILIATION_PENDING: " + compact(ex.getMessage()));
             closePositionRecordRepository.save(record);
             return false;
         }
+    }
+
+    private boolean closeFillsPending(ClosePositionRecordEntity record, String reason) {
+        record.setPnlCompleteness("PARTIAL");
+        record.setErrorMessage(reason);
+        closePositionRecordRepository.save(record);
+        return false;
+    }
+
+    private static boolean isTerminalCloseState(String state) {
+        return "filled".equalsIgnoreCase(state) || "canceled".equalsIgnoreCase(state)
+                || "mmp_canceled".equalsIgnoreCase(state);
     }
 
     private void discoverCloseOrder(ClosePositionRecordEntity record) {

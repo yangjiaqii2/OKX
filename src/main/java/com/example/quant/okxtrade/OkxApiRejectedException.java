@@ -9,6 +9,9 @@ public class OkxApiRejectedException extends IllegalStateException {
     }
 
     public static IllegalStateException fromResponse(String code, String message) {
+        if ("51016".equals(code)) {
+            return new DuplicateClientOrderIdException(message);
+        }
         // OKX explicitly states that 50004 does not establish success or failure.
         // Service/system failures also remain uncertain until read back.
         if (java.util.Set.of("50001", "50004", "50013", "50026").contains(code)) {
@@ -18,15 +21,17 @@ public class OkxApiRejectedException extends IllegalStateException {
     }
 
     public static IllegalStateException fromResponse(JsonNode response, String message) {
+        String code = response.path("code").asText("");
+        if ("51016".equals(code)) {
+            return fromResponse(code, message);
+        }
         JsonNode data = response.path("data");
         if (data.isArray()) {
             for (JsonNode item : data) {
-                String code = item.path("sCode").asText("");
-                IllegalStateException failure = fromResponse(code, message);
+                IllegalStateException failure = fromResponse(item.path("sCode").asText(""), message);
                 if (!(failure instanceof OkxApiRejectedException)) return failure;
             }
         }
-        String code = response.path("code").asText("");
         if ("1".equals(code) || "2".equals(code)) {
             // An aggregate error alone does not prove every requested item failed.
             if (!data.isArray() || data.isEmpty()) return new IllegalStateException(message);
@@ -36,5 +41,11 @@ public class OkxApiRejectedException extends IllegalStateException {
             }
         }
         return fromResponse(code, message);
+    }
+
+    public static final class DuplicateClientOrderIdException extends IllegalStateException {
+        private DuplicateClientOrderIdException(String message) {
+            super(message);
+        }
     }
 }

@@ -7,7 +7,9 @@ import com.example.quant.auth.AuthUserContext;
 import com.example.quant.config.AgentProperties;
 import com.example.quant.config.TradingProperties;
 import com.example.quant.config.TradingMode;
+import com.example.quant.okxtrade.OkxApiRejectedException.DuplicateClientOrderIdException;
 import com.example.quant.order.OrderExecutionResult;
+import com.example.quant.order.OrderSubmitStatusUnknownException;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.tradeplan.CanonicalExecutablePlan;
 import com.example.quant.tradeplan.CanonicalPlanCompiler;
@@ -27,6 +29,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class OkxTradeAdapter {
     private static final Logger log = LoggerFactory.getLogger(OkxTradeAdapter.class);
+    private static final String DUPLICATE_CLIENT_ID = "OKX_DUPLICATE_CLORDID_51016";
 
     private final OkxOrderGateway okxOrderGateway;
     private final TradeOrderRecordService tradeOrderRecordService;
@@ -131,6 +134,10 @@ public class OkxTradeAdapter {
         try {
             JsonNode response = okxOrderGateway.placeOrder(payload);
             acceptedOrderId = orderId(response, "ordId");
+        } catch (DuplicateClientOrderIdException ex) {
+            OrderExecutionResult recovered = recoverDuplicateClientId(order, payload, entryRecord);
+            if (recovered.submitted()) return recovered;
+            throw new OrderSubmitStatusUnknownException(recovered.message(), ex);
         } catch (RuntimeException ex) {
             if (ex instanceof OrderNotSubmittedException || ex instanceof OkxApiRejectedException) {
                 recordFailed(order, entryRecord, ex.getMessage());
@@ -138,7 +145,7 @@ public class OkxTradeAdapter {
             }
             OrderExecutionResult recovered = recoverUncertainSubmit(order, payload, entryRecord, ex);
             if (recovered != null) return recovered;
-            throw new com.example.quant.order.OrderSubmitStatusUnknownException(ex.getMessage(), ex);
+            throw new OrderSubmitStatusUnknownException(ex.getMessage(), ex);
         }
         log.info("OKX trade order accepted instId={} ordId={} clOrdId={}",
                 order.instId(), acceptedOrderId, payload.get("clOrdId"));
@@ -148,6 +155,11 @@ public class OkxTradeAdapter {
     }
 
     public OrderExecutionResult recoverUnknownSubmitStatus(PendingOrder order) {
+        if (order.rejectReason() != null && order.rejectReason().startsWith(DUPLICATE_CLIENT_ID)) {
+            Map<String, Object> original = orderPayload(order, instrumentRulesProvider.rules(order.instId()),
+                    positionModeProvider.positionMode());
+            return recoverDuplicateClientId(order, original, entryRecord(order, original, null));
+        }
         Map<String, String> payload = new LinkedHashMap<>();
         payload.put("instId", order.instId());
         payload.put("clOrdId", order.clientOrderId());
@@ -168,11 +180,50 @@ public class OkxTradeAdapter {
         if (filledSize.signum() <= 0) {
             filledSize = decimal(item, "fillSz");
         }
-        boolean filled = filledSize.signum() > 0 && "filled".equalsIgnoreCase(state);
-        boolean partiallyFilled = filledSize.signum() > 0 && !filled;
-        return new OrderExecutionResult(true, true, ordId,
-                "OKX clOrdId recovered: clOrdId=" + order.clientOrderId() + ", state=" + state,
-                true, filled, partiallyFilled, false);
+        return recoveredOrder(order.clientOrderId(), ordId, state, filledSize);
+    }
+
+    private OrderExecutionResult recoverDuplicateClientId(PendingOrder order, Map<String, Object> payload,
+                                                           OrderRecordPayload entryRecord) {
+        String clOrdId = text(payload.get("clOrdId"));
+        try {
+            JsonNode item = firstDataItem(okxOrderGateway.queryOrder(Map.of("instId", order.instId(), "clOrdId", clOrdId)));
+            if (item == null) return duplicatePending(order, clOrdId, "NOT_FOUND");
+            String ordId = item.path("ordId").asText("");
+            if (!hasText(ordId)) return duplicatePending(order, clOrdId, "MISSING_ORD_ID");
+            for (String field : List.of("instId", "clOrdId", "side", "posSide", "tdMode", "ordType", "sz", "px")) {
+                if ("px".equals(field) && !payload.containsKey(field)) continue;
+                String expected = "posSide".equals(field) && !payload.containsKey(field)
+                        ? "net" : text(payload.get(field));
+                String actual = item.path(field).asText("");
+                boolean matches = "sz".equals(field) || "px".equals(field)
+                        ? decimal(item, field).compareTo(new BigDecimal(expected)) == 0 : expected.equals(actual);
+                if (!matches) {
+                    return duplicatePending(order, clOrdId,
+                            "CONFLICT ordId=" + ordId + " field=" + field + " expected=" + expected + " actual=" + actual);
+                }
+            }
+            if (item.path("reduceOnly").asBoolean(false)) {
+                return duplicatePending(order, clOrdId, "CONFLICT ordId=" + ordId + " field=reduceOnly");
+            }
+            recordAccepted(order, entryRecord.withOkxOrdId(ordId));
+            return recoveredOrder(clOrdId, ordId, item.path("state").asText(""), decimal(item, "accFillSz"));
+        } catch (RuntimeException ex) {
+            return duplicatePending(order, clOrdId, isOrderNotFound(ex) ? "NOT_FOUND" : "QUERY_FAILED " + compact(ex.getMessage()));
+        }
+    }
+
+    private static OrderExecutionResult duplicatePending(PendingOrder order, String clOrdId, String difference) {
+        String reason = DUPLICATE_CLIENT_ID + ": " + difference;
+        log.warn("{} pendingOrderId={} instId={} clOrdId={}", reason, order.id(), order.instId(), clOrdId);
+        return OrderExecutionResult.unknown(reason);
+    }
+
+    private static OrderExecutionResult recoveredOrder(String clOrdId, String ordId, String state, BigDecimal filledSize) {
+        String message = "OKX clOrdId recovered: clOrdId=" + clOrdId + ", state=" + state;
+        if (filledSize.signum() <= 0) return OrderExecutionResult.submitted(ordId, message);
+        return "filled".equalsIgnoreCase(state) ? OrderExecutionResult.filled(ordId, message)
+                : OrderExecutionResult.partiallyFilled(ordId, message);
     }
 
     private JsonNode findOrderByClientOrderId(Map<String, String> payload, String clientOrderId) {
@@ -473,6 +524,9 @@ public class OkxTradeAdapter {
     private static String orderId(JsonNode response, String preferredField) {
         JsonNode item = firstDataItem(response);
         String sCode = item == null ? "" : item.path("sCode").asText("");
+        if (response != null && "51016".equals(response.path("code").asText())) {
+            throw OkxApiRejectedException.fromResponse(response, "OKX order response: code=51016");
+        }
         // A per-item timeout stays uncertain even when the envelope says failed.
         if (!sCode.isBlank() && !"0".equals(sCode)) {
             throw OkxApiRejectedException.fromResponse(sCode, "OKX order response: sCode=" + sCode
@@ -505,7 +559,8 @@ public class OkxTradeAdapter {
         String sCode = item.path("sCode").asText("");
         if (!sCode.isBlank() && !"0".equals(sCode)) {
             String sMsg = item.path("sMsg").asText("");
-            throw new IllegalStateException("OKX close-position rejected: sCode=" + sCode + ", sMsg=" + sMsg);
+            throw OkxApiRejectedException.fromResponse(sCode,
+                    "OKX close-position response: sCode=" + sCode + ", sMsg=" + sMsg);
         }
         String id = item.path("ordId").asText("");
         if (!id.isBlank()) {

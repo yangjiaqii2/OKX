@@ -31,6 +31,7 @@ class OkxOrderEventServiceTest {
             assertThat(service.apply(event("filled", "10", "2000", "trade-1"))).isTrue();
             assertThat(service.apply(event("filled", "10", "2000", "trade-1"))).isFalse();
             assertThat(service.apply(event("live", "0", "1000", ""))).isFalse();
+            assertThat(service.apply(event("filled", "10", "3000", ""))).isFalse();
         });
 
         assertThat(order.getStatus()).isEqualTo("FILLED");
@@ -50,7 +51,7 @@ class OkxOrderEventServiceTest {
 
         AuthUserContext.runAs("alice", () -> {
             assertThat(service.apply(event("partially_filled", "4", "2000", "trade-1"))).isTrue();
-            assertThat(service.apply(event("canceled", "4", "3000", ""))).isTrue();
+            assertThat(service.apply(event("canceled", "4", "2000", ""))).isTrue();
         });
 
         assertThat(order.getStatus()).isEqualTo("PARTIALLY_FILLED_CANCELED");

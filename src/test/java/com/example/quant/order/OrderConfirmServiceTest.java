@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -49,6 +50,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import com.example.quant.tradeplan.PlanExecutionRisk;
@@ -698,27 +700,108 @@ class OrderConfirmServiceTest {
         assertThat(order.rejectReason()).contains("PRE_ORDER_SETUP_FAILED");
     }
 
-    @Test
-    void explicitUnknownResolutionReleasesDailyRiskOnlyAfterExchangeNotFound() {
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {"OKX HTTP 429", "OKX code=50011", "OKX query timed out"})
+    void manualRecoveryKeepsReservationsUntilTheOriginalOrderIsVisible(String queryError) {
         Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:03:00Z"), ZoneOffset.UTC);
-        PendingOrderService pendingOrderService = new PendingOrderService(120, clock);
-        PendingOrder order = pendingOrderService.createPendingOrder(
-                MarketType.OKX_SWAP, PendingOrderServiceTest.samplePlan());
-        order.markUnknownSubmitStatus("request timed out");
-        OkxTradeAdapter adapter = mock(OkxTradeAdapter.class);
-        when(adapter.recoverUnknownSubmitStatus(order)).thenReturn(new OrderExecutionResult(
-                false, true, null, "OKX_CLORDID_NOT_FOUND_AFTER_TIMEOUT: " + order.clientOrderId(),
-                false, false, false, false));
+        PendingOrderService pendingOrders = new PendingOrderService(120, clock);
+        AutoTradeBudgetService budget = new AutoTradeBudgetService(new AgentProperties());
+        UUID id = UUID.randomUUID();
+        var plan = PendingOrderServiceTest.samplePlan();
+        BudgetReservation reservation = budget.reserveBudget(
+                plan.id(), id, plan.instId(), new BigDecimal("22.5"), new BigDecimal("50"));
+        PendingOrder order = pendingOrders.createAutoPendingOrder(MarketType.OKX_SWAP, plan, id,
+                new BigDecimal("22.5"), reservation.reservationId(), allocation("22.5"), "AUTOacklost");
+        OkxOrderGateway gateway = mock(OkxOrderGateway.class);
+        when(gateway.placeOrder(any())).thenThrow(new IllegalStateException("OKX request timed out"));
+        ObjectNode empty = new ObjectMapper().createObjectNode();
+        empty.putArray("data");
+        ObjectNode found = new ObjectMapper().createObjectNode();
+        found.putArray("data").addObject().put("instId", order.instId()).put("clOrdId", order.clientOrderId())
+                .put("ordId", "original-1").put("state", "live").put("accFillSz", "0");
+        when(gateway.queryOrder(Map.of("instId", order.instId(), "clOrdId", order.clientOrderId())))
+                .thenReturn(empty)
+                .thenAnswer(call -> {
+                    if (queryError != null) throw new IllegalStateException(queryError);
+                    return empty;
+                })
+                .thenReturn(found);
         DailyRiskService dailyRisk = mock(DailyRiskService.class);
-        OrderConfirmService confirmService = new OrderConfirmService(
-                pendingOrderService, new ContractRiskService(), adapter, clock);
-        confirmService.configureDailyRisk(dailyRisk);
+        when(dailyRisk.claimEntry(anyString(), eq(order.id().toString()), any(), eq(clock.instant())))
+                .thenReturn(new DailyRiskService.Decision(true, null));
+        OrderConfirmService service = new OrderConfirmService(pendingOrders, new ContractRiskService(),
+                testAdapter(gateway), null, new AgentProperties(), null, null, null, budget, clock);
+        service.configureDailyRisk(dailyRisk);
 
-        OrderExecutionResult result = confirmService.resolveUnknownSubmit(order.id());
+        assertThatThrownBy(() -> service.confirmAuto(order.id(), new BigDecimal("50")))
+                .isInstanceOf(OrderSubmitStatusUnknownException.class);
+        assertThat(service.resolveUnknownSubmit(order.id()).unknown()).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.UNKNOWN_SUBMIT_STATUS);
+        assertThat(order.externalOrderId()).isNull();
+        assertThat(budget.reservation(reservation.reservationId()).orElseThrow().status().name()).isEqualTo("RESERVED");
 
-        assertThat(result.executed()).isFalse();
-        assertThat(order.status()).isEqualTo(OrderStatus.REJECTED);
-        verify(dailyRisk).releaseDefinitiveFailure(anyString(), eq(order.id().toString()), eq(clock.instant()));
+        assertThat(service.resolveUnknownSubmit(order.id()).externalOrderId()).isEqualTo("original-1");
+        assertThat(order.status()).isEqualTo(OrderStatus.SUBMITTED);
+        assertThat(order.externalOrderId()).isEqualTo("original-1");
+        assertThat(budget.reservation(reservation.reservationId()).orElseThrow().status().name()).isEqualTo("RESERVED");
+        verify(gateway).placeOrder(any());
+        verify(dailyRisk).claimEntry(anyString(), eq(order.id().toString()), any(), eq(clock.instant()));
+        verify(dailyRisk, never()).releaseDefinitiveFailure(anyString(), anyString(), any());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"51016, match", "1, match", "0, match", "1, conflict", "51016, missing"})
+    void duplicateClientIdRequiresMatchingOriginalOrder(String code, String lookup) throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-06-14T00:03:00Z"), ZoneOffset.UTC);
+        PendingOrderService pendingOrders = new PendingOrderService(120, clock);
+        AutoTradeBudgetService budget = new AutoTradeBudgetService(new AgentProperties());
+        UUID id = UUID.randomUUID();
+        var plan = PendingOrderServiceTest.samplePlan();
+        BudgetReservation reservation = budget.reserveBudget(
+                plan.id(), id, plan.instId(), new BigDecimal("22.5"), new BigDecimal("50"));
+        PendingOrder order = pendingOrders.createAutoPendingOrder(MarketType.OKX_SWAP, plan, id,
+                new BigDecimal("22.5"), reservation.reservationId(), allocation("22.5"), "AUTOduplicate");
+        OkxOrderGateway gateway = mock(OkxOrderGateway.class);
+        ObjectMapper json = new ObjectMapper();
+        ObjectNode response = json.createObjectNode().put("code", code);
+        if (!"51016".equals(code)) {
+            response.putArray("data").addObject().put("sCode", "51016").put("sMsg", "Client order ID already exists");
+        }
+        when(gateway.placeOrder(any())).thenReturn(response);
+        ObjectNode original = json.createObjectNode();
+        var rows = original.putArray("data");
+        if (!"missing".equals(lookup)) {
+            rows.addObject().put("instId", "BTC-USDT-SWAP").put("clOrdId", "AUTOduplicate")
+                    .put("ordId", "original-1").put("state", "live").put("accFillSz", "0")
+                    .put("side", "conflict".equals(lookup) ? "sell" : "buy").put("posSide", "long")
+                    .put("tdMode", "cross").put("ordType", "limit").put("sz", "0.450").put("px", "100.0");
+        }
+        when(gateway.queryOrder(Map.of("instId", order.instId(), "clOrdId", order.clientOrderId())))
+                .thenReturn(original);
+        DailyRiskService dailyRisk = mock(DailyRiskService.class);
+        when(dailyRisk.claimEntry(anyString(), eq(order.id().toString()), any(), eq(clock.instant())))
+                .thenReturn(new DailyRiskService.Decision(true, null));
+        OrderConfirmService service = new OrderConfirmService(pendingOrders, new ContractRiskService(),
+                testAdapter(gateway), null, new AgentProperties(), null, null, null, budget, clock);
+        service.configureDailyRisk(dailyRisk);
+
+        if ("match".equals(lookup)) {
+            assertThat(service.confirmAuto(order.id(), new BigDecimal("50")).externalOrderId()).isEqualTo("original-1");
+            assertThat(order.status()).isEqualTo(OrderStatus.SUBMITTED);
+            assertThat(order.externalOrderId()).isEqualTo("original-1");
+        } else {
+            assertThatThrownBy(() -> service.confirmAuto(order.id(), new BigDecimal("50")))
+                    .isInstanceOf(OrderSubmitStatusUnknownException.class)
+                    .hasMessageContaining("51016");
+            assertThat(order.rejectReason()).contains("conflict".equals(lookup) ? "side" : "NOT_FOUND");
+            assertThat(service.resolveUnknownSubmit(order.id()).unknown()).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.UNKNOWN_SUBMIT_STATUS);
+            assertThat(order.externalOrderId()).isNull();
+        }
+        assertThat(budget.reservation(reservation.reservationId()).orElseThrow().status().name()).isEqualTo("RESERVED");
+        verify(gateway).placeOrder(any());
+        verify(dailyRisk, never()).releaseDefinitiveFailure(anyString(), anyString(), any());
     }
 
     @Test

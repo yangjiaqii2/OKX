@@ -214,7 +214,11 @@ public class OkxRestOrderGateway implements OkxOrderGateway {
 
     @Override
     public JsonNode closePosition(Map<String, String> payload, TradingOperationContext context) {
-        requireTradingEnabled(context, payload);
+        try {
+            requireTradingEnabled(context, payload);
+        } catch (RuntimeException ex) {
+            throw new OrderNotSubmittedException("PRE_CLOSE_SETUP_FAILED: " + ex.getMessage(), ex);
+        }
         log.warn("POST OKX /api/v5/trade/close-position instId={} posSide={} mgnMode={} autoCxl={}",
                 payload.get("instId"), payload.getOrDefault("posSide", ""), payload.get("mgnMode"),
                 payload.getOrDefault("autoCxl", ""));

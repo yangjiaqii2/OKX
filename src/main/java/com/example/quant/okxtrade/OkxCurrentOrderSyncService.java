@@ -26,6 +26,9 @@ public class OkxCurrentOrderSyncService {
             "ALGO_EFFECTIVE", "ALGO_PARTIALLY_EFFECTIVE"
     );
     private static final List<String> TERMINAL_FILL_STATUSES = List.of("FILLED", "PARTIALLY_FILLED_CANCELED");
+    private static final Set<String> TERMINAL_STATUSES = Set.of(
+            "FILLED", "CANCELED", "PARTIALLY_FILLED_CANCELED", "REJECTED", "ALGO_EFFECTIVE");
+    private static final String RECONCILIATION_PENDING = "ORDER_RECONCILIATION_PENDING: ";
     private static final Duration TERMINAL_FILL_LOOKBACK = Duration.ofHours(24);
 
     private final OkxCurrentOrderService currentOrderService;
@@ -61,23 +64,21 @@ public class OkxCurrentOrderSyncService {
             List<com.example.quant.account.dto.PositionSummary> activeEntryExposures = new ArrayList<>();
             int upserted = 0;
             for (OkxCurrentOrderView order : normalOrders) {
-                upsert(order);
+                if (upsert(order)) upserted++;
                 addInstId(activeInstIds, order.instId());
                 addText(activeOkxOrderIds, order.ordId());
                 addText(activeClientOrderIds, order.clOrdId());
                 addEntryExposure(activeEntryExposures, order);
-                upserted++;
             }
             for (OkxCurrentOrderView order : algoOrders) {
-                upsert(order);
+                if (upsert(order)) upserted++;
                 addInstId(activeInstIds, order.instId());
                 addText(activeOkxOrderIds, order.algoId());
                 addText(activeClientOrderIds, order.algoClOrdId());
-                upserted++;
             }
-            reconcileMissingActiveOrders(activeOkxOrderIds, activeClientOrderIds);
+            int pendingDetails = reconcileMissingActiveOrders(activeOkxOrderIds, activeClientOrderIds);
             int incompleteTerminalFills = reconcileTerminalFills();
-            int reconciliationRequired = reconciliationRequired();
+            int reconciliationRequired = pendingDetails + reconciliationRequired();
             String reconciliationError = reconciliationRequired > 0
                     ? "ORDER_RECONCILIATION_REQUIRED:" + reconciliationRequired
                     : incompleteTerminalFills > 0
@@ -133,15 +134,19 @@ public class OkxCurrentOrderSyncService {
             if (effective != null) {
                 count += (int) effective.stream()
                         .filter(OkxCurrentOrderSyncService::ownedByCurrentUser)
-                        .filter(row -> !LedgerCompleteness.COMPLETE.name().equals(row.getPnlCompleteness()))
+                        .filter(row -> hasPendingDetail(row)
+                                || !LedgerCompleteness.COMPLETE.name().equals(row.getPnlCompleteness()))
                         .count();
             }
         }
         return count;
     }
 
-    private void upsert(OkxCurrentOrderView order) {
+    private boolean upsert(OkxCurrentOrderView order) {
         TradeOrderEntity entity = findExisting(order).orElseGet(TradeOrderEntity::new);
+        boolean algo = hasText(order.algoId());
+        String status = algo ? localAlgoStatus(order.status()) : localStatus(order.status(), order.filledSize());
+        if (!canMergeFacts(entity, status, order.filledSize(), order.updatedAt())) return false;
         entity.setUserName(currentUsername());
         Instant now = Instant.now();
         if (!hasText(entity.getOrderRole())) {
@@ -155,14 +160,15 @@ public class OkxCurrentOrderSyncService {
         entity.setSize(nonNull(order.size()));
         entity.setFilledSize(nonNull(order.filledSize()));
         entity.setRemainingSize(remaining(order.size(), order.filledSize()));
-        entity.setPrice(order.reduceOnly() ? nonNull(order.triggerPrice()) : nonNull(order.price()));
+        entity.setPrice(algo ? nonNull(order.triggerPrice()) : nonNull(order.price()));
         entity.setAverageFillPrice(nonNull(order.averageFillPrice()));
         entity.setOkxUpdatedAt(order.updatedAt());
         entity.setReduceOnly(order.reduceOnly());
-        entity.setClOrdId(defaultText(order.clOrdId(), order.algoClOrdId()));
-        entity.setOkxOrdId(defaultText(order.ordId(), order.algoId()));
+        entity.setClOrdId(defaultText(algo ? order.algoClOrdId() : order.clOrdId(), entity.getClOrdId()));
+        entity.setOkxOrdId(defaultText(algo ? order.algoId() : order.ordId(), entity.getOkxOrdId()));
         entity.setOkxState(order.status());
-        entity.setStatus(order.reduceOnly() ? "PROTECTION_SUBMITTED" : localStatus(order.status(), order.filledSize()));
+        entity.setStatus(status);
+        if (hasPendingDetail(entity)) entity.setErrorMessage(null);
         if (!hasText(entity.getPnlCompleteness())) {
             entity.setPnlCompleteness(LedgerCompleteness.UNKNOWN.name());
         }
@@ -171,10 +177,11 @@ public class OkxCurrentOrderSyncService {
         }
         entity.setUpdatedAt(now);
         tradeOrderRepository.save(entity);
+        return true;
     }
 
     private int reconcileMissingActiveOrders(Set<String> activeOkxOrderIds, Set<String> activeClientOrderIds) {
-        int updated = 0;
+        int pendingDetails = 0;
         Instant now = Instant.now();
         Set<String> reconciledOrderIds = new HashSet<>();
         for (String status : ACTIVE_ENTRY_STATUSES) {
@@ -200,20 +207,20 @@ public class OkxCurrentOrderSyncService {
                 }
                 boolean stillLive = (hasOkxId && activeOkxOrderIds.contains(entry.getOkxOrdId()))
                         || (hasClientId && activeClientOrderIds.contains(entry.getClOrdId()));
-                if (stillLive) {
-                    continue;
+                if (!stillLive) {
+                    reconcileMissing(entry);
+                    entry.setUpdatedAt(now);
+                    tradeOrderRepository.save(entry);
                 }
-                reconcileMissing(entry);
-                entry.setUpdatedAt(now);
-                tradeOrderRepository.save(entry);
-                updated++;
+                if (hasPendingDetail(entry) && !"RECONCILING".equals(entry.getStatus())
+                        && !isEffective(entry.getOkxState())) pendingDetails++;
             }
         }
-        return updated;
+        return pendingDetails;
     }
 
     private void reconcileMissing(TradeOrderEntity entry) {
-        if (entry.isReduceOnly()) {
+        if (entry.isReduceOnly() && !hasText(entry.getParentAlgoId()) && !"REDUCE_ONLY".equals(entry.getOrderRole())) {
             reconcileMissingAlgo(entry);
             return;
         }
@@ -228,7 +235,7 @@ public class OkxCurrentOrderSyncService {
                 currentOrderService.fills(entry.getInstId(), entry.getOkxOrdId())
                         .forEach(fill -> fillLedgerService.record(entry, fill));
             }
-            applyDetail(entry, detail);
+            if (!applyDetail(entry, detail)) markReconciling(entry, "ORDER_DETAILS_STALE_OR_INCONSISTENT");
         } catch (RuntimeException ex) {
             markReconciling(entry, "ORDER_DETAILS_UNAVAILABLE: " + compact(ex.getMessage()));
         }
@@ -242,20 +249,25 @@ public class OkxCurrentOrderSyncService {
                 markReconciling(entry, "ALGO_ORDER_DETAILS_UNAVAILABLE");
                 return;
             }
+            if (hasText(detail.algoId()) && hasText(entry.getOkxOrdId())
+                    && !entry.getOkxOrdId().equals(detail.algoId())) {
+                markReconciling(entry, "ALGO_ID_MISMATCH");
+                return;
+            }
             BigDecimal requested = nonNull(detail.requestedSize());
             BigDecimal actual = nonNull(detail.actualSize());
+            String status = localAlgoStatus(detail.state());
+            if (!canMergeFacts(entry, status, actual, detail.updatedAt())) {
+                markReconciling(entry, "ALGO_ORDER_DETAILS_STALE_OR_INCONSISTENT");
+                return;
+            }
             entry.setSize(requested);
             entry.setFilledSize(actual);
             entry.setRemainingSize(remaining(requested, actual));
             entry.setAverageFillPrice(nonNull(detail.actualPrice()));
             entry.setOkxUpdatedAt(detail.updatedAt());
             entry.setOkxState(detail.state());
-            entry.setStatus(localAlgoStatus(detail.state()));
-            if (hasText(detail.algoId()) && hasText(entry.getOkxOrdId())
-                    && !entry.getOkxOrdId().equals(detail.algoId())) {
-                markReconciling(entry, "ALGO_ID_MISMATCH");
-                return;
-            }
+            entry.setStatus(status);
             if (!isEffective(detail.state())) {
                 entry.setPnlCompleteness(LedgerCompleteness.UNKNOWN.name());
                 entry.setErrorMessage(hasText(detail.failCode()) ? "OKX_ALGO_FAIL_CODE:" + detail.failCode() : null);
@@ -303,15 +315,16 @@ public class OkxCurrentOrderSyncService {
                 .orElseGet(TradeOrderEntity::new);
         copyChildIdentity(parent, child, childOrderId);
         if (detail == null || !hasText(detail.ordId()) || !childOrderId.equals(detail.ordId())) {
-            child.setStatus("RECONCILING");
-            child.setOkxState("UNKNOWN");
-            child.setPnlCompleteness(LedgerCompleteness.PARTIAL.name());
-            child.setErrorMessage("ALGO_CHILD_ORDER_DETAILS_UNAVAILABLE");
+            markReconciling(child, "ALGO_CHILD_ORDER_DETAILS_UNAVAILABLE");
             child.setUpdatedAt(Instant.now());
             tradeOrderRepository.save(child);
             return ChildReconciliation.incomplete();
         }
-        applyDetail(child, detail);
+        if (!applyDetail(child, detail)) {
+            markReconciling(child, "CHILD_ORDER_DETAILS_STALE_OR_INCONSISTENT");
+            tradeOrderRepository.save(child);
+            return ChildReconciliation.incomplete();
+        }
         List<OkxCurrentOrderService.Fill> fills = currentOrderService.fills(parent.getInstId(), childOrderId);
         if (fillLedgerService != null) {
             fills.forEach(fill -> fillLedgerService.record(child, fill));
@@ -359,24 +372,49 @@ public class OkxCurrentOrderSyncService {
                 || "mmp_canceled".equalsIgnoreCase(state);
     }
 
-    private static void applyDetail(TradeOrderEntity entry, OkxCurrentOrderService.OrderDetail detail) {
+    private static boolean applyDetail(TradeOrderEntity entry, OkxCurrentOrderService.OrderDetail detail) {
         BigDecimal requested = nonNull(detail.requestedSize());
         BigDecimal filled = nonNull(detail.filledSize());
+        String status = localStatus(detail.state(), filled);
+        if (!canMergeFacts(entry, status, filled, detail.updatedAt())) return false;
         entry.setSize(requested);
         entry.setFilledSize(filled);
         entry.setRemainingSize(remaining(requested, filled));
         entry.setAverageFillPrice(nonNull(detail.averageFillPrice()));
         entry.setOkxUpdatedAt(detail.updatedAt());
         entry.setOkxState(detail.state());
-        entry.setStatus(localStatus(detail.state(), filled));
+        entry.setStatus(status);
         entry.setErrorMessage(null);
+        return true;
+    }
+
+    static boolean canMergeFacts(TradeOrderEntity entry, String status, BigDecimal filled, Instant updatedAt) {
+        Instant previousTime = entry.getOkxUpdatedAt();
+        if (previousTime != null && (updatedAt == null || updatedAt.isBefore(previousTime))) return false;
+        if (nonNull(filled).compareTo(nonNull(entry.getFilledSize())) < 0) return false;
+        String previousStatus = entry.getStatus();
+        if ("RECONCILING".equals(previousStatus) && isTerminalNormalOrder(entry.getOkxState())) {
+            // The WS order fact can be terminal while its fill ledger is still incomplete.
+            previousStatus = localStatus(entry.getOkxState(), entry.getFilledSize());
+        }
+        if (previousStatus == null || previousStatus.equals(status)) return true;
+        return !isTerminalStatus(previousStatus)
+                && !"RECONCILING".equals(status)
+                && !("PARTIALLY_FILLED".equals(previousStatus) && "SUBMITTED".equals(status))
+                && !("ALGO_PARTIALLY_EFFECTIVE".equals(previousStatus) && "PROTECTION_SUBMITTED".equals(status));
+    }
+
+    static boolean isTerminalStatus(String status) {
+        return status != null && TERMINAL_STATUSES.contains(status);
     }
 
     private static void markReconciling(TradeOrderEntity entry, String reason) {
-        entry.setStatus("RECONCILING");
-        entry.setOkxState("UNKNOWN");
-        entry.setPnlCompleteness(LedgerCompleteness.PARTIAL.name());
-        entry.setErrorMessage(reason);
+        if (!hasText(entry.getStatus())) entry.setStatus("RECONCILING");
+        entry.setErrorMessage(RECONCILIATION_PENDING + reason);
+    }
+
+    private static boolean hasPendingDetail(TradeOrderEntity entry) {
+        return entry.getErrorMessage() != null && entry.getErrorMessage().startsWith(RECONCILIATION_PENDING);
     }
 
     static String localStatus(String okxState, BigDecimal filledSize) {

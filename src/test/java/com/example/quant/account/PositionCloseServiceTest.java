@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -13,12 +14,15 @@ import com.example.quant.agent.budget.BudgetAllocation;
 import com.example.quant.agent.budget.BudgetAllocationRequest;
 import com.example.quant.agent.execution.TradeOrderRepository;
 import com.example.quant.config.AgentProperties;
+import com.example.quant.config.TradingMode;
+import com.example.quant.config.TradingProperties;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
 import com.example.quant.okxtrade.OkxOrderGateway;
 import com.example.quant.okxtrade.OkxTradeAdapter;
 import com.example.quant.okxtrade.OkxInstrumentRules;
 import com.example.quant.okxtrade.OkxPositionMode;
+import com.example.quant.order.OrderStatus;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
 import com.example.quant.order.OrderExecutionResult;
@@ -312,52 +316,53 @@ class PositionCloseServiceTest {
         assertThat(saved.get().getRetryCount()).isEqualTo(3);
     }
 
-    @Test
-    void guardRejectionIsRecordedAsFailedBeforeSendNotUnknown() {
+    @ParameterizedTest
+    @CsvSource({
+            "disabled, CLOSE_FAILED_BEFORE_SEND, LOCAL_VALIDATION, PROTECTION_SUBMITTED, 0",
+            "51000, CLOSE_REJECTED, EXCHANGE_REJECTED, PROTECTION_SUBMITTED, 1",
+            "50004, CLOSE_SUBMIT_UNKNOWN, UNKNOWN_AFTER_SEND, CLOSE_SUBMITTED, 1",
+            "OKX HTTP 429, CLOSE_SUBMIT_UNKNOWN, UNKNOWN_AFTER_SEND, CLOSE_SUBMITTED, 1",
+            "ACK lost, CLOSE_SUBMIT_UNKNOWN, UNKNOWN_AFTER_SEND, CLOSE_SUBMITTED, 1"
+    })
+    void boundManualCloseOnlyMovesLifecycleWhenSubmitIsUnknown(String failure, String closeStatus,
+                                                                String errorClass, OrderStatus orderStatus, int posts) {
+        PendingOrder order = netAutoOrder(false);
+        String entryOrderId = order.externalOrderId();
+        PendingOrderService orders = mock(PendingOrderService.class);
+        when(orders.allOrders()).thenReturn(List.of(order));
         ClosePositionRecordRepository repository = mock(ClosePositionRecordRepository.class);
-        AtomicReference<ClosePositionRecordEntity> saved = new AtomicReference<>();
-        when(repository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> {
-            ClosePositionRecordEntity record = invocation.getArgument(0);
-            saved.set(record);
-            return record;
-        });
-        CloseGateway gateway = new CloseGateway() {
-            @Override
-            public JsonNode closePosition(Map<String, String> payload) {
-                throw new IllegalStateException("POSITION_NOT_CONFIRMED; OKX写请求未发送");
-            }
-        };
+        when(repository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        OkxOrderGateway gateway = mock(OkxOrderGateway.class);
+        ObjectNode terminalEntry = new ObjectMapper().createObjectNode();
+        terminalEntry.putArray("data").addObject().put("state", "filled");
+        when(gateway.queryOrder(any())).thenReturn(terminalEntry);
+        if ("51000".equals(failure) || "50004".equals(failure)) {
+            ObjectNode errorResponse = new ObjectMapper().createObjectNode().put("code", "0");
+            errorResponse.putArray("data").addObject().put("sCode", failure);
+            when(gateway.closePosition(any(), any())).thenReturn(errorResponse);
+        } else if (posts > 0) {
+            when(gateway.closePosition(any(), any())).thenThrow(new IllegalStateException(failure));
+        }
+        TradingMode mode = "disabled".equals(failure) ? TradingMode.DISABLED : TradingMode.LIVE;
+        OkxTradeAdapter adapter = new OkxTradeAdapter(gateway, null, OkxInstrumentRules::defaultFor,
+                () -> OkxPositionMode.LONG_SHORT, new AgentProperties(), new TradingProperties(mode, true, 120, false));
         PositionCloseService service = new PositionCloseService(
-                new FixedPositionSnapshotService(), new OkxTradeAdapter(gateway), repository);
+                new FixedPositionSnapshotService(), adapter, repository, orders, null);
 
         assertThatThrownBy(() -> service.closePosition("BTC-USDT-SWAP", "long", "cross"))
-                .hasMessageContaining("POSITION_NOT_CONFIRMED");
+                .isInstanceOf(IllegalStateException.class);
 
-        assertThat(saved.get().getStatus()).isEqualTo("CLOSE_FAILED_BEFORE_SEND");
-        assertThat(saved.get().getRequestSent()).isFalse();
-        assertThat(saved.get().getErrorClass()).isEqualTo("LOCAL_VALIDATION");
-    }
-
-    @Test
-    void explicitOkxRejectionIsTerminalRejected() {
-        ClosePositionRecordRepository repository = mock(ClosePositionRecordRepository.class);
-        AtomicReference<ClosePositionRecordEntity> saved = new AtomicReference<>();
-        when(repository.save(any(ClosePositionRecordEntity.class))).thenAnswer(invocation -> {
-            saved.set(invocation.getArgument(0)); return invocation.getArgument(0);
-        });
-        CloseGateway gateway = new CloseGateway() {
-            @Override public JsonNode closePosition(Map<String, String> payload) {
-                throw new IllegalStateException("OKX code=51000, msg=invalid request");
-            }
-        };
-        PositionCloseService service = new PositionCloseService(new FixedPositionSnapshotService(),
-                new OkxTradeAdapter(gateway), repository);
-
-        assertThatThrownBy(() -> service.closePosition("BTC-USDT-SWAP", "long", "cross"))
-                .hasMessageContaining("51000");
-        assertThat(saved.get().getStatus()).isEqualTo("CLOSE_REJECTED");
-        assertThat(saved.get().getRequestSent()).isTrue();
-        assertThat(saved.get().getErrorClass()).isEqualTo("EXCHANGE_REJECTED");
+        ArgumentCaptor<ClosePositionRecordEntity> captor = ArgumentCaptor.forClass(ClosePositionRecordEntity.class);
+        verify(repository, times(2)).save(captor.capture());
+        ClosePositionRecordEntity record = captor.getValue();
+        assertThat(record.getPendingOrderId()).isEqualTo(order.id().toString());
+        assertThat(record.getStatus()).isEqualTo(closeStatus);
+        assertThat(record.getRequestSent()).isEqualTo(posts != 0);
+        assertThat(record.getErrorClass()).isEqualTo(errorClass);
+        assertThat(record.getCloseOrderId()).isNull();
+        assertThat(order.status()).isEqualTo(orderStatus);
+        assertThat(order.externalOrderId()).isEqualTo(orderStatus == OrderStatus.CLOSE_SUBMITTED ? null : entryOrderId);
+        verify(gateway, times(posts)).closePosition(any(), any());
     }
 
     @Test

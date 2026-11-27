@@ -1,0 +1,1 @@
+ALTER TABLE trade_order ADD COLUMN state_version BIGINT NOT NULL DEFAULT 0;

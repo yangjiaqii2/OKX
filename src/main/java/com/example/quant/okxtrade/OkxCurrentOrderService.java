@@ -148,6 +148,8 @@ public class OkxCurrentOrderService {
         payload.put("instId", instId);
         payload.put("ordId", ordId);
         return StreamSupport.stream(data(okxOrderGateway.fills(payload)).spliterator(), false)
+                .filter(item -> !hasText(instId) || instId.equals(item.path("instId").asText("")))
+                .filter(item -> !hasText(ordId) || ordId.equals(item.path("ordId").asText("")))
                 .map(item -> new Fill(
                         item.path("tradeId").asText(""),
                         item.path("side").asText(""),
@@ -157,8 +159,13 @@ public class OkxCurrentOrderService {
                         nullableDecimal(item, "fee"),
                         item.path("feeCcy").asText(""),
                         nullableDecimal(item, "fillPnl"),
-                        time(item.path("ts").asText(""))))
+                        fillTime(item)))
                 .toList();
+    }
+
+    private static Instant fillTime(JsonNode item) {
+        String executedAt = item.path("fillTime").asText("");
+        return time(hasText(executedAt) ? executedAt : item.path("ts").asText(""));
     }
 
     public record OrderDetail(String ordId, String clOrdId, String state, BigDecimal requestedSize, BigDecimal filledSize,
