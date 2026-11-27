@@ -2,6 +2,10 @@ package com.example.quant.crypto;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.example.quant.account.OkxAccountBindingService;
 import com.example.quant.account.OkxCredentialCodec;
@@ -10,11 +14,14 @@ import com.example.quant.account.StoredOkxCredential;
 import com.example.quant.config.OkxProperties;
 import com.example.quant.config.TradingProperties;
 import com.example.quant.config.TradingMode;
+import com.example.quant.okxtrade.OkxApiRejectedException.DuplicateClientOrderIdException;
 import com.example.quant.okxtrade.OkxRestOrderGateway;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Map;
@@ -22,6 +29,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
 
 class OkxRestClientTest {
     @org.junit.jupiter.params.ParameterizedTest
@@ -48,6 +56,30 @@ class OkxRestClientTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "200 | {\"code\":\"51016\",\"msg\":\"Duplicate client order ID\",\"data\":[]}",
+            "200 | {\"code\":\"1\",\"data\":[{\"sCode\":\"51016\",\"sMsg\":\"Duplicate client order ID\"}]}",
+            "400 | {\"code\":\"1\",\"data\":[{\"sCode\":\"51016\",\"sMsg\":\"Duplicate client order ID\"}]}"})
+    void duplicateClientIdResponseRequiresRecovery(int status, String response) throws Exception {
+        HttpClient transport = mock(HttpClient.class);
+        @SuppressWarnings("unchecked")
+        HttpResponse<String> reply = mock(HttpResponse.class);
+        when(reply.statusCode()).thenReturn(status);
+        when(reply.body()).thenReturn(response);
+        when(transport.send(any(HttpRequest.class), ArgumentMatchers.<HttpResponse.BodyHandler<String>>any()))
+                .thenReturn(reply);
+        OkxRestClient client = new OkxRestClient(
+                new OkxProperties(new OkxProperties.Api("http://mock.invalid", "", "", ""),
+                        new OkxProperties.Websocket("", "", 0, 0, 0)),
+                mock(OkxAccountBindingService.class), new OkxSigner(), new ObjectMapper(), transport);
+
+        assertThatThrownBy(() -> client.publicGet("/response-fixture"))
+                .isInstanceOf(DuplicateClientOrderIdException.class)
+                .hasMessageContaining("51016");
+        verify(transport).send(any(HttpRequest.class), ArgumentMatchers.<HttpResponse.BodyHandler<String>>any());
     }
 
     @Test

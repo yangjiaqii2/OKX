@@ -21,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 
 class OkxCurrentOrderSyncServiceTest {
@@ -157,7 +159,7 @@ class OkxCurrentOrderSyncServiceTest {
     }
 
     @Test
-    void keepsMissingActiveEntryReconcilingWhenOrderDetailsAreUnavailable() {
+    void failedDetailQueryKeepsLastConfirmedOrderFactsAndRequiresReconciliation() {
         TradeOrderEntity stale = new TradeOrderEntity();
         stale.setOrderRole("ENTRY");
         stale.setInstId("ETH-USDT-SWAP");
@@ -168,27 +170,79 @@ class OkxCurrentOrderSyncServiceTest {
         stale.setReduceOnly(false);
         stale.setClOrdId("AUTOstale");
         stale.setOkxOrdId("ord-stale");
-        stale.setStatus("SUBMITTED");
+        stale.setStatus("PARTIALLY_FILLED");
+        stale.setOkxState("partially_filled");
+        stale.setFilledSize(new BigDecimal("4"));
+        stale.setOkxUpdatedAt(Instant.ofEpochMilli(2000));
         TradeOrderRepository repository = mock(TradeOrderRepository.class);
         when(repository.findFirstByUserNameAndOkxOrdId(any(), any())).thenReturn(Optional.empty());
         when(repository.findFirstByUserNameAndClOrdId(any(), any())).thenReturn(Optional.empty());
-        when(repository.findByStatus("SUBMITTED")).thenReturn(List.of(stale));
+        when(repository.findByStatus("PARTIALLY_FILLED")).thenReturn(List.of(stale));
         when(repository.findByStatus("PROTECTION_SUBMITTED")).thenReturn(List.of());
-        when(repository.findByStatus("PARTIALLY_FILLED")).thenReturn(List.of());
         when(repository.findByStatus("OPEN")).thenReturn(List.of());
-        when(repository.findByStatus("RECONCILING")).thenReturn(List.of(stale));
         when(repository.save(any(TradeOrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         OkxCurrentOrderSyncService service = new OkxCurrentOrderSyncService(
-                new OkxCurrentOrderService(new EmptyCurrentOrderGateway()),
+                new OkxCurrentOrderService(new EmptyCurrentOrderGateway() {
+                    @Override
+                    public JsonNode queryOrder(Map<String, String> payload) {
+                        throw new IllegalStateException("OKX HTTP 429");
+                    }
+                }),
                 repository
         );
 
         OkxCurrentOrderSyncService.SyncResult result = service.syncOnce();
 
-        assertThat(stale.getStatus()).isEqualTo("RECONCILING");
-        assertThat(stale.getOkxState()).isEqualTo("UNKNOWN");
+        assertThat(stale.getStatus()).isEqualTo("PARTIALLY_FILLED");
+        assertThat(stale.getOkxState()).isEqualTo("partially_filled");
+        assertThat(stale.getFilledSize()).isEqualByComparingTo("4");
+        assertThat(stale.getOkxUpdatedAt()).isEqualTo(Instant.ofEpochMilli(2000));
         assertThat(stale.getErrorMessage()).contains("ORDER_DETAILS_UNAVAILABLE");
         assertThat(result.errorMessage()).isEqualTo("ORDER_RECONCILIATION_REQUIRED:1");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"filled, live, 1000", "filled, live, 3000", "partially_filled, partially_filled, 1000",
+            "partially_filled, live, 3000", "partially_filled, partially_filled, ''"})
+    void oldOrRegressiveRestSnapshotCannotOverwriteWsFacts(String wsState, String restState, String restTime)
+            throws Exception {
+        TradeOrderEntity order = new TradeOrderEntity();
+        order.setUserName("alice");
+        order.setInstId("BTC-USDT-SWAP");
+        order.setOkxOrdId("ord-1");
+        order.setStatus("SUBMITTED");
+        TradeOrderRepository repository = mock(TradeOrderRepository.class);
+        when(repository.findFirstByUserNameAndOkxOrdId("alice", "ord-1")).thenReturn(Optional.of(order));
+        OkxOrderEventService ws = new OkxOrderEventService(repository, mock(TradeFillLedgerService.class));
+        String filled = "filled".equals(wsState) ? "10" : "4";
+        ObjectMapper json = new ObjectMapper();
+        JsonNode event = json.readTree("""
+                {"instId":"BTC-USDT-SWAP","ordId":"ord-1","state":"%s","sz":"10",
+                 "accFillSz":"%s","avgPx":"100","uTime":"2000","tradeId":"fill-1","fillSz":"%s"}
+                """.formatted(wsState, filled, filled));
+        OkxOrderGateway gateway = mock(OkxOrderGateway.class);
+        when(gateway.hasCredentials()).thenReturn(true);
+        ObjectNode snapshot = json.createObjectNode();
+        snapshot.putArray("data").addObject().put("instId", "BTC-USDT-SWAP").put("ordId", "ord-1")
+                .put("state", restState).put("sz", "10")
+                .put("accFillSz", "partially_filled".equals(restState) || ("3000".equals(restTime) && "filled".equals(wsState))
+                        ? filled : "0")
+                .put("uTime", restTime);
+        when(gateway.currentOrders(any())).thenReturn(snapshot);
+        when(gateway.currentAlgoOrders(any())).thenAnswer(call -> {
+            assertThat(ws.apply(event)).isTrue();
+            return null;
+        });
+
+        var sync = new OkxCurrentOrderSyncService(new OkxCurrentOrderService(gateway), repository);
+        assertThat(AuthUserContext.callAs("alice", sync::syncOnce).failed()).isFalse();
+
+        assertThat(order.getStatus()).isEqualTo("filled".equals(wsState) ? "FILLED" : "PARTIALLY_FILLED");
+        assertThat(order.getOkxState()).isEqualTo(wsState);
+        assertThat(order.getFilledSize()).isEqualByComparingTo(filled);
+        assertThat(order.getOkxUpdatedAt()).isEqualTo(Instant.ofEpochMilli(2000));
+        verify(repository).save(order);
+        verify(gateway, never()).placeOrder(any());
     }
 
     @Test
@@ -204,6 +258,9 @@ class OkxCurrentOrderSyncServiceTest {
         stale.setClOrdId("AUTOpartial");
         stale.setOkxOrdId("ord-partial");
         stale.setStatus("PARTIALLY_FILLED");
+        stale.setOkxState("partially_filled");
+        stale.setFilledSize(new BigDecimal("4"));
+        stale.setOkxUpdatedAt(Instant.ofEpochMilli(1780000001000L));
         TradeOrderRepository repository = mock(TradeOrderRepository.class);
         when(repository.findByStatus("SUBMITTED")).thenReturn(List.of());
         when(repository.findByStatus("PROTECTION_SUBMITTED")).thenReturn(List.of());

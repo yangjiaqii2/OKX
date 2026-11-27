@@ -2,6 +2,7 @@ package com.example.quant.crypto;
 
 import com.example.quant.account.OkxAccountBindingService;
 import com.example.quant.config.OkxProperties;
+import com.example.quant.okxtrade.OkxApiRejectedException;
 import com.example.quant.config.TradingMode;
 import com.example.quant.config.TradingProperties;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -222,12 +223,12 @@ public class OkxRestClient {
         try {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalStateException("OKX HTTP " + response.statusCode() + okxResponseMessage(response.body()));
+                throw httpFailure(response.statusCode(), response.body());
             }
             JsonNode root = objectMapper.readTree(response.body());
             String code = root.path("code").asText("0");
             if (!"0".equals(code)) {
-                throw com.example.quant.okxtrade.OkxApiRejectedException.fromResponse(root, okxErrorDetail(root));
+                throw OkxApiRejectedException.fromResponse(root, okxErrorDetail(root));
             }
             return root;
         } catch (InterruptedException ex) {
@@ -244,15 +245,17 @@ public class OkxRestClient {
         return value != null && !value.trim().isEmpty();
     }
 
-    private String okxResponseMessage(String body) {
-        if (body == null || body.isBlank()) {
-            return "";
-        }
+    private IllegalStateException httpFailure(int status, String body) {
+        String prefix = "OKX HTTP " + status;
+        if (body == null || body.isBlank()) return new IllegalStateException(prefix);
         try {
             JsonNode root = objectMapper.readTree(body);
-            return ": " + okxErrorDetail(root);
+            String message = prefix + ": " + okxErrorDetail(root);
+            var failure = OkxApiRejectedException.fromResponse(root, message);
+            if (failure instanceof OkxApiRejectedException.DuplicateClientOrderIdException) return failure;
+            return new IllegalStateException(message);
         } catch (Exception ignored) {
-            return ": " + compact(body);
+            return new IllegalStateException(prefix + ": " + compact(body));
         }
     }
 

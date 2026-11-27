@@ -37,11 +37,12 @@ public class OkxOrderEventService {
             return false;
         }
         BigDecimal filled = decimal(event, "accFillSz");
-        if (!newer(order, eventTime, filled)) {
-            return false;
-        }
-        String exchangeStatus = OkxCurrentOrderSyncService.localStatus(text(event, "state"), filled);
-        if (terminal(order.getStatus()) || rank(exchangeStatus) < rank(order.getStatus())) {
+        String state = text(event, "state");
+        String exchangeStatus = OkxCurrentOrderSyncService.localStatus(state, filled);
+        if (OkxCurrentOrderSyncService.isTerminalStatus(order.getStatus())
+                || !OkxCurrentOrderSyncService.canMergeFacts(order, exchangeStatus, filled, eventTime)
+                || (eventTime.equals(order.getOkxUpdatedAt()) && state.equals(order.getOkxState())
+                && filled.compareTo(nonNull(order.getFilledSize())) == 0)) {
             return false;
         }
         BigDecimal lastFillSize = decimal(event, "fillSz");
@@ -54,7 +55,7 @@ public class OkxOrderEventService {
         order.setRemainingSize(OkxCurrentOrderSyncService.remaining(requested, filled));
         order.setAverageFillPrice(decimal(event, "avgPx"));
         order.setOkxUpdatedAt(eventTime);
-        order.setOkxState(text(event, "state"));
+        order.setOkxState(state);
         order.setStatus(nextStatus);
         order.setErrorMessage(terminalFillsIncomplete ? "TERMINAL_FILLS_INCOMPLETE"
                 : "RECONCILING".equals(nextStatus) ? "UNRECOGNIZED_WS_ORDER_STATE" : null);
@@ -94,33 +95,6 @@ public class OkxOrderEventService {
                 decimal(event, "fillPnl"),
                 time(text(event, "fillTime"))
         ));
-    }
-
-    private static boolean newer(TradeOrderEntity order, Instant eventTime, BigDecimal filled) {
-        Instant currentTime = order.getOkxUpdatedAt();
-        if (currentTime == null || eventTime == null) {
-            return currentTime == null;
-        }
-        int timeOrder = eventTime.compareTo(currentTime);
-        if (timeOrder > 0) {
-            return true;
-        }
-        return timeOrder == 0 && filled.compareTo(nonNull(order.getFilledSize())) > 0;
-    }
-
-    private static boolean terminal(String status) {
-        return "FILLED".equals(status) || "CANCELED".equals(status)
-                || "PARTIALLY_FILLED_CANCELED".equals(status) || "REJECTED".equals(status);
-    }
-
-    private static int rank(String status) {
-        if (terminal(status)) {
-            return 3;
-        }
-        if ("PARTIALLY_FILLED".equals(status)) {
-            return 2;
-        }
-        return 1;
     }
 
     private static String text(JsonNode node, String field) {
