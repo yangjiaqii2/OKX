@@ -108,7 +108,6 @@ export function Dashboard() {
   const topContracts = state.contracts.slice(0, 4) as Record<string, unknown>[];
   const fxRateAvailable = Number.isFinite(Number(state.fxRate?.rate)) && Number(state.fxRate?.rate) > 0;
   const formatAsset = (value: unknown) => formatAssetMoney(value, assetCurrency, state.fxRate);
-  const profitQuality = profitQualityLabel(String(state.profit?.dataQuality ?? 'UNKNOWN'));
   const unrealizedPnl = state.profit?.unrealizedPnlUsdt;
   const realizedPnl = state.profit?.realizedPnlUsdt;
   const risk = state.risk ?? {};
@@ -184,7 +183,6 @@ export function Dashboard() {
         <span>{t('单笔亏损')} <b className="font-medium text-ink">{formatUSDT(risk.maxLossAmount)}</b></span>
         <span>{t('待确认')} <b className="font-medium text-ink">{pendingCount ?? t('不可用')}</b></span>
         <span>{t('检查时间')} <b className="font-medium tabular-nums text-ink">{String(risk.createdAt ?? '').slice(11, 19) || '-'}</b></span>
-        <span className="text-faint">{profitQuality}</span>
       </div>
       {risk.rejectReason ? <Alert className="mt-3" severity={risk.passed === false ? 'error' : 'warning'}>{String(risk.rejectReason)}</Alert> : null}
 
@@ -271,18 +269,3 @@ function formatAssetMoney(value: unknown, currency: 'USD' | 'RMB', fxRate?: Reco
   return formatUSDT(number);
 }
 
-function profitQualityLabel(value: string) {
-  switch (value) {
-    case 'OKX_FILLS_NET_PNL': return t('真实净收益');
-    case 'EXCHANGE_RECENT_LEDGER':
-    case 'AUTO_SCOPED_EXCHANGE_RECENT_LEDGER': return t('OKX 近期账本 · 可追溯订单');
-    case 'AUTO_SCOPED_LEDGER_FUNDING_UNATTRIBUTED': return t('不可用：资金费归属未确认');
-    case 'POSITION_ATTRIBUTION_UNAVAILABLE': return t('不可用：仓位归属未确认');
-    case 'CLOSE_RECORD_ESTIMATED': return t('估算：平仓记录口径');
-    case 'PARTIAL_CLOSE_RECORD_ESTIMATED': return t('估算：部分平仓已对账');
-    case 'REALIZED_PNL_UNAVAILABLE': return t('不可用：未接入成交账单');
-    case 'POSITION_SNAPSHOT_UNAVAILABLE': return t('不可用：持仓快照失败');
-    case 'ESTIMATED_UNREALIZED_ONLY': return t('估算：仅当前浮盈');
-    default: return t('收益来源未确认');
-  }
-}

@@ -120,7 +120,7 @@ function UserMenu() {
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <aside className="border-r border-line px-3 pb-4 pt-5">
+    <aside className="min-h-full px-3 pb-4 pt-5">
       <Brand />
       <NavGroups onNavigate={onNavigate} />
     </aside>
@@ -192,8 +192,8 @@ export function AppLayout({ children }: { children?: ReactNode }) {
   const [drawer, setDrawer] = useState(false);
   return (
     <div className="min-h-dvh bg-canvas text-ink">
-      <div className="md:grid md:grid-cols-[228px_minmax(0,1fr)]">
-        <div className="sticky top-0 hidden h-dvh overflow-y-auto md:block">
+      <div className="md:grid md:min-h-dvh md:grid-cols-[228px_minmax(0,1fr)]">
+        <div className="sticky top-0 hidden h-dvh overflow-y-auto border-r border-line bg-canvas md:block">
           <Sidebar />
         </div>
         <div className="min-w-0 pb-20 md:pb-0">
@@ -210,7 +210,7 @@ export function AppLayout({ children }: { children?: ReactNode }) {
       {drawer ? (
         <div className="fixed inset-0 z-50 md:hidden">
           <button type="button" className="absolute inset-0 bg-[var(--overlay)]" aria-label={t('关闭')} onClick={() => setDrawer(false)} />
-          <div className="absolute inset-y-0 left-0 w-[260px] overflow-auto bg-canvas">
+          <div className="absolute inset-y-0 left-0 w-[260px] overflow-auto border-r border-line bg-canvas">
             <Sidebar onNavigate={() => setDrawer(false)} />
           </div>
         </div>
