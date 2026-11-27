@@ -1,10 +1,9 @@
-import MonitorHeartOutlinedIcon from '@mui/icons-material/MonitorHeartOutlined';
-import { Badge, Box, Chip, IconButton, Popover, Stack, Typography } from '@mui/material';
+import { Activity } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { quantApi } from '../api/quantApi';
-import { elevation } from '../designTokens';
 import { formatAutoTradeReason } from '../formatters';
 import { t, useLanguage } from '../i18n';
+import { cn } from '../lib/cn';
 
 type RuntimeStatus = {
   tradingMode: string;
@@ -33,10 +32,11 @@ const unavailable: RuntimeStatus = {
 export function RuntimeStatusBar() {
   useLanguage();
   const [status, setStatus] = useState<RuntimeStatus>(unavailable);
-  const [statusAnchor, setStatusAnchor] = useState<HTMLElement | null>(null);
+  const [open, setOpen] = useState(false);
   const needsAttention = (status.unknownOrders ?? 0) > 0
     || (status.unmanagedPositions ?? 0) > 0
     || ['ERROR', 'EMERGENCY_STOP', 'BLOCKED', 'FAILED'].includes(status.tradingEngine);
+  const healthy = status.tradingEngine === 'AUTO_RUNNING' || status.tradingEngine === 'READY' || status.okxRest === 'CONNECTED';
 
   useEffect(() => {
     let request: AbortController | undefined;
@@ -60,62 +60,58 @@ export function RuntimeStatusBar() {
   }, []);
 
   return (
-    <Stack direction="row" gap={{ xs: 0.5, md: 1 }} alignItems="center" minWidth={0} sx={{ flex: 1, justifyContent: 'flex-end' }}>
-      <Chip
-        size="small"
-        color={status.tradingMode === 'LIVE' ? 'error' : status.tradingMode === 'DEMO' ? 'info' : 'default'}
-        label={modeLabel(status.tradingMode)}
-        variant={status.tradingMode === 'LIVE' ? 'outlined' : 'filled'}
-      />
-      <Box sx={{ display: { xs: 'none', md: 'block' } }}>
-        <RuntimeItem label="EXEC" value={status.tradingEngine} />
-      </Box>
-      <IconButton aria-label={t("运行状态")} aria-expanded={Boolean(statusAnchor)}
-        aria-controls={statusAnchor ? 'runtime-status-detail' : undefined} onClick={(event) => setStatusAnchor(event.currentTarget)}>
-        <Badge variant="dot" color="error" invisible={!needsAttention}>
-          <MonitorHeartOutlinedIcon />
-        </Badge>
-      </IconButton>
-      <Popover open={Boolean(statusAnchor)} anchorEl={statusAnchor} onClose={() => setStatusAnchor(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }} transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        slotProps={{ paper: { id: 'runtime-status-detail', sx: {
-          mt: 1, p: 2, width: 336, maxWidth: 'calc(100vw - 32px)', border: 1, borderColor: 'divider',
-          boxShadow: elevation.overlay, overflowWrap: 'anywhere',
-        } } }}>
-        <Stack spacing={1}>
-          <Typography variant="h6">{t("运行状态")}</Typography>
-          <RuntimeItem label="REST" value={status.okxRest} />
-          <RuntimeItem label="PUB WS" value={status.publicWebSocket} />
-          <RuntimeItem label="PRIV WS" value={status.privateWebSocket} reason={status.privateWebSocketReason} />
-          <RuntimeItem label="STRAT" value={status.strategyEngine} />
-          <RuntimeItem label="EXEC" value={status.tradingEngine} reason={status.tradingReason} />
-          <RuntimeItem label="LEDGER" value={status.ledgerSync ?? 'UNKNOWN'} />
-          {(status.unknownOrders ?? 0) > 0 ? <RuntimeItem label="UNKNOWN ORD" value={String(status.unknownOrders)} danger /> : null}
-          {(status.unmanagedPositions ?? 0) > 0 ? <RuntimeItem label="UNMANAGED POS" value={String(status.unmanagedPositions)} danger /> : null}
-          {status.checkedAt ? <Typography variant="caption" color="text.secondary">{t("后端检查时间")} {status.checkedAt}</Typography> : null}
-        </Stack>
-      </Popover>
-    </Stack>
+    <div className="relative flex items-center gap-3">
+      <span className="hidden items-center gap-2 text-[13px] font-medium text-muted md:inline-flex">
+        <i className={cn('size-1.5 rounded-full', needsAttention ? 'bg-down' : healthy ? 'bg-up' : 'bg-warning')} />
+        {needsAttention ? t('运行异常') : healthy ? t('运行正常') : t('运行状态')}
+      </span>
+      <span className={cn('text-[13px] font-medium', status.tradingMode === 'LIVE' ? 'text-down' : 'text-muted')}>
+        {modeLabel(status.tradingMode)}
+      </span>
+      <button
+        type="button"
+        className="relative grid size-8 place-items-center rounded-lg text-muted hover:bg-sunken hover:text-ink"
+        aria-label={t('运行状态')}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Activity size={16} />
+        {needsAttention ? <i className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-down" /> : null}
+      </button>
+      {open ? (
+        <>
+          <button type="button" className="fixed inset-0 z-30 cursor-default" aria-label={t('关闭')} onClick={() => setOpen(false)} />
+          <div id="runtime-status-detail" className="absolute right-0 top-10 z-40 w-[320px] max-w-[calc(100vw-32px)] rounded-xl bg-raised p-4 text-left shadow-[0_1px_1px_rgba(16,20,28,0.05),0_16px_40px_rgba(16,20,28,0.12)]">
+            <p className="mb-2 text-sm font-semibold">{t('运行状态')}</p>
+            <div className="space-y-1.5">
+              <RuntimeItem label="REST" value={status.okxRest} />
+              <RuntimeItem label="PUB WS" value={status.publicWebSocket} />
+              <RuntimeItem label="PRIV WS" value={status.privateWebSocket} reason={status.privateWebSocketReason} />
+              <RuntimeItem label="STRAT" value={status.strategyEngine} />
+              <RuntimeItem label="EXEC" value={status.tradingEngine} reason={status.tradingReason} />
+              <RuntimeItem label="LEDGER" value={status.ledgerSync ?? 'UNKNOWN'} />
+              {(status.unknownOrders ?? 0) > 0 ? <RuntimeItem label="UNKNOWN ORD" value={String(status.unknownOrders)} danger /> : null}
+              {(status.unmanagedPositions ?? 0) > 0 ? <RuntimeItem label="UNMANAGED POS" value={String(status.unmanagedPositions)} danger /> : null}
+            </div>
+            {status.checkedAt ? <p className="mt-2 text-[12px] text-muted">{t('后端检查时间')} {status.checkedAt}</p> : null}
+          </div>
+        </>
+      ) : null}
+    </div>
   );
 }
 
 function RuntimeItem({ label, value, reason, danger = false }: { label: string; value: string; reason?: string; danger?: boolean }) {
   useLanguage();
-  const color = danger || value === 'ERROR' || value === 'EMERGENCY_STOP' || value === 'BLOCKED' || value === 'FAILED'
-    ? 'error.main'
-    : value === 'CONNECTED' || value === 'AUTO_RUNNING' || value === 'AUTO_ENABLED' || value === 'READY' || value === 'RECENT_WINDOW_SYNCED'
-    ? 'success.main'
-      : value === 'NOT_IMPLEMENTED' || value === 'UNBOUND' || value === 'UNKNOWN' || value === 'DEGRADED' || value === 'RECONNECTING' || value === 'AUTO_DISABLED_BY_CONFIG' || value === 'SHADOW_RUNNING' || value === 'SHADOW_ONLY'
-        ? 'warning.main'
-        : 'text.secondary';
+  const bad = danger || ['ERROR', 'EMERGENCY_STOP', 'BLOCKED', 'FAILED'].includes(value);
+  const good = ['CONNECTED', 'AUTO_RUNNING', 'AUTO_ENABLED', 'READY', 'RECENT_WINDOW_SYNCED'].includes(value);
+  const warn = ['NOT_IMPLEMENTED', 'UNBOUND', 'UNKNOWN', 'DEGRADED', 'RECONNECTING', 'AUTO_DISABLED_BY_CONFIG', 'SHADOW_RUNNING', 'SHADOW_ONLY'].includes(value);
+  const color = bad ? 'text-down' : good ? 'text-up' : warn ? 'text-warning' : 'text-muted';
   return (
-    <Stack direction="row" gap={1} alignItems="baseline">
-      <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: color, flexShrink: 0 }} />
-      <Typography variant="caption" color="text.secondary">
-        {label} <Box component="span" fontWeight={700} sx={{ color }}>{displayValue(value)}</Box>
-        {reason ? ` · ${formatAutoTradeReason(reason)}` : null}
-      </Typography>
-    </Stack>
+    <p className="flex items-baseline gap-2 text-[12px] leading-5 text-muted">
+      <i className={cn('size-1.5 shrink-0 translate-y-[-1px] rounded-full bg-current', color)} />
+      <span>{label} <span className={cn('font-semibold', color)}>{displayValue(value)}</span>{reason ? ` · ${formatAutoTradeReason(reason)}` : null}</span>
+    </p>
   );
 }
 

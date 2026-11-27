@@ -1,0 +1,132 @@
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Noto Sans SC";
+  src: url("../fonts/noto-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Noto Sans SC";
+  src: url("../fonts/noto-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Noto Sans SC";
+  src: url("../fonts/noto-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --color-canvas: var(--bg);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-field: var(--field);
+  --color-ink: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-up: var(--up);
+  --color-up-soft: var(--up-soft);
+  --color-down: var(--down);
+  --color-down-soft: var(--down-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --radius-control: 8px;
+}
+
+:root {
+  --bg: #f4f6f9;
+  --raised: #fbfcfd;
+  --sunken: #eceff4;
+  --field: #fbfcfd;
+  --text: #171a21;
+  --muted: #5c6570;
+  --faint: #6a7380;
+  --line: rgba(23, 26, 33, 0.08);
+  --line-strong: #e1e4eb;
+  --accent: #2457e6;
+  --accent-ink: #1c45c4;
+  --accent-soft: #e7eefc;
+  --on-accent: #f5f8ff;
+  --up: #0c7a48;
+  --up-soft: rgba(12, 122, 72, 0.1);
+  --down: #c4273a;
+  --down-soft: rgba(196, 39, 58, 0.08);
+  --warning: #9a5a12;
+  --warning-soft: rgba(154, 90, 18, 0.1);
+  --overlay: rgba(19, 21, 27, 0.42);
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #13151b;
+  --raised: #1b1e27;
+  --sunken: #0e1015;
+  --field: #191c24;
+  --text: #e8eaf0;
+  --muted: #a3abba;
+  --faint: #8e97a8;
+  --line: rgba(232, 234, 240, 0.1);
+  --line-strong: rgba(232, 234, 240, 0.16);
+  --accent: #2457e6;
+  --accent-ink: #8eaeef;
+  --accent-soft: rgba(76, 120, 240, 0.16);
+  --on-accent: #f5f8ff;
+  --up: #3cb179;
+  --up-soft: rgba(60, 177, 121, 0.14);
+  --down: #f07178;
+  --down-soft: rgba(240, 113, 120, 0.14);
+  --warning: #e0a15a;
+  --warning-soft: rgba(224, 161, 90, 0.14);
+  --overlay: rgba(0, 0, 0, 0.56);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

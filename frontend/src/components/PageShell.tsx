@@ -1,8 +1,8 @@
-import RefreshIcon from '@mui/icons-material/Refresh';
-import { Box, Button, Stack, Typography } from '@mui/material';
+import { RefreshCw } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Title } from 'react-admin';
 import { t, useLanguage } from '../i18n';
+import { Button } from './ui/button';
 
 type PageShellProps = {
   title: string;
@@ -20,57 +20,42 @@ type PageHeaderProps = {
   filters?: ReactNode;
 };
 
-export function PageShell({ title, children, maxWidth = 1560 }: PageShellProps) {
+export function PageShell({ title, children, maxWidth }: PageShellProps) {
   return (
-    <Box sx={{ px: { xs: 2, sm: 3, xl: 4 }, py: { xs: 2, sm: 3 }, minWidth: 0 }}>
+    <div className="min-w-0 px-4 py-6 sm:px-8 md:px-9 md:py-7">
       <Title title={title} />
-      <Box sx={{ width: '100%', maxWidth, mx: 'auto', minWidth: 0, overflowWrap: 'anywhere' }}>
+      <div className="mx-auto min-w-0" style={maxWidth ? { maxWidth } : undefined}>
         {children}
-      </Box>
-    </Box>
+      </div>
+    </div>
   );
 }
 
 export function PageHeader({ title, subtitle, status, onRefresh, refreshing = false, actions, filters }: PageHeaderProps) {
   useLanguage();
   return (
-    <Stack spacing={2} sx={{ pb: 2, borderBottom: 1, borderColor: 'divider' }}>
-      <Stack
-        direction={{ xs: 'column', sm: 'row' }}
-        alignItems={{ xs: 'stretch', sm: 'flex-start' }}
-        justifyContent="space-between"
-        gap={2}
-      >
-        <Box minWidth={0}>
-          <Stack direction="row" gap={1} alignItems="center" flexWrap="wrap">
-            <Typography component="h1" variant="h4" sx={{ fontSize: { xs: '1.5rem', md: '1.875rem' }, letterSpacing: '-0.025em' }}>
-              {title}
-            </Typography>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-[28px] font-semibold leading-[34px] tracking-[-0.03em]">{title}</h1>
             {status}
-          </Stack>
-          {subtitle ? (
-            <Typography color="text.secondary" variant="body2" sx={{ mt: 1, maxWidth: 760 }}>
-              {subtitle}
-            </Typography>
-          ) : null}
-        </Box>
-
+          </div>
+          {subtitle ? <p className="mt-1 max-w-[68ch] text-[14px] leading-[22px] text-muted">{subtitle}</p> : null}
+        </div>
         {actions || onRefresh ? (
-          <Stack direction="row" gap={1} alignItems="center" flexWrap="wrap" sx={{ flexShrink: 0 }}>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             {actions}
             {onRefresh ? (
-              <Button startIcon={<RefreshIcon />} variant="outlined" onClick={onRefresh} disabled={refreshing}>
-                {refreshing ? t("刷新中") : t("刷新")}
+              <Button variant="ghost" onClick={onRefresh} disabled={refreshing}>
+                <RefreshCw size={14} className={refreshing ? 'animate-spin' : undefined} />
+                {refreshing ? t('刷新中') : t('刷新')}
               </Button>
             ) : null}
-          </Stack>
+          </div>
         ) : null}
-      </Stack>
-      {filters ? (
-        <Stack direction="row" gap={1} alignItems="center" flexWrap="wrap" minWidth={0}>
-          {filters}
-        </Stack>
-      ) : null}
-    </Stack>
+      </div>
+      {filters ? <div className="flex min-w-0 flex-wrap items-center gap-2">{filters}</div> : null}
+    </div>
   );
 }

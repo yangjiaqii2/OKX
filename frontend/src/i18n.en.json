@@ -641,5 +641,19 @@
   "严格风控模式保留当前 AUTO_TRADE_ALLOWED 门槛。": "Strict Risk mode keeps the current AUTO_TRADE_ALLOWED threshold.",
   "共 {total} 条复盘记录，当前页等待入场 {waiting} 条、已提交 {submitted} 条，当前账户持仓浮盈亏 {pnl}": "Total: {total} · Awaiting entry: {waiting} · Submitted: {submitted} · Account unrealized PnL: {pnl}",
   "普通委托 {standard} 条，保护单 {protective} 条": "Standard orders: {standard} · Protective orders: {protective}",
-  "取消 {instrument} 的待确认订单。": "Cancel the order pending confirmation for {instrument}."
+  "取消 {instrument} 的待确认订单。": "Cancel the order pending confirmation for {instrument}.",
+  "优先于下单": "Before any order",
+  "确认订单之前，先核对权益、可用余额和风控状态。实盘与模拟使用同一套控制台。": "Check equity, available balance, and risk before confirming an order. Live and demo share this console.",
+  "凭据经安全哈希保存。登录后可在账号安全中修改密码。": "Credentials are stored as a secure hash. Change the password in Account Security after signing in.",
+  "OKX 合约信号进入待确认后执行。账户与风控优先于下单。": "OKX contract signals are reviewed before execution. Account and risk come first.",
+  "切换外观": "Switch appearance",
+  "浅色": "Light",
+  "深色": "Dark",
+  "运行正常": "Healthy",
+  "运行异常": "Needs attention",
+  "退出登录": "Sign out",
+  "交易": "Trading",
+  "复盘": "Review",
+  "系统": "System",
+  "未通过": "Failed"
 }

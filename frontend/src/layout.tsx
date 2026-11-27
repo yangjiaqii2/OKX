@@ -1,123 +1,221 @@
-import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
-import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn';
-import DashboardIcon from '@mui/icons-material/Dashboard';
-import EmergencyIcon from '@mui/icons-material/Emergency';
-import KeyIcon from '@mui/icons-material/Key';
-import ManageAccountsIcon from '@mui/icons-material/ManageAccounts';
-import PlaylistAddCheckIcon from '@mui/icons-material/PlaylistAddCheck';
-import PendingActionsIcon from '@mui/icons-material/PendingActions';
-import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
-import StackedLineChartIcon from '@mui/icons-material/StackedLineChart';
-import { Box, Divider, Typography, useMediaQuery } from '@mui/material';
-import type { Theme } from '@mui/material/styles';
-import { AppBar, Layout, Menu, Sidebar } from 'react-admin';
-import { RuntimeStatusBar } from './components/RuntimeStatusBar';
-import { MobileBottomNavigation } from './components/MobileBottomNavigation';
+import {
+  Activity,
+  Bookmark,
+  CandlestickChart,
+  KeyRound,
+  LayoutDashboard,
+  ListChecks,
+  LockKeyhole,
+  ScrollText,
+  Settings2,
+  Shield,
+  Timer,
+  UserRound,
+  Wallet,
+  Waypoints,
+} from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { useGetIdentity, useLogout } from 'react-admin';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { LanguageSwitch } from './components/LanguageSwitch';
-import { appBarHeight, mobileNavHeight, safeArea } from './designTokens';
+import { RuntimeStatusBar } from './components/RuntimeStatusBar';
+import { ThemeToggle } from './components/ThemeToggle';
 import { t, useLanguage } from './i18n';
+import { cn } from './lib/cn';
 
-const AppMenu = () => {
+const trade = [
+  { to: '/', label: '总览', icon: LayoutDashboard, end: true },
+  { to: '/contractCandidates', label: 'OKX合约', icon: CandlestickChart },
+  { to: '/positions', label: '当前持仓', icon: Wallet },
+  { to: '/pendingOrders', label: '待确认订单', icon: ListChecks },
+  { to: '/currentOkxOrders', label: '当前委托', icon: Timer },
+];
+
+const review = [
+  { to: '/autoTradeRecords', label: '交易复盘', icon: Activity },
+  { to: '/autoTradeLifecycle', label: '生命周期', icon: Waypoints },
+  { to: '/closePositionRecords', label: '平仓记录', icon: Bookmark },
+];
+
+const system = [
+  { to: '/account-risk', label: '账户与风控', icon: Shield },
+  { to: '/account-binding', label: '账号绑定', icon: KeyRound },
+  { to: '/security', label: '账号安全', icon: UserRound },
+  { to: '/system-control', label: '系统控制', icon: Settings2 },
+];
+
+function Brand() {
+  return (
+    <div className="mb-5 flex h-8 items-center gap-2.5 px-2">
+      <i className="size-2.5 shrink-0 rounded-[3px] bg-accent" />
+      <b className="font-sans text-[14px] font-semibold tracking-[-0.022em]">Quant Desk</b>
+    </div>
+  );
+}
+
+function NavItem({ to, label, icon: Icon, end = false, onClick }: { to: string; label: string; icon: typeof LayoutDashboard; end?: boolean; onClick?: () => void }) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      onClick={onClick}
+      className={({ isActive }) => cn(
+        'flex h-8 items-center gap-2 whitespace-nowrap rounded-lg px-2 text-[13px] leading-[18px]',
+        isActive ? 'bg-accent-soft font-semibold text-accent-ink' : 'text-[#2A303A] hover:bg-sunken dark:text-ink',
+      )}
+    >
+      {({ isActive }) => (
+        <>
+          <Icon size={16} strokeWidth={1.6} className={isActive ? 'text-accent-ink' : 'text-[#66717E] dark:text-muted'} />
+          {t(label)}
+        </>
+      )}
+    </NavLink>
+  );
+}
+
+function NavGroups({ onNavigate }: { onNavigate?: () => void }) {
   useLanguage();
   return (
-    <Box sx={{ p: 1 }}>
-      <Menu sx={{
-        width: '100%',
-        gap: 0.5,
-        '& .RaMenuItemLink-root': {
-          minHeight: 44,
-          mx: 0.5,
-          px: 1.5,
-          borderRadius: 1,
-          color: 'text.secondary',
-          fontWeight: 600,
-          '& .MuiListItemIcon-root': { minWidth: 36, color: 'inherit' },
-          '&.RaMenuItemLink-active': { bgcolor: 'action.selected', color: 'primary.dark', fontWeight: 750 },
-        },
-      }}>
-        <Menu.DashboardItem leftIcon={<DashboardIcon />} />
-        <Menu.ResourceItem name="contractCandidates" />
-        <Menu.Item to="/positions" primaryText={t("当前持仓")} leftIcon={<AccountBalanceWalletIcon />} />
-        <Menu.ResourceItem name="pendingOrders" />
-        <Menu.ResourceItem name="currentOkxOrders" />
-        <Menu.ResourceItem name="autoTradeRecords" />
-        <Menu.ResourceItem name="autoTradeLifecycle" />
-        <Menu.ResourceItem name="closePositionRecords" />
-        <Divider sx={{ my: 1 }} />
-        <Menu.Item to="/account-risk" primaryText={t("账户与风控")} leftIcon={<AccountBalanceWalletIcon />} />
-        <Menu.Item to="/account-binding" primaryText={t("账号绑定")} leftIcon={<KeyIcon />} />
-        <Menu.Item to="/security" primaryText={t("账号安全")} leftIcon={<ManageAccountsIcon />} />
-        <Menu.Item to="/system-control" primaryText={t("系统控制")} leftIcon={<EmergencyIcon />} />
-      </Menu>
-    </Box>
+    <nav className="flex flex-col" aria-label={t('主导航')}>
+      <p className="mb-1.5 mt-0 px-2 text-[12px] font-medium leading-4 text-muted">{t('交易')}</p>
+      {trade.map((item) => <NavItem key={item.to} {...item} onClick={onNavigate} />)}
+      <p className="mb-1.5 mt-[18px] px-2 text-[12px] font-medium leading-4 text-muted">{t('复盘')}</p>
+      {review.map((item) => <NavItem key={item.to} {...item} onClick={onNavigate} />)}
+      <p className="mb-1.5 mt-[18px] px-2 text-[12px] font-medium leading-4 text-muted">{t('系统')}</p>
+      {system.map((item) => <NavItem key={item.to} {...item} onClick={onNavigate} />)}
+    </nav>
   );
-};
+}
 
-const TradingAppBar = (props: Parameters<typeof AppBar>[0]) => (
-  <AppBar {...props} color="inherit" toolbar={false} sx={{
-    pt: safeArea.top,
-    pl: safeArea.left,
-    pr: safeArea.right,
-    '& .RaAppBar-toolbar': { minHeight: appBarHeight, gap: { xs: 0.5, md: 1 }, px: { xs: 1.5, md: 2 } },
-    '& .RaAppBar-menuButton': { display: { xs: 'none', md: 'inline-flex' } },
-    '& .RaUserMenu-userButton': {
-      display: 'block',
-      maxWidth: { sm: 128, md: 192 },
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
-      whiteSpace: 'nowrap',
-      '& .MuiButton-startIcon': { display: 'inline-flex', verticalAlign: 'middle' },
-    },
-  }}>
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
-      <Box sx={{ display: 'grid', placeItems: 'center', width: 32, height: 32, borderRadius: 1, bgcolor: 'primary.main', color: 'primary.contrastText', flexShrink: 0 }}>
-        <StackedLineChartIcon fontSize="small" aria-hidden />
-      </Box>
-      <Typography fontWeight={750} sx={{ display: { xs: 'none', sm: 'block' }, fontSize: { sm: '0.875rem', md: '1rem' }, whiteSpace: 'nowrap' }}>Quant Desk</Typography>
-    </Box>
-    <RuntimeStatusBar />
-    <LanguageSwitch />
-  </AppBar>
-);
+function UserMenu() {
+  useLanguage();
+  const { data } = useGetIdentity();
+  const logout = useLogout();
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const name = data?.fullName || 'admin';
+  return (
+    <div className="relative">
+      <button type="button" className="flex items-center gap-2 text-[13px] font-medium" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <span className="grid size-6 place-items-center rounded-full bg-[#E5E8EF] text-[11px] font-semibold text-ink dark:bg-sunken dark:text-ink">{String(name).slice(0, 1).toUpperCase()}</span>
+        <span className="hidden sm:inline">{name}</span>
+      </button>
+      {open ? (
+        <>
+          <button type="button" className="fixed inset-0 z-30 cursor-default" aria-label={t('关闭')} onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-9 z-40 w-40 rounded-xl bg-raised p-1 shadow-[0_1px_1px_rgba(16,20,28,0.05),0_16px_40px_rgba(16,20,28,0.12)]">
+            <button type="button" className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] hover:bg-sunken" onClick={() => { setOpen(false); navigate('/security'); }}>
+              <LockKeyhole size={14} /> {t('账号安全')}
+            </button>
+            <button type="button" className="flex h-9 w-full items-center rounded-lg px-2 text-left text-[13px] hover:bg-sunken" onClick={() => void logout()}>
+              {t('退出登录')}
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
 
-const TradingSidebar = (props: Parameters<typeof Sidebar>[0]) => {
-  const desktop = useMediaQuery((theme: Theme) => theme.breakpoints.up('md'));
-  return desktop ? <Sidebar {...props} /> : null;
-};
+function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+  return (
+    <aside className="border-r border-line px-3 pb-4 pt-5">
+      <Brand />
+      <NavGroups onNavigate={onNavigate} />
+    </aside>
+  );
+}
+
+function MobileNav() {
+  useLanguage();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [more, setMore] = useState(false);
+  const main = [
+    { label: '总览', path: '/', icon: LayoutDashboard },
+    { label: '机会', path: '/contractCandidates', icon: CandlestickChart },
+    { label: '订单', path: '/currentOkxOrders', icon: ScrollText },
+    { label: '持仓', path: '/positions', icon: Wallet },
+  ];
+  const moreItems = [
+    ['待确认订单', '/pendingOrders'], ['交易复盘', '/autoTradeRecords'], ['生命周期', '/autoTradeLifecycle'],
+    ['平仓记录', '/closePositionRecords'], ['账户与风控', '/account-risk'], ['账号绑定', '/account-binding'],
+    ['账号安全', '/security'], ['系统控制', '/system-control'],
+  ] as const;
+  return (
+    <>
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-canvas pb-[env(safe-area-inset-bottom)] md:hidden" aria-label={t('主导航')}>
+        <div className="grid h-16 grid-cols-5">
+          {main.map((item) => {
+            const active = location.pathname === item.path;
+            const Icon = item.icon;
+            return (
+              <button key={item.path} type="button" className={cn('flex flex-col items-center justify-center gap-1 text-[11px]', active ? 'text-accent-ink' : 'text-muted')} onClick={() => navigate(item.path)}>
+                <Icon size={18} strokeWidth={1.6} />
+                {t(item.label)}
+              </button>
+            );
+          })}
+          <button type="button" className="flex flex-col items-center justify-center gap-1 text-[11px] text-muted" onClick={() => setMore(true)}>
+            <ListChecks size={18} />
+            {t('更多')}
+          </button>
+        </div>
+      </nav>
+      {more ? (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <button type="button" className="absolute inset-0 bg-[var(--overlay)]" aria-label={t('关闭')} onClick={() => setMore(false)} />
+          <div className="absolute inset-x-0 bottom-0 max-h-[80dvh] overflow-auto rounded-t-2xl bg-raised px-2 pb-[calc(16px+env(safe-area-inset-bottom))] pt-3">
+            <p className="px-3 pb-2 text-sm font-semibold">{t('更多功能')}</p>
+            {moreItems.map(([label, path]) => (
+              <button key={path} type="button" className={cn('flex h-11 w-full items-center rounded-lg px-3 text-left text-[14px]', location.pathname === path && 'bg-accent-soft text-accent-ink')} onClick={() => { setMore(false); navigate(path); }}>
+                {t(label)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
 
 export const appIcons = {
-  contract: StackedLineChartIcon,
-  pending: PendingActionsIcon,
-  autoTrade: ReceiptLongIcon,
-  lifecycle: PlaylistAddCheckIcon,
-  okxOrders: AssignmentTurnedInIcon,
+  contract: CandlestickChart,
+  pending: Timer,
+  autoTrade: ScrollText,
+  lifecycle: Waypoints,
+  okxOrders: ListChecks,
 };
 
-export const AppLayout = (props: Parameters<typeof Layout>[0]) => (
-  <>
-    <Layout {...props} menu={AppMenu} appBar={TradingAppBar} sidebar={TradingSidebar} appBarAlwaysOn sx={{
-      minWidth: 0,
-      minHeight: '100dvh',
-      '& .RaLayout-appFrame': {
-        mt: `calc(${appBarHeight}px + ${safeArea.top})`,
-        pl: safeArea.left,
-        pr: safeArea.right,
-      },
-      '& .RaLayout-contentWithSidebar': { minWidth: 0 },
-      '& .RaLayout-content': {
-        minWidth: 0,
-        px: 0,
-        pb: { xs: `calc(${mobileNavHeight}px + ${safeArea.bottom})`, md: safeArea.bottom },
-      },
-      '& .RaSidebar-fixed': {
-        height: `calc(100dvh - ${appBarHeight}px - ${safeArea.top})`,
-        bgcolor: 'background.paper',
-        borderRight: 1,
-        borderColor: 'divider',
-        overflowY: 'auto',
-      },
-      '& .RaSidebar-closed .RaMenuItemLink-root': { px: 1.5, mx: 0 },
-    }} />
-    <MobileBottomNavigation />
-  </>
-);
+export function AppLayout({ children }: { children?: ReactNode }) {
+  const [drawer, setDrawer] = useState(false);
+  return (
+    <div className="min-h-dvh bg-canvas text-ink">
+      <div className="md:grid md:grid-cols-[228px_minmax(0,1fr)]">
+        <div className="sticky top-0 hidden h-dvh overflow-y-auto md:block">
+          <Sidebar />
+        </div>
+        <div className="min-w-0 pb-20 md:pb-0">
+          <header className="sticky top-0 z-20 flex h-[52px] items-center justify-end gap-3 border-b border-line bg-canvas/90 px-4 backdrop-blur sm:gap-4 sm:px-8 md:px-9">
+            <button type="button" className="mr-auto text-[13px] font-semibold md:hidden" onClick={() => setDrawer(true)}>Quant Desk</button>
+            <RuntimeStatusBar />
+            <LanguageSwitch />
+            <ThemeToggle />
+            <UserMenu />
+          </header>
+          {children}
+        </div>
+      </div>
+      {drawer ? (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <button type="button" className="absolute inset-0 bg-[var(--overlay)]" aria-label={t('关闭')} onClick={() => setDrawer(false)} />
+          <div className="absolute inset-y-0 left-0 w-[260px] overflow-auto bg-canvas">
+            <Sidebar onNavigate={() => setDrawer(false)} />
+          </div>
+        </div>
+      ) : null}
+      <MobileNav />
+    </div>
+  );
+}

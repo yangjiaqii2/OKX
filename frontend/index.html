@@ -3,7 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Quant Assistant Admin</title>
+    <meta name="theme-color" content="#F4F6F9" />
+    <title>Quant Desk</title>
+    <script>
+      try {
+        if (localStorage.getItem('quant-desk.theme') === 'dark') {
+          document.documentElement.classList.add('dark');
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#13151B');
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

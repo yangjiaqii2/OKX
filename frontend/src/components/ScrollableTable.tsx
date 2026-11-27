@@ -1,8 +1,5 @@
-import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
-import { Box, Stack, Table, TableContainer, Typography } from '@mui/material';
-import { useEffect, useId, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
-import { colors } from '../designTokens';
+import { ArrowLeftRight } from 'lucide-react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { t, useLanguage } from '../i18n';
 
 export function ScrollableTable({ label, children }: { label: string; children: ReactNode }) {
@@ -23,36 +20,25 @@ export function ScrollableTable({ label, children }: { label: string; children: 
   }, []);
 
   return (
-    <Box sx={{ minWidth: 0 }}>
+    <div className="min-w-0">
       {overflowing ? (
-        <Stack id={hintId} direction="row" alignItems="center" gap={0.5} sx={{ px: 2, py: 1, color: 'text.secondary' }}>
-          <SwapHorizIcon fontSize="small" aria-hidden />
-          <Typography variant="caption">{t("横向滚动查看更多")}</Typography>
-        </Stack>
+        <p id={hintId} className="mb-1 flex items-center gap-1.5 text-[12px] text-muted">
+          <ArrowLeftRight size={14} aria-hidden />
+          {t('横向滚动查看更多')}
+        </p>
       ) : null}
-      <TableContainer
+      <div
         ref={region}
         role="region"
         aria-label={label}
         aria-describedby={overflowing ? hintId : undefined}
         tabIndex={0}
-        sx={{
-          width: '100%',
-          maxHeight: 'min(64dvh, 640px)',
-          overflow: 'auto',
-          '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
-        }}
+        className="max-h-[min(64dvh,640px)] w-full overflow-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
       >
-        <Table ref={table} size="small" stickyHeader sx={{
-          width: 'max-content',
-          minWidth: '100%',
-          '& .MuiTableCell-body': { maxWidth: 320, overflowWrap: 'anywhere' },
-          '& tbody tr:nth-of-type(even)': { bgcolor: colors.subtle },
-          '& tbody tr:hover': { bgcolor: 'action.selected' },
-        }}>
+        <table ref={table} className="w-max min-w-full border-collapse">
           {children}
-        </Table>
-      </TableContainer>
-    </Box>
+        </table>
+      </div>
+    </div>
   );
 }
