@@ -11,12 +11,7 @@ public final class PositionSideMatcher {
         if (position == null || instId == null || !instId.equalsIgnoreCase(position.instId())) {
             return false;
         }
-        BigDecimal size;
-        try {
-            size = new BigDecimal(position.size());
-        } catch (RuntimeException ex) {
-            throw new IllegalStateException("POSITION_SIZE_UNAVAILABLE: " + instId, ex);
-        }
+        BigDecimal size = signedSize(instId, position.size());
         if (size.signum() == 0) return false;
         String actual;
         if ("net".equalsIgnoreCase(position.posSide())) {
@@ -28,6 +23,14 @@ public final class PositionSideMatcher {
         }
         String expected = entryDirection(posSide, entrySide);
         return expected == null || expected.equalsIgnoreCase(actual);
+    }
+
+    static BigDecimal signedSize(String instId, String value) {
+        try {
+            return new BigDecimal(value);
+        } catch (NumberFormatException | NullPointerException ex) {
+            throw new IllegalStateException("POSITION_SIZE_UNAVAILABLE: " + instId, ex);
+        }
     }
 
     public static String entryDirection(String posSide, String entrySide) {

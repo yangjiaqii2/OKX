@@ -40,25 +40,31 @@ public class AuthSessionService {
         cleanupExpired();
         String token = newToken();
         Instant expiresAt = clock.instant().plusSeconds(authProperties.effectiveSessionTtlMinutes() * 60L);
-        sessions.put(token, new Session(user.getUsername(), user.getRole(), expiresAt));
+        sessions.put(token, new Session(user.getUsername(), expiresAt));
         return new AuthSessionResponse(true, token, user.getUsername(), expiresAt.toEpochMilli(), user.getRole().name());
     }
 
     public AuthSessionResponse session(String token) {
-        Session session = validSession(token);
+        Session session = unexpiredSession(token);
         if (session == null) {
             return AuthSessionResponse.unauthenticated();
         }
-        return new AuthSessionResponse(true, token, session.username(), session.expiresAt().toEpochMilli(), session.role().name());
+        return enabledUser(token, session)
+                .map(user -> new AuthSessionResponse(true, token, session.username(), session.expiresAt().toEpochMilli(), user.getRole().name()))
+                .orElseGet(AuthSessionResponse::unauthenticated);
     }
 
     public boolean isAuthenticated(String token) {
-        return validSession(token) != null;
+        return currentUser(token).isPresent();
     }
 
     public Optional<String> currentUsername(String token) {
-        Session session = validSession(token);
-        return session == null ? Optional.empty() : Optional.of(session.username());
+        return currentUser(token).map(AuthUserEntity::getUsername);
+    }
+
+    Optional<AuthUserEntity> currentUser(String token) {
+        Session session = unexpiredSession(token);
+        return session == null ? Optional.empty() : enabledUser(token, session);
     }
 
     public void logout(String token) {
@@ -67,7 +73,7 @@ public class AuthSessionService {
         }
     }
 
-    private Session validSession(String token) {
+    private Session unexpiredSession(String token) {
         if (token == null || token.isBlank()) {
             return null;
         }
@@ -79,11 +85,15 @@ public class AuthSessionService {
             sessions.remove(token);
             return null;
         }
-        if (authUserService.findEnabledUser(session.username()).isEmpty()) {
-            sessions.remove(token);
-            return null;
-        }
         return session;
+    }
+
+    private Optional<AuthUserEntity> enabledUser(String token, Session session) {
+        Optional<AuthUserEntity> user = authUserService.findEnabledUser(session.username());
+        if (user.isEmpty()) {
+            sessions.remove(token);
+        }
+        return user;
     }
 
     private void cleanupExpired() {
@@ -102,6 +112,6 @@ public class AuthSessionService {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
-    private record Session(String username, AuthRole role, Instant expiresAt) {
+    private record Session(String username, Instant expiresAt) {
     }
 }

@@ -26,13 +26,13 @@ public class AuthInterceptor implements HandlerInterceptor {
         String token = bearerToken(request.getHeader(HttpHeaders.AUTHORIZATION));
         Optional<String> username;
         if (handler instanceof HandlerMethod method && method.hasMethodAnnotation(AdminOnly.class)) {
-            AuthSessionResponse session = authSessionService.session(token);
-            if (session.authenticated() && !AuthRole.ADMIN.name().equals(session.role())) {
+            Optional<AuthUserEntity> user = authSessionService.currentUser(token);
+            if (user.isPresent() && user.orElseThrow().getRole() != AuthRole.ADMIN) {
                 AuthUserContext.clear();
                 response.setStatus(HttpStatus.FORBIDDEN.value());
                 return false;
             }
-            username = session.authenticated() ? Optional.of(session.username()) : Optional.empty();
+            username = user.map(AuthUserEntity::getUsername);
         } else {
             username = authSessionService.currentUsername(token);
         }

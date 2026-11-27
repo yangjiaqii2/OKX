@@ -29,6 +29,10 @@ const unavailable: RuntimeStatus = {
   tradingEngine: 'UNKNOWN',
 };
 
+const tradableEngineStates = ['READY', 'MANUAL_CONFIRM', 'AUTO_ENABLED'];
+const failedStates = ['ERROR', 'EMERGENCY_STOP', 'BLOCKED', 'FAILED'];
+const limitedEngineStates = ['DISABLED', 'INITIALIZING', 'RECOVERING', 'DEGRADED', 'SHADOW_ONLY'];
+
 export function RuntimeStatusBar() {
   useLanguage();
   const [status, setStatus] = useState<RuntimeStatus>(unavailable);
@@ -36,8 +40,9 @@ export function RuntimeStatusBar() {
   const needsAttention = (status.unknownOrders ?? 0) > 0
     || (status.unmanagedPositions ?? 0) > 0
     || status.okxRest === 'ERROR'
-    || ['ERROR', 'EMERGENCY_STOP', 'BLOCKED', 'FAILED'].includes(status.tradingEngine);
-  const healthy = !needsAttention && ['READY', 'AUTO_RUNNING'].includes(status.tradingEngine);
+    || failedStates.includes(status.tradingEngine)
+    || status.tradingEngine === 'DEGRADED';
+  const healthy = !needsAttention && tradableEngineStates.includes(status.tradingEngine);
   const engineLabel = displayValue(status.tradingEngine);
   const summary = healthy ? t('运行正常') : needsAttention ? `${engineLabel} · ${t('运行异常')}` : engineLabel;
 
@@ -106,9 +111,9 @@ export function RuntimeStatusBar() {
 
 function RuntimeItem({ label, value, reason, danger = false }: { label: string; value: string; reason?: string; danger?: boolean }) {
   useLanguage();
-  const bad = danger || ['ERROR', 'EMERGENCY_STOP', 'BLOCKED', 'FAILED'].includes(value);
-  const good = ['CONNECTED', 'AUTO_RUNNING', 'AUTO_ENABLED', 'READY', 'RECENT_WINDOW_SYNCED'].includes(value);
-  const warn = ['NOT_IMPLEMENTED', 'UNBOUND', 'UNKNOWN', 'DEGRADED', 'RECONNECTING', 'AUTO_DISABLED_BY_CONFIG', 'SHADOW_RUNNING', 'SHADOW_ONLY'].includes(value);
+  const bad = danger || failedStates.includes(value);
+  const good = tradableEngineStates.includes(value) || ['CONNECTED', 'AUTO_RUNNING', 'RECENT_WINDOW_SYNCED'].includes(value);
+  const warn = limitedEngineStates.includes(value) || ['NOT_IMPLEMENTED', 'UNBOUND', 'UNKNOWN', 'RECONNECTING', 'AUTO_DISABLED_BY_CONFIG', 'SHADOW_RUNNING'].includes(value);
   const color = bad ? 'text-down' : good ? 'text-up' : warn ? 'text-warning' : 'text-muted';
   return (
     <p className="flex items-baseline gap-2 text-[12px] leading-5 text-muted">

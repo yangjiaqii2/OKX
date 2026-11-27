@@ -15,9 +15,10 @@ type DashboardState = {
   risk?: Record<string, unknown>;
   account?: Record<string, unknown>;
   profit?: Record<string, unknown>;
-  contracts: unknown[];
-  orders: unknown[];
-  positions: Record<string, unknown>[];
+  contracts?: Record<string, unknown>[];
+  orders?: Record<string, unknown>[];
+  positions?: Record<string, unknown>[];
+  coreDataError?: boolean;
   positionsError?: string;
   contractsError?: string;
   ordersError?: string;
@@ -31,7 +32,7 @@ export function Dashboard() {
   const notify = useNotify();
   const [loading, setLoading] = useState(true);
   const [assetCurrency, setAssetCurrency] = useState<'USDT' | 'RMB'>('USDT');
-  const [state, setState] = useState<DashboardState>({ contracts: [], orders: [], positions: [] });
+  const [state, setState] = useState<DashboardState>({});
 
   const loadRunning = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -51,7 +52,7 @@ export function Dashboard() {
         quantApi.positions(),
       ]);
       const positionData = positionResult.status === 'fulfilled' ? positionResult.value : undefined;
-      const positions = Array.isArray(positionData) ? openPositions(positionData) : [];
+      const positions = Array.isArray(positionData) ? openPositions(positionData) : undefined;
       const positionsError = positionResult.status === 'rejected'
         ? (positionResult.reason instanceof Error ? positionResult.reason.message : t('持仓接口调用失败'))
         : Array.isArray(positionData) ? '' : t('持仓响应格式异常');
@@ -68,24 +69,22 @@ export function Dashboard() {
         ? (fxRateResult.reason instanceof Error ? fxRateResult.reason.message : t('汇率加载失败'))
         : '';
       const fxRate = fxRateResult.status === 'fulfilled' ? fxRateResult.value as Record<string, unknown> : undefined;
-      if (fxRateError || !Number.isFinite(Number(fxRate?.rate)) || Number(fxRate?.rate) <= 0) setAssetCurrency('USDT');
-      setState({
-        risk: riskResult.status === 'fulfilled' ? riskResult.value as Record<string, unknown> : {},
-        account: accountResult.status === 'fulfilled' ? accountResult.value as Record<string, unknown> : {},
-        profit: profitResult.status === 'fulfilled' ? profitResult.value as Record<string, unknown> : {},
-        fxRate,
-        contracts: contractResult.status === 'fulfilled' && Array.isArray(contractResult.value) ? contractResult.value : [],
-        orders: orderResult.status === 'fulfilled' && Array.isArray(orderResult.value) ? orderResult.value : [],
-        positions,
+      if (fxRateResult.status === 'fulfilled' && (!Number.isFinite(Number(fxRate?.rate)) || Number(fxRate?.rate) <= 0)) setAssetCurrency('USDT');
+      setState((previous) => ({
+        risk: riskResult.status === 'fulfilled' ? riskResult.value as Record<string, unknown> : previous.risk,
+        account: accountResult.status === 'fulfilled' ? accountResult.value as Record<string, unknown> : previous.account,
+        profit: profitResult.status === 'fulfilled' ? profitResult.value as Record<string, unknown> : previous.profit,
+        fxRate: fxRateResult.status === 'fulfilled' ? fxRate : previous.fxRate,
+        contracts: contractResult.status === 'fulfilled' && Array.isArray(contractResult.value) ? contractResult.value : previous.contracts,
+        orders: orderResult.status === 'fulfilled' && Array.isArray(orderResult.value) ? orderResult.value : previous.orders,
+        positions: positions ?? previous.positions,
+        coreDataError: riskResult.status === 'rejected' || accountResult.status === 'rejected',
         positionsError,
         contractsError,
         ordersError,
         profitError,
         fxRateError,
-      });
-      if (source !== 'poll' && (riskResult.status === 'rejected' || accountResult.status === 'rejected')) {
-        notify(t('核心账户或风控数据加载失败，请检查后端服务。'), { type: 'warning' });
-      }
+      }));
     } catch (error) {
       if (source !== 'poll') notify(error instanceof Error ? error.message : t('加载总览失败'), { type: 'error' });
     } finally {
@@ -128,9 +127,9 @@ export function Dashboard() {
   const accountMode = String(state.account?.mode ?? 'UNKNOWN');
   const balanceAvailable = hasAccountBalance(accountMode);
   const availableBalance = state.account?.availableBalance;
-  const positionCount = state.positionsError || accountMode === 'OKX_UNBOUND' ? null : state.positions.length;
-  const pendingCount = state.ordersError ? null : state.orders.length;
-  const topContracts = state.contracts.slice(0, 4) as Record<string, unknown>[];
+  const positionCount = accountMode === 'OKX_UNBOUND' ? null : state.positions?.length;
+  const pendingCount = state.orders?.length;
+  const topContracts = state.contracts?.slice(0, 4) ?? [];
   const fxRateAvailable = Number.isFinite(Number(state.fxRate?.rate)) && Number(state.fxRate?.rate) > 0;
   const formatAsset = (value: unknown) => formatAssetMoney(value, assetCurrency, state.fxRate);
   const unrealizedPnl = state.profit?.unrealizedPnlUsdt;
@@ -169,11 +168,12 @@ export function Dashboard() {
       />
 
       <div className="mt-4 space-y-2">
+        {state.coreDataError ? <Alert severity="warning">{t('核心账户或风控数据加载失败，请检查后端服务。')}</Alert> : null}
         {accountMode === 'OKX_ERROR' ? <Alert severity="error">{t('OKX账户接口异常：')}{String(state.account?.message ?? '')}</Alert> : null}
         {state.contractsError ? <Alert severity="warning">{t('OKX合约机会池暂不可用：')}{state.contractsError}</Alert> : null}
         {state.ordersError ? <Alert severity="warning">{t('待确认订单暂不可用：')}{state.ordersError}</Alert> : null}
         {state.profitError ? <Alert severity="warning">{t('自动交易收益暂不可用：')}{state.profitError}</Alert> : null}
-        {state.fxRateError ? <Alert severity="warning">{t('人民币汇率不可用，已回退 USDT：')}{state.fxRateError}</Alert> : null}
+        {state.fxRateError ? <Alert severity="warning">{fxRateAvailable ? `${t('人民币（估算）')} · ` : t('人民币汇率不可用，已回退 USDT：')}{state.fxRateError}</Alert> : null}
         {assetCurrency === 'RMB' && fxRateAvailable ? (
           <Alert severity="info">
             {t('人民币估算采用')} {String(state.fxRate?.source ?? 'CONFIGURED')} {t('汇率 USD/CNY=')}{formatNumber(state.fxRate?.rate, 4)}
@@ -217,20 +217,21 @@ export function Dashboard() {
         <Mini label={t('交易手续费')} value={formatAsset(state.profit?.tradingFeesUsdt)} color={pnlColor(state.profit?.tradingFeesUsdt)} />
         <Mini label={t('资金费')} value={formatAsset(state.profit?.fundingUsdt)} color={pnlColor(state.profit?.fundingUsdt)} />
         <Mini label={t('预算收益率')} value={formatPercent(state.profit?.budgetRoiPct)} />
-        <Mini label={t('合约机会')} value={state.contractsError ? t('不可用') : String(state.contracts.length)} />
+        <Mini label={t('合约机会')} value={state.contracts ? String(state.contracts.length) : t('不可用')} />
         <Mini label={t('自动交易净 PnL')} value={state.profit?.totalNetPnlUsdt == null ? t('不可用') : formatAsset(state.profit.totalNetPnlUsdt)} color={pnlColor(state.profit?.totalNetPnlUsdt)} />
       </div>
 
       <section className="mt-8">
         <h2 className="mb-2.5 text-[13px] font-semibold">{t('持仓与PnL')}</h2>
-        {state.positionsError ? <Alert severity="error">{t('持仓接口调用失败：')}{state.positionsError}</Alert> : <PositionSnapshotTable positions={state.positions} />}
+        {state.positionsError ? <Alert severity="error">{t('持仓接口调用失败：')}{state.positionsError}</Alert> : null}
+        {state.positions ? <PositionSnapshotTable positions={state.positions} /> : null}
       </section>
 
       <section className="mt-8">
         <h2 className="mb-2.5 text-[13px] font-semibold">{t('待处理动作')}</h2>
         {pendingCount == null ? <p className="text-[13px] text-muted">{t('待确认订单不可用。')}</p> : pendingCount === 0 ? <p className="text-[13px] text-muted">{t('当前没有待确认订单。')}</p> : (
           <div className="max-w-[640px]">
-            {(state.orders as Record<string, unknown>[]).slice(0, 5).map((order) => (
+            {state.orders?.slice(0, 5).map((order) => (
               <Link key={String(order.id)} to="/pendingOrders" className="grid grid-cols-[minmax(0,180px)_88px_1fr] gap-3 border-t border-line py-2.5 text-[13px] hover:bg-sunken">
                 <b className="font-semibold tracking-[-0.015em]">{String(order.instId ?? '-')}</b>
                 <span className="text-muted">{formatStatus(order.status)}</span>
@@ -244,7 +245,7 @@ export function Dashboard() {
       <section className="mt-8">
         <h2 className="mb-2.5 text-[13px] font-semibold">{t('OKX机会池')}</h2>
         {topContracts.length === 0 ? (
-          <p className="text-[13px] text-muted">{state.contractsError ? t('合约机会数据不可用。') : t('暂无合约机会。可以在 OKX合约 页面刷新扫描。')}</p>
+          <p className="text-[13px] text-muted">{state.contracts ? t('暂无合约机会。可以在 OKX合约 页面刷新扫描。') : t('合约机会数据不可用。')}</p>
         ) : (
           <div className="max-w-[760px]">
             {topContracts.map((contract) => (

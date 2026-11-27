@@ -98,7 +98,7 @@ public class PositionCloseService {
         }
         PositionSummary position = matching.get(0);
         String closePosSide = "net".equalsIgnoreCase(position.posSide())
-                ? (new BigDecimal(position.size()).signum() < 0 ? "short" : "long")
+                ? (PositionSideMatcher.signedSize(instId, position.size()).signum() < 0 ? "short" : "long")
                 : position.posSide();
         String closeMarginMode = marginModeOrCross(position);
         rejectDuplicateUnresolvedClose(position, closeMarginMode);
