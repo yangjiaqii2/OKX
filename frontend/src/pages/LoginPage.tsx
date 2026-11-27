@@ -1,43 +1,33 @@
-import LockIcon from '@mui/icons-material/Lock';
-import LoginIcon from '@mui/icons-material/Login';
-import VisibilityIcon from '@mui/icons-material/Visibility';
-import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
-import {
-  Alert,
-  Box,
-  Button,
-  CircularProgress,
-  IconButton,
-  InputAdornment,
-  Paper,
-  Stack,
-  TextField,
-  Typography,
-} from '@mui/material';
+import { useReducedMotion } from 'motion/react';
+import { motion } from 'motion/react';
 import { FormEvent, useState } from 'react';
 import { useLogin, useNotify } from 'react-admin';
-import { colors, elevation, safeArea } from '../designTokens';
 import { LanguageSwitch } from '../components/LanguageSwitch';
+import { ThemeToggle } from '../components/ThemeToggle';
+import { Button } from '../components/ui/button';
+import { Field, Input } from '../components/ui/field';
 import { t, useLanguage } from '../i18n';
 
 export function LoginPage() {
   useLanguage();
+  const reduce = useReducedMotion();
   const login = useLogin();
   const notify = useNotify();
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({ username: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
+  const [form, setForm] = useState({ username: '', password: '' });
+  const [touched, setTouched] = useState({ username: false, password: false });
   const [errorMessage, setErrorMessage] = useState('');
+
+  const usernameError = touched.username && !form.username.trim() ? t('请输入账号') : '';
+  const passwordError = touched.password && !form.password ? t('请输入密码') : '';
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setTouched({ username: true, password: true });
     const username = form.username.trim();
-    if (!username) {
-      setErrorMessage('请输入账号');
-      return;
-    }
-    if (!form.password) {
-      setErrorMessage('请输入密码');
+    if (!username || !form.password) {
+      setErrorMessage(!username ? '请输入账号' : '请输入密码');
       return;
     }
     setSubmitting(true);
@@ -48,143 +38,87 @@ export function LoginPage() {
       const message = error instanceof Error ? error.message : '账号或密码错误';
       setErrorMessage(message || '账号或密码错误');
       setForm((current) => ({ ...current, password: '' }));
-      notify(message || t("登录失败"), { type: 'error' });
+      notify(message || t('登录失败'), { type: 'error' });
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <Box
-      sx={{
-        minHeight: '100dvh',
-        bgcolor: 'background.default',
-        backgroundImage: `radial-gradient(ellipse at 15% 0%, ${colors.primarySoft}, transparent 68%)`,
-        display: 'grid',
-        placeItems: 'center',
-        pt: `calc(24px + ${safeArea.top})`,
-        pb: `calc(24px + ${safeArea.bottom})`,
-        pl: `calc(16px + ${safeArea.left})`,
-        pr: `calc(16px + ${safeArea.right})`,
-      }}
-    >
-      <Paper
-        component="form"
-        onSubmit={(event) => void submit(event)}
-        sx={{
-          width: '100%',
-          maxWidth: 880,
-          display: 'grid',
-          gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'minmax(0, 1fr) minmax(0, 1fr)' },
-          overflow: 'hidden',
-          border: 1,
-          borderColor: 'divider',
-          bgcolor: 'background.paper',
-          boxShadow: elevation.overlay,
-          overflowWrap: 'anywhere',
-        }}
-      >
-        <Stack
-          spacing={3}
-          sx={{
-            p: { xs: 3, md: 5 },
-            borderRight: { md: 1 },
-            borderBottom: { xs: 1, md: 0 },
-            borderColor: 'divider',
-            bgcolor: colors.primarySoft,
-            justifyContent: 'center',
-          }}
+    <div className="flex min-h-dvh flex-col bg-canvas px-6 py-8 text-ink sm:px-16 lg:px-20">
+      <div className="flex items-center justify-end gap-3">
+        <ThemeToggle />
+        <LanguageSwitch />
+      </div>
+      <div className="flex flex-1 items-center">
+        <motion.div
+          className="grid w-full items-center gap-12 lg:grid-cols-[400px_minmax(0,1fr)] lg:gap-32"
+          initial={reduce ? false : { opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
         >
-          <Stack direction="row" spacing={1.5} alignItems="center">
-            <Box
-              sx={{
-                width: 40,
-                height: 40,
-                borderRadius: 1,
-                display: 'grid',
-                placeItems: 'center',
-                bgcolor: 'primary.main',
-                color: 'primary.contrastText',
-                flexShrink: 0,
-              }}
-            >
-              <LockIcon fontSize="small" />
-            </Box>
-            <Box>
-              <Typography variant="h5">
-                Quant Desk
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                {t("OKX 量化交易终端")}
-              </Typography>
-            </Box>
-          </Stack>
-
-          <Box>
-            <Typography variant="h4" sx={{ mb: 1, fontSize: { xs: '1.375rem', md: '1.75rem' } }}>
-              {t("登录后管理交易系统")}
-            </Typography>
-            <Typography color="text.secondary" sx={{ lineHeight: 1.7 }}>
-              {t("账号已改为数据库用户体系，密码以 PBKDF2 哈希保存。首次进入后可在“账号安全”里修改管理员密码。")}
-            </Typography>
-          </Box>
-        </Stack>
-
-        <Stack spacing={3} sx={{ p: { xs: 3, md: 5 } }}>
-          <Box>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-              <Typography component="h1" variant="h5">
-                {t("用户登录")}
-              </Typography>
-              <LanguageSwitch />
-            </Stack>
-            <Typography variant="body2" color="text.secondary">
-              {t("使用已创建的系统账号进入控制台。")}
-            </Typography>
-          </Box>
-
-          {errorMessage ? <Alert severity="error">{t(errorMessage)}</Alert> : null}
-
-          <TextField
-            required
-            label={t("用户名")}
-            value={form.username}
-            autoComplete="username"
-            onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))}
-          />
-          <TextField
-            required
-            label={t("密码")}
-            type={showPassword ? 'text' : 'password'}
-            value={form.password}
-            autoComplete="current-password"
-            onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
-            InputProps={{
-              endAdornment: (
-                <InputAdornment position="end">
-                  <IconButton
-                    aria-label={showPassword ? t("隐藏密码") : t("显示密码")}
-                    edge="end"
+          <div>
+            <div className="mb-7 flex items-center gap-2.5">
+              <i className="size-2.5 rounded-[3px] bg-accent" />
+              <b className="text-[15px] font-semibold tracking-[-0.024em]">Quant Desk</b>
+            </div>
+            <h1 className="text-[36px] font-semibold leading-[44px] tracking-[-0.03em]">{t('登录')}</h1>
+            <p className="mt-2 max-w-[360px] text-[15px] leading-6 text-muted">{t('使用已创建的系统账号进入控制台。')}</p>
+            <form className="mt-7" onSubmit={(event) => void submit(event)} noValidate>
+              {errorMessage ? <p className="mb-4 text-[13px] leading-5 text-down" role="alert">{t(errorMessage)}</p> : null}
+              <Field label={t('用户名')} error={usernameError}>
+                <Input
+                  required
+                  name="username"
+                  autoComplete="username"
+                  autoFocus
+                  value={form.username}
+                  disabled={submitting}
+                  aria-invalid={Boolean(usernameError)}
+                  onBlur={() => setTouched((current) => ({ ...current, username: true }))}
+                  onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))}
+                />
+              </Field>
+              <Field className="mt-4" label={t('密码')} error={passwordError}>
+                <div className="relative">
+                  <Input
+                    required
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={form.password}
+                    disabled={submitting}
+                    aria-invalid={Boolean(passwordError)}
+                    className="pr-16"
+                    onBlur={() => setTouched((current) => ({ ...current, password: true }))}
+                    onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[13px] font-medium text-muted"
+                    aria-label={showPassword ? t('隐藏密码') : t('显示密码')}
                     onClick={() => setShowPassword((value) => !value)}
                   >
-                    {showPassword ? <VisibilityOffIcon /> : <VisibilityIcon />}
-                  </IconButton>
-                </InputAdornment>
-              ),
-            }}
-          />
-          <Button
-            type="submit"
-            variant="contained"
-            size="large"
-            startIcon={submitting ? <CircularProgress size={16} color="inherit" /> : <LoginIcon />}
-            disabled={submitting}
-            sx={{ minHeight: 48 }}
-          >
-            {submitting ? t("登录中...") : t("登录")}
-          </Button>
-        </Stack>
-      </Paper>
-    </Box>
+                    {showPassword ? t('隐藏密码') : t('显示密码')}
+                  </button>
+                </div>
+              </Field>
+              <Button className="mt-5 w-full" variant="primary" size="md" type="submit" disabled={submitting}>
+                {submitting ? t('登录中...') : t('登录')}
+              </Button>
+            </form>
+            <p className="mt-3.5 text-[13px] leading-5 text-muted">{t('凭据经安全哈希保存。登录后可在账号安全中修改密码。')}</p>
+          </div>
+          <div className="max-w-[520px]">
+            <h2 className="text-[40px] font-semibold leading-[52px] tracking-[-0.035em] sm:text-[56px] sm:leading-[68px]">
+              {t('账户与风控')}<br />{t('优先于下单')}
+            </h2>
+            <p className="mt-5 max-w-[420px] text-[16px] leading-[26px] text-muted">
+              {t('确认订单之前，先核对权益、可用余额和风控状态。实盘与模拟使用同一套控制台。')}
+            </p>
+          </div>
+        </motion.div>
+      </div>
+    </div>
   );
 }

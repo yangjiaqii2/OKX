@@ -1,10 +1,10 @@
-import { Box, CircularProgress } from '@mui/material';
 import { lazy, Suspense } from 'react';
 import { Admin, CustomRoutes, Resource } from 'react-admin';
 import { Route } from 'react-router-dom';
 import { quantDataProvider } from './api/quantDataProvider';
 import { authProvider } from './api/authProvider';
-import { AppLayout, appIcons } from './layout';
+import { AppNotification } from './components/AppNotification';
+import { appIcons, AppLayout } from './layout';
 import { Dashboard } from './pages/Dashboard';
 import { LoginPage } from './pages/LoginPage';
 import { theme } from './theme';
@@ -25,62 +25,33 @@ const PositionsPage = lazy(() => import('./pages/PositionsPage').then((module) =
 export default function App() {
   const i18nProvider = useAdminI18n();
   return (
-    <Suspense fallback={<Box display="grid" minHeight="100vh" sx={{ placeItems: 'center' }}><CircularProgress size={28} /></Box>}>
-    <Admin
-      title={t('量化交易终端')}
-      dataProvider={quantDataProvider}
-      authProvider={authProvider}
-      i18nProvider={i18nProvider}
-      dashboard={Dashboard}
-      loginPage={LoginPage}
-      layout={AppLayout}
-      theme={theme}
-      requireAuth
-    >
-      <Resource
-        name="contractCandidates"
-        list={ContractCandidateList}
-        icon={appIcons.contract}
-        options={{ label: t("OKX合约") }}
-      />
-      <Resource
-        name="pendingOrders"
-        list={PendingOrderList}
-        icon={appIcons.pending}
-        options={{ label: t("待确认订单") }}
-      />
-      <Resource
-        name="autoTradeRecords"
-        list={AutoTradeRecordList}
-        icon={appIcons.autoTrade}
-        options={{ label: t("自动交易复盘") }}
-      />
-      <Resource
-        name="autoTradeLifecycle"
-        list={AutoTradeLifecycleList}
-        icon={appIcons.lifecycle}
-        options={{ label: t("交易生命周期") }}
-      />
-      <Resource
-        name="currentOkxOrders"
-        list={CurrentOkxOrderList}
-        icon={appIcons.okxOrders}
-        options={{ label: t("当前委托/保护单") }}
-      />
-      <Resource
-        name="closePositionRecords"
-        list={ClosePositionRecordList}
-        icon={appIcons.pending}
-        options={{ label: t("平仓记录") }}
-      />
-      <CustomRoutes>
-        <Route path="/account-binding" element={<AccountBindingPage />} />
-        <Route path="/account-risk" element={<AccountRiskPage />} />
-        <Route path="/security" element={<SecurityPage />} />
-        <Route path="/system-control" element={<SystemControlPage />} />
-        <Route path="/positions" element={<PositionsPage />} />
-      </CustomRoutes>
-    </Admin>
+    <Suspense fallback={<div className="grid min-h-dvh place-items-center bg-canvas"><div className="size-5 animate-spin rounded-full border-2 border-line-strong border-t-accent" /></div>}>
+      <Admin
+        title={t('量化交易终端')}
+        dataProvider={quantDataProvider}
+        authProvider={authProvider}
+        i18nProvider={i18nProvider}
+        dashboard={Dashboard}
+        loginPage={LoginPage}
+        layout={AppLayout}
+        notification={AppNotification}
+        theme={theme}
+        requireAuth
+      >
+        <Resource name="contractCandidates" list={ContractCandidateList} icon={appIcons.contract} options={{ label: t('OKX合约') }} />
+        <Resource name="pendingOrders" list={PendingOrderList} icon={appIcons.pending} options={{ label: t('待确认订单') }} />
+        <Resource name="autoTradeRecords" list={AutoTradeRecordList} icon={appIcons.autoTrade} options={{ label: t('自动交易复盘') }} />
+        <Resource name="autoTradeLifecycle" list={AutoTradeLifecycleList} icon={appIcons.lifecycle} options={{ label: t('交易生命周期') }} />
+        <Resource name="currentOkxOrders" list={CurrentOkxOrderList} icon={appIcons.okxOrders} options={{ label: t('当前委托/保护单') }} />
+        <Resource name="closePositionRecords" list={ClosePositionRecordList} icon={appIcons.pending} options={{ label: t('平仓记录') }} />
+        <CustomRoutes>
+          <Route path="/account-binding" element={<AccountBindingPage />} />
+          <Route path="/account-risk" element={<AccountRiskPage />} />
+          <Route path="/security" element={<SecurityPage />} />
+          <Route path="/system-control" element={<SystemControlPage />} />
+          <Route path="/positions" element={<PositionsPage />} />
+        </CustomRoutes>
+      </Admin>
     </Suspense>
   );
 }

@@ -1,30 +1,20 @@
-import InboxOutlinedIcon from '@mui/icons-material/InboxOutlined';
-import { Box, CircularProgress, Stack, Typography } from '@mui/material';
-import type { SxProps, Theme } from '@mui/material/styles';
+import { Inbox } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { t, useLanguage } from '../i18n';
+import { cn } from '../lib/cn';
 
-type PanelStateProps = {
-  children?: ReactNode;
-  loading?: boolean;
-  sx?: SxProps<Theme>;
-};
-
-export function PanelState({ children, loading = false, sx = [] }: PanelStateProps) {
+export function PanelState({ children, loading = false, className }: { children?: ReactNode; loading?: boolean; className?: string }) {
   useLanguage();
   return (
-    <Stack alignItems="center" justifyContent="center" spacing={1} role="status" sx={[
-      { minHeight: 160, px: 2, py: 3, textAlign: 'center' },
-      ...(Array.isArray(sx) ? sx : [sx]),
-    ]}>
-      {loading ? <CircularProgress size={28} aria-label={t("加载中")} /> : (
-        <>
-          <Box sx={{ color: 'primary.main', bgcolor: 'action.selected', p: 1, borderRadius: 1, display: 'flex' }}>
-            <InboxOutlinedIcon fontSize="small" aria-hidden />
-          </Box>
-          <Typography variant="body2" color="text.secondary">{children}</Typography>
-        </>
+    <div role="status" className={cn('grid min-h-40 place-items-center px-4 py-8 text-center', className)}>
+      {loading ? (
+        <div className="size-5 animate-spin rounded-full border-2 border-line-strong border-t-accent" aria-label={t('加载中')} />
+      ) : (
+        <div className="max-w-md">
+          <Inbox className="mx-auto mb-2 text-accent" size={18} aria-hidden />
+          <p className="text-[13px] leading-5 text-muted">{children}</p>
+        </div>
       )}
-    </Stack>
+    </div>
   );
 }
