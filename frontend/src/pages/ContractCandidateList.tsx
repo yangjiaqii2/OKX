@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNotify } from 'react-admin';
+import { RefreshCw } from 'lucide-react';
 import { colors } from '../designTokens';
 import { quantApi } from '../api/quantApi';
-import { ClosePositionDialog } from '../components/ClosePositionDialog';
+import { ClosePositionButton, ClosePositionDialog, tradingModeLabel, useClosePosition } from '../components/ClosePositionDialog';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PanelState } from '../components/PanelState';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
 import { ScrollableTable } from '../components/ScrollableTable';
 import { Alert } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
+import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { Dialog, DialogContent } from '../components/ui/dialog';
 import { Input } from '../components/ui/field';
 import { TableBody, TableCell, TableHead, TableRow } from '../components/ui/table';
+import { openPositions, POLL_INTERVAL_MS, positionDirection } from '../displayData';
 import { positionKey } from '../components/PositionSnapshotTable';
 import { directionTone, formatAutoTradeReason, formatLeverage, formatNumber, formatPercent, formatPrice, formatSide, formatTrend, formatUSDT, formatVolume, pnlColor } from '../formatters';
 import { cn } from '../lib/cn';
@@ -19,8 +22,10 @@ import { getLanguage, t, useLanguage } from '../i18n';
 
 type ContractCandidate = Record<string, unknown>;
 type PositionRow = Record<string, unknown>;
-type CandidateWithPosition = ContractCandidate & { position?: PositionRow };
+type CandidateWithPosition = ContractCandidate & { positions: PositionRow[] };
 type Candle = { timestamp: string; open: number | string; high: number | string; low: number | string; close: number | string; volume: number | string };
+type LoadSection = 'contracts' | 'risk' | 'account' | 'orders' | 'positions' | 'selection';
+type PlanRequest = { candidate: ContractCandidate; recommended: boolean };
 type SortField = 'default' | 'price' | 'change';
 type SortDir = 'asc' | 'desc';
 const candlePeriods = [
@@ -38,124 +43,163 @@ export function ContractCandidateList() {
   const [positions, setPositions] = useState<PositionRow[]>([]);
   const [risk, setRisk] = useState<Record<string, unknown>>();
   const [account, setAccount] = useState<Record<string, unknown>>();
-  const [pendingCount, setPendingCount] = useState(0);
+  const [pendingCount, setPendingCount] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [planningInstId, setPlanningInstId] = useState('');
-  const [batchPlanning, setBatchPlanning] = useState(false);
+  const [planRequest, setPlanRequest] = useState<PlanRequest | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const planningRef = useRef(false);
+  const scanningRef = useRef(false);
   const [chartInstId, setChartInstId] = useState('');
-  const [closeDialogPosition, setCloseDialogPosition] = useState<PositionRow | null>(null);
-  const [closingKey, setClosingKey] = useState('');
-  const [error, setError] = useState('');
+  const [errors, setErrors] = useState<Partial<Record<LoadSection, string>>>({});
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [aiSelection, setAiSelection] = useState<Record<string, unknown>>();
   const [sortField, setSortField] = useState<SortField>('default');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
-  const loadRunning = useRef(false);
+  const inFlight = useRef<Promise<void> | null>(null);
+  const closePosition = useClosePosition(refreshAfterMutation);
 
-  async function load(silent = false) {
-    if (loadRunning.current) return;
-    loadRunning.current = true;
-    silent ? setRefreshing(true) : setLoading(true);
-    try {
-      const [contractData, riskData, accountData, orderData, positionData, selectionData] = await Promise.all([
-        quantApi.contractCandidates(),
-        quantApi.riskStatus(),
-        quantApi.accountSummary(),
-        quantApi.pendingOrders(),
-        quantApi.positions(),
-        quantApi.aiContractSelection(),
-      ]);
-      setContracts(Array.isArray(contractData) ? contractData as ContractCandidate[] : []);
-      setPositions(Array.isArray(positionData) ? positionData as PositionRow[] : []);
-      setRisk(riskData as Record<string, unknown>);
-      setAccount(accountData as Record<string, unknown>);
-      setPendingCount(Array.isArray(orderData) ? orderData.length : 0);
-      setAiSelection(selectionData as Record<string, unknown>);
-      setLastUpdatedAt(new Date());
-      setError('');
-    } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : t('合约数据加载失败');
-      setError(message);
-      if (!silent) notify(message, { type: 'error' });
-    } finally {
-      loadRunning.current = false;
+  function load() {
+    if (inFlight.current) return inFlight.current;
+    const request = loadSections().finally(() => {
+      inFlight.current = null;
       setLoading(false);
+    });
+    inFlight.current = request;
+    return request;
+  }
+
+  async function loadSections() {
+    const [contractData, riskData, accountData, orderData, positionData, selectionData] = await Promise.allSettled([
+      quantApi.contractCandidates(),
+      quantApi.riskStatus(),
+      quantApi.accountSummary(),
+      quantApi.pendingOrders(),
+      quantApi.positions(),
+      quantApi.aiContractSelection(),
+    ]);
+
+    const nextErrors: Partial<Record<LoadSection, string>> = {};
+    function apply<T>(section: LoadSection, result: PromiseSettledResult<unknown>, fallback: string, accept: (value: T) => void, array = false) {
+      if (result.status === 'rejected') {
+        nextErrors[section] = result.reason instanceof Error ? result.reason.message : fallback;
+      } else if (array ? Array.isArray(result.value) : result.value && typeof result.value === 'object' && !Array.isArray(result.value)) {
+        accept(result.value as T);
+      } else {
+        nextErrors[section] = fallback;
+      }
+    }
+    apply<ContractCandidate[]>('contracts', contractData, t('合约数据加载失败'), (value) => {
+      setContracts(value);
+      setLastUpdatedAt(new Date());
+    }, true);
+    apply<Record<string, unknown>>('risk', riskData, t('风控状态加载失败'), setRisk);
+    apply<Record<string, unknown>>('account', accountData, t('账户数据加载失败'), setAccount);
+    apply<unknown[]>('orders', orderData, t('待确认订单加载失败'), (value) => setPendingCount(value.length), true);
+    apply<PositionRow[]>('positions', positionData, t('持仓加载失败'), setPositions, true);
+    apply<Record<string, unknown>>('selection', selectionData, t('AI 选择加载失败'), setAiSelection);
+    setErrors(nextErrors);
+  }
+
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      await Promise.all([load(), closePosition.refreshMode()]);
+    } finally {
       setRefreshing(false);
     }
   }
 
-  async function createAiPlan(instId: string) {
-    setPlanningInstId(instId);
-    try {
-      const order = (await quantApi.createPendingOrder(instId)) as Record<string, unknown>;
-      notify(`${t('AI计划已创建：')}${String(order.instId)}${t('，请到待确认订单填写金额')}`, { type: 'success' });
-      await load(true);
-    } catch (planError) {
-      notify(planError instanceof Error ? formatAutoTradeReason(planError.message) : t('AI计划生成失败'), { type: 'error', multiLine: true });
-    } finally {
-      setPlanningInstId('');
-    }
+  async function refreshAfterMutation() {
+    // An active poll may have taken its snapshot before the mutation completed.
+    if (inFlight.current) await inFlight.current;
+    await load();
   }
 
-  async function confirmClosePosition() {
-    if (!closeDialogPosition) return;
-    const key = positionKey(closeDialogPosition);
-    setClosingKey(key);
-    try {
-      await quantApi.closePosition({
-        instId: String(closeDialogPosition.instId ?? ''),
-        posSide: String(closeDialogPosition.posSide ?? ''),
-        marginMode: String(closeDialogPosition.marginMode ?? ''),
-      });
-      notify(`${t('已提交平仓：')}${String(closeDialogPosition.instId ?? '-')}`, { type: 'success' });
-      setCloseDialogPosition(null);
-      await load(true);
-    } catch (closeError) {
-      notify(closeError instanceof Error ? closeError.message : t('平仓提交失败'), { type: 'error', multiLine: true });
-    } finally {
-      setClosingKey('');
+  function planDisabledReason(candidate?: ContractCandidate) {
+    if (errors.contracts) return t('候选数据暂不可用，请刷新后重试。');
+    if (!candidate) return t('当前没有可生成交易方案的候选');
+    if (candidate.action !== 'AUTO_TRADE_ALLOWED') {
+      return formatAutoTradeReason(`candidate_action_not_auto_trade_allowed_${candidate.action || 'UNKNOWN'}`);
     }
+    if (candidate.trendDirection !== 'BULLISH' && candidate.trendDirection !== 'BEARISH') {
+      return t('候选方向不可用');
+    }
+    const leverage = Number(candidate.suggestedLeverage);
+    if (!Number.isFinite(leverage) || leverage <= 0) {
+      return t('候选杠杆不可用');
+    }
+    return closePosition.tradingMode ? '' : t('交易模式不可用');
   }
 
-  async function createTopAiPlan() {
-    if (contracts.length === 0) {
-      notify(t('当前没有合约可生成计划'), { type: 'warning' });
+  async function createAiPlan() {
+    if (!planRequest || planningRef.current) return;
+    const { candidate, recommended } = planRequest;
+    const current = contracts.find((item) => item.instId === candidate.instId);
+    const reason = planDisabledReason(current);
+    if (reason || current?.trendDirection !== candidate.trendDirection || current?.suggestedLeverage !== candidate.suggestedLeverage) {
+      notify(reason || t('候选方向或杠杆已更新，请重新确认。'), { type: 'warning' });
+      setPlanRequest(null);
       return;
     }
-    setBatchPlanning(true);
+    planningRef.current = true;
+    setPlanning(true);
     try {
-      const topContract = contracts.find((item) => item.action === 'AUTO_TRADE_ALLOWED');
-      if (!topContract) {
-        notify(t('当前没有可生成交易方案的候选'), { type: 'warning' });
+      if (await closePosition.refreshMode() !== closePosition.tradingMode) {
+        notify(t('交易模式已变更，请重新确认'), { type: 'warning' });
         return;
       }
-      const order = (await quantApi.createPendingOrder(String(topContract.instId))) as Record<string, unknown>;
-      notify(`${t('推荐方案已创建：')}${String(order.instId)}${t('，请到待确认订单查看')}`, { type: 'success' });
-      await load(true);
-    } catch (planError) {
-      notify(planError instanceof Error ? formatAutoTradeReason(planError.message) : t('推荐方案生成失败'), { type: 'error', multiLine: true });
+      const order = await quantApi.createPendingOrder(String(candidate.instId)) as Record<string, unknown>;
+      notify(recommended
+        ? `${t('推荐方案已创建：')}${String(order.instId)}${t('，请到待确认订单查看')}`
+        : `${t('AI计划已创建：')}${String(order.instId)}${t('，请到待确认订单填写金额')}`, { type: 'success' });
+      await refreshAfterMutation();
+    } catch (error) {
+      notify(error instanceof Error ? formatAutoTradeReason(error.message) : t('AI计划生成失败'), { type: 'error', multiLine: true });
     } finally {
-      setBatchPlanning(false);
+      planningRef.current = false;
+      setPlanning(false);
+      setPlanRequest(null);
+    }
+  }
+
+  async function scan() {
+    if (scanningRef.current) return;
+    scanningRef.current = true;
+    setScanning(true);
+    setScanOpen(false);
+    try {
+      const result = await quantApi.scanContracts() as { status?: string; message?: string };
+      if (result?.status === 'SKIPPED') {
+        notify(t('扫描已跳过：{reason}', { reason: formatAutoTradeReason(result.message) }), { type: 'warning', multiLine: true });
+      } else if (result?.status !== 'SUCCESS') {
+        throw new Error(result?.message || t('合约扫描失败'));
+      }
+    } catch (error) {
+      notify(t('合约扫描失败：{reason}', {
+        reason: error instanceof Error ? formatAutoTradeReason(error.message) : t('未知'),
+      }), { type: 'error', multiLine: true });
+    } finally {
+      await refreshAfterMutation();
+      scanningRef.current = false;
+      setScanning(false);
     }
   }
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(true), 5000);
+    const timer = window.setInterval(() => { void load(); }, POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, []);
 
-  const heldContracts = useMemo<CandidateWithPosition[]>(() => positions.filter((position) => Number(position.size ?? 0) !== 0).map((position) => {
-    const candidate = contracts.find((contract) => String(contract.instId) === String(position.instId)) ?? {};
-    return { ...candidate, instId: position.instId, position };
-  }), [contracts, positions]);
-
+  const heldPositions = useMemo(() => openPositions(positions), [positions]);
   const candidateContracts = useMemo<CandidateWithPosition[]>(() => contracts.map((contract) => ({
     ...contract,
-    position: positions.find((position) => String(position.instId) === String(contract.instId)),
-  })), [contracts, positions]);
+    positions: heldPositions.filter((position) => position.instId === contract.instId),
+  })), [contracts, heldPositions]);
 
   const sorted = useMemo(() => {
     if (sortField === 'default') return candidateContracts;
@@ -170,11 +214,13 @@ export function ContractCandidateList() {
   const filtered = useMemo(() => {
     const text = query.trim().toLowerCase();
     if (!text) return sorted;
-    return sorted.filter((item) => [item.instId, item.baseCurrency, item.trendDirection, item.position?.posSide].some((value) => String(value ?? '').toLowerCase().includes(text)));
+    return sorted.filter((item) => [item.instId, item.baseCurrency, item.trendDirection, ...item.positions.map(positionDirection)].some((value) => String(value ?? '').toLowerCase().includes(text)));
   }, [sorted, query]);
 
-  const top = contracts[0] as ContractCandidate | undefined;
-  const totalPnl = heldContracts.reduce((sum, contract) => sum + Number(contract.position?.unrealizedPnl ?? 0), 0);
+  const top = highestScore(contracts);
+  const recommendation = contracts.find((candidate) => candidate.action === 'AUTO_TRADE_ALLOWED');
+  const recommendationDisabledReason = planDisabledReason(recommendation);
+  const totalPnl = heldPositions.reduce((sum, position) => sum + Number(position.unrealizedPnl ?? 0), 0);
   const sortLabel = sortField === 'default' ? t('默认排序') : sortField === 'change' ? `${t('涨幅')}${sortDir === 'asc' ? '↑' : '↓'}` : `${t('价格')}${sortDir === 'asc' ? '↑' : '↓'}`;
 
   return (
@@ -182,38 +228,57 @@ export function ContractCandidateList() {
       <PageHeader
         title={t('AI 合约机会')}
         subtitle={`${lastUpdatedAt ? `${t('行情刷新 ')}${lastUpdatedAt.toLocaleTimeString(getLanguage())}` : t('行情准备中')}${refreshing ? t(' · 更新中') : ''}`}
-        onRefresh={() => void load(true)}
+        onRefresh={() => void refresh()}
+        actions={(
+          <Button variant="ghost" disabled={scanning} aria-busy={scanning} onClick={() => setScanOpen(true)}>
+            <RefreshCw size={14} className={scanning ? 'animate-spin' : undefined} />
+            {scanning ? t('扫描中') : t('重新扫描')}
+          </Button>
+        )}
         refreshing={refreshing}
         filters={
           <>
             <Input className="h-8 w-full text-[13px] font-normal sm:w-56" value={query} placeholder={t('搜索合约')} aria-label={t('搜索合约')} onChange={(event) => setQuery(event.target.value)} />
-            <Button variant="ghost" disabled={batchPlanning} onClick={() => {
+            <Button variant="ghost" onClick={() => {
               if (sortField === 'default') { setSortField('change'); setSortDir('asc'); }
               else if (sortField === 'change') { if (sortDir === 'asc') setSortDir('desc'); else { setSortField('price'); setSortDir('asc'); } }
               else if (sortDir === 'asc') setSortDir('desc');
               else { setSortField('default'); setSortDir('asc'); }
             }}>{sortLabel}</Button>
-            <Button variant="ghost" disabled={batchPlanning || contracts.length === 0} onClick={() => void createTopAiPlan()}>{batchPlanning ? t('生成中') : t('生成推荐方案')}</Button>
+            <span title={recommendationDisabledReason || undefined}>
+              <Button variant="ghost" disabled={planning || Boolean(recommendationDisabledReason)}
+                onClick={() => recommendation && setPlanRequest({ candidate: recommendation, recommended: true })}>
+                {planning && planRequest?.recommended ? t('生成中') : t('生成推荐方案')}
+              </Button>
+              {recommendationDisabledReason && <span className="ml-2 text-[12px] text-muted">{recommendationDisabledReason}</span>}
+            </span>
           </>
         }
       />
       <div className="mt-4 space-y-4">
         <TradingStatusStrip risk={risk} account={account} pendingCount={pendingCount} />
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        <SectionError label={t('风控')} message={errors.risk} />
+        <SectionError label={t('账户')} message={errors.account} />
+        <SectionError label={t('待确认订单')} message={errors.orders} />
         <div className="grid grid-cols-2 items-baseline gap-6 sm:grid-cols-3">
-          <Stat label={t('准入候选')} value={String(contracts.length)} hint={`${t('当前持仓 ')}${heldContracts.length}`} />
+          <Stat label={t('准入候选')} value={errors.contracts && !lastUpdatedAt ? t('不可用') : String(contracts.length)} hint={`${t('当前持仓 ')}${heldPositions.length}`} />
           <Stat label={t('最高分候选')} value={String(top?.instId ?? '--')} hint={`${formatTrend(top?.trendDirection)} ${formatNumber(top?.score, 0)}${t('分')}`} />
-          <Stat label={t('持仓浮盈亏')} value={formatUSDT(totalPnl)} color={pnlColor(totalPnl)} hint={t('OKX未实现盈亏')} />
+          <Stat label={t('持仓浮盈亏')} value={errors.positions && positions.length === 0 ? t('不可用') : formatUSDT(totalPnl)} color={pnlColor(totalPnl)} hint={t('OKX未实现盈亏')} />
         </div>
         <Alert severity="info">{t('AI 在规则准入池内主导合约、方向和入场模式；规则继续计算价格、仓位并执行所有硬风控。')}</Alert>
-        <Alert severity={aiSelection?.source === 'RULE_FALLBACK' ? 'warning' : 'info'}>
+        <SectionError label={t('当前持仓')} message={errors.positions} />
+        <SectionError label={t('AI 选择')} message={errors.selection} />
+        {(!errors.selection || aiSelection) && <Alert severity={aiSelection?.source === 'RULE_FALLBACK' ? 'warning' : 'info'}>
           {aiSelection?.source === 'AI_PRIMARY'
             ? `${t('AI 主选 ')}${String(aiSelection.selectedInstId)} ${formatSide(aiSelection.direction)} ${String(aiSelection.entryMode)}${t(' · 置信度 ')}${formatPercent(Number(aiSelection.confidence ?? 0) * 100)}`
             : aiSelection?.source === 'AI_WAIT' ? t('AI 本轮选择等待，不会触发规则保底下单。')
               : aiSelection?.source === 'RULE_FALLBACK' ? `${t('AI 不可用，已进入规则保底：')}${String(aiSelection.fallbackReason ?? t('原因不可用'))}`
                 : t('AI 尚未完成本轮选择。')}
-        </Alert>
-        {loading ? <PanelState loading /> : filtered.length === 0 ? <PanelState>{t('当前没有满足数据准入条件的合约候选。')}</PanelState> : (
+        </Alert>}
+        <SectionError label={t('合约机会')} message={errors.contracts} />
+        {loading ? <PanelState loading /> : filtered.length === 0 ? (
+          errors.contracts ? null : <PanelState>{t('当前没有满足数据准入条件的合约候选。')}</PanelState>
+        ) : (
           <ScrollableTable label={t('合约机会')}>
             <TableHead>
               <TableRow>
@@ -231,28 +296,38 @@ export function ContractCandidateList() {
             </TableHead>
             <TableBody>
               {filtered.map((contract, index) => {
+                const planReason = planDisabledReason(contract);
                 const change = Number(contract.changePercent24h);
-                const held = Boolean(contract.position);
-                const position = contract.position ?? {};
-                const tone = directionTone(held ? position.posSide : contract.trendDirection);
+                const held = contract.positions.length > 0;
+                const direction = contract.positions.length === 1 ? positionDirection(contract.positions[0]) : contract.trendDirection;
+                const tone = directionTone(direction);
+                const positionPnl = contract.positions.reduce((sum, position) => sum + Number(position.unrealizedPnl ?? 0), 0);
                 return (
                   <TableRow key={String(contract.instId)}>
                     <TableCell>{index + 1}</TableCell>
                     <TableCell>
                       <button type="button" className="font-semibold tracking-[-0.015em]" onClick={() => setChartInstId(String(contract.instId))}>{String(contract.instId ?? '--')}</button>
                     </TableCell>
-                    <TableCell className={cn(tone === 'success' && 'text-up', tone === 'error' && 'text-down')}>{held ? formatSide(position.posSide) : formatTrend(contract.trendDirection)}</TableCell>
+                    <TableCell className={cn(tone === 'success' && 'text-up', tone === 'error' && 'text-down')}>{contract.positions.length === 1 ? formatSide(direction) : formatTrend(contract.trendDirection)}</TableCell>
                     <TableCell align="right">{formatPrice(contract.lastPrice)}</TableCell>
                     <TableCell align="right" style={{ color: pnlColor(change) }}>{formatPercent(change)}</TableCell>
                     <TableCell align="right">{formatNumber(contract.score, 0)}</TableCell>
                     <TableCell align="right">{formatLeverage(contract.suggestedLeverage)}</TableCell>
                     <TableCell align="right">{formatVolume(contract.volume24h)}</TableCell>
-                    <TableCell align="right" style={{ color: held ? pnlColor(position.unrealizedPnl) : undefined }}>{held ? formatUSDT(position.unrealizedPnl) : t('未持仓')}</TableCell>
+                    <TableCell align="right" style={{ color: held ? pnlColor(positionPnl) : undefined }}>{held ? formatUSDT(positionPnl) : t('未持仓')}</TableCell>
                     <TableCell align="right">
-                      <div className="flex justify-end gap-2">
-                        {held ? <Button variant="ghost" disabled={closingKey === positionKey(position)} onClick={() => setCloseDialogPosition(position)}>{closingKey === positionKey(position) ? t('提交中') : t('平仓')}</Button> : null}
-                        <Button variant="primary" disabled={planningInstId === contract.instId || batchPlanning} onClick={() => void createAiPlan(String(contract.instId))}>{planningInstId === contract.instId ? t('推理中') : t('AI计划')}</Button>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {contract.positions.map((position) => (
+                          <ClosePositionButton key={positionKey(position)} disabledReason={closePosition.disabledReason}
+                            loading={closePosition.loading} onClick={() => closePosition.select(position)}
+                            label={`${t('平仓')} · ${formatSide(positionDirection(position))} · ${formatSide(position.marginMode)}`} />
+                        ))}
+                        <Button variant="primary" disabled={planning || Boolean(planReason)}
+                          onClick={() => setPlanRequest({ candidate: contract, recommended: false })}>
+                          {planning && !planRequest?.recommended && planRequest?.candidate.instId === contract.instId ? t('推理中') : t('AI计划')}
+                        </Button>
                       </div>
+                      {planReason && <div className="mt-1 text-[12px] text-muted">{planReason}</div>}
                     </TableCell>
                   </TableRow>
                 );
@@ -262,9 +337,50 @@ export function ContractCandidateList() {
         )}
       </div>
       <CandleDialog instId={chartInstId} open={Boolean(chartInstId)} onClose={() => setChartInstId('')} />
-      <ClosePositionDialog open={Boolean(closeDialogPosition)} position={closeDialogPosition} loading={Boolean(closingKey)} onCancel={() => setCloseDialogPosition(null)} onConfirm={() => void confirmClosePosition()} />
+      <ClosePositionDialog {...closePosition.dialog} />
+      {planRequest && <ConfirmDialog
+        open
+        title={t('确认生成待确认订单')}
+        tone={closePosition.tradingMode === 'LIVE' ? 'warning' : 'primary'}
+        content={(
+          <div className="space-y-1">
+            <p>{t('合约')} · {String(planRequest.candidate.instId)}</p>
+            <p>{t('候选方向')} · {formatSide(planRequest.candidate.trendDirection === 'BULLISH' ? 'long' : 'short')}</p>
+            <p>{t('建议杠杆')} · {formatLeverage(planRequest.candidate.suggestedLeverage)}</p>
+            <p>{t('交易模式')} · {tradingModeLabel(closePosition.tradingMode)}</p>
+            <p>{t('实际方向和杠杆以生成后的待确认订单为准。')}</p>
+          </div>
+        )}
+        confirmLabel={planning ? t('生成中') : t('确认')}
+        cancelLabel={t('返回')}
+        pending={planning}
+        onConfirm={() => void createAiPlan()}
+        onClose={() => setPlanRequest(null)}
+      />}
+      <ConfirmDialog
+        open={scanOpen}
+        title={t('重新扫描')}
+        content={t('扫描会触发自动交易评估。启用自动交易且满足下单条件时，后端可能按当前交易模式提交订单。')}
+        confirmLabel={t('重新扫描')}
+        cancelLabel={t('返回')}
+        tone="warning"
+        onConfirm={() => void scan()}
+        onClose={() => setScanOpen(false)}
+      />
     </PageShell>
   );
+}
+
+function highestScore(candidates: ContractCandidate[]) {
+  return candidates.reduce<ContractCandidate | undefined>((best, candidate) => {
+    const score = Number(candidate.score ?? NaN);
+    if (!Number.isFinite(score)) return best;
+    return !best || score > Number(best.score) ? candidate : best;
+  }, undefined);
+}
+
+function SectionError({ label, message }: { label: string; message?: string }) {
+  return message ? <Alert severity="error">{label} · {message}</Alert> : null;
 }
 
 function Stat({ label, value, hint, color }: { label: string; value: string; hint?: string; color?: string }) {

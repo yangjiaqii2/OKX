@@ -24,7 +24,7 @@ export async function quantFetch<T = unknown>(
   });
 
   if (!response.ok) {
-    if (response.status === 401) {
+    if (response.status === 401 && getAuthToken() === token) {
       clearAuthSession();
     }
     const text = await response.text();
@@ -37,10 +37,7 @@ export async function quantFetch<T = unknown>(
     } catch {
       errorMessage = '';
     }
-    if (errorMessage) {
-      throw new Error(errorMessage);
-    }
-    const error = new Error(text || `HTTP ${response.status}: ${response.statusText}`);
+    const error = new Error(errorMessage || text || `HTTP ${response.status}: ${response.statusText}`);
     (error as Error & { status?: number }).status = response.status;
     throw error;
   }

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { formatAction, formatLeverage, formatNumber, formatPrice, formatSide } from '../formatters';
 import { t, useLanguage } from '../i18n';
 import { Alert } from './ui/alert';
@@ -18,8 +18,12 @@ type PendingOrderReviewDialogProps = {
 export function PendingOrderReviewDialog({ open, record, submitting, tradingMode, onClose, onConfirm }: PendingOrderReviewDialogProps) {
   useLanguage();
   const [marginAmount, setMarginAmount] = useState('');
-  const amountValid = Number(marginAmount) > 0;
-  const notional = amountValid ? Number(marginAmount) * Number(record.leverage ?? 1) : 0;
+  useEffect(() => {
+    if (!open) setMarginAmount('');
+  }, [open]);
+  const amount = Number(marginAmount);
+  const amountValid = Number.isFinite(amount) && amount > 0;
+  const notional = amountValid ? amount * Number(record.leverage ?? 1) : 0;
   const items: Array<[string, ReactNode]> = [
     [t('合约'), String(record.instId ?? '-')],
     [t('动作'), formatAction(record.action)],
@@ -40,10 +44,13 @@ export function PendingOrderReviewDialog({ open, record, submitting, tradingMode
     [t('状态'), String(record.status ?? '-')],
   ];
 
+  const live = tradingMode === 'LIVE';
+  const demo = tradingMode === 'DEMO';
+  const title = live ? t('确认提交 OKX LIVE 真实资金订单') : demo ? t('确认提交 OKX DEMO 模拟订单') : t('交易模式不可用');
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next && !submitting) onClose(); }}>
       <DialogContent
-        title={tradingMode === 'LIVE' ? t('确认提交 OKX LIVE 真实资金订单') : t('确认提交 OKX DEMO 模拟订单')}
+        title={title}
         className="w-[min(640px,calc(100vw-32px))]"
       >
         <Field label={t('本次投入保证金 USDT')} hint={t('确认时会按实时盘口或限价重新核算预计亏损、费用和可下张数。')}>
@@ -67,9 +74,9 @@ export function PendingOrderReviewDialog({ open, record, submitting, tradingMode
           <Button
             variant={tradingMode === 'LIVE' ? 'danger' : 'primary'}
             onClick={() => onConfirm(marginAmount)}
-            disabled={submitting || !amountValid || tradingMode === 'DISABLED'}
+            disabled={submitting || !amountValid || (!live && !demo)}
           >
-            {tradingMode === 'LIVE' ? t('确认 LIVE 真实资金提交') : t('确认 DEMO 模拟提交')}
+            {live ? t('确认 LIVE 真实资金提交') : demo ? t('确认 DEMO 模拟提交') : t('交易模式不可用')}
           </Button>
         </div>
       </DialogContent>

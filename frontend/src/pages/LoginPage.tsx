@@ -99,7 +99,7 @@ export function LoginPage() {
                     aria-label={showPassword ? t('隐藏密码') : t('显示密码')}
                     onClick={() => setShowPassword((value) => !value)}
                   >
-                    {showPassword ? t('隐藏密码') : t('显示密码')}
+                    {showPassword ? t('隐藏') : t('显示')}
                   </button>
                 </div>
               </Field>

@@ -1,3 +1,5 @@
+export const POLL_INTERVAL_MS = 5000;
+
 export function hasAccountBalance(mode: unknown) {
   return mode === 'OKX_REAL' || mode === 'OKX_DEMO';
 }

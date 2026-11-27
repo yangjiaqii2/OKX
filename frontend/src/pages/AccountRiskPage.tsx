@@ -1,14 +1,14 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
-import { ClosePositionDialog } from '../components/ClosePositionDialog';
+import { ClosePositionDialog, useClosePosition } from '../components/ClosePositionDialog';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PanelState } from '../components/PanelState';
-import { PositionSnapshotTable, positionKey } from '../components/PositionSnapshotTable';
+import { PositionSnapshotTable } from '../components/PositionSnapshotTable';
 import { StatusChip } from '../components/StatusChip';
 import { TradingStatusStrip } from '../components/TradingStatusStrip';
 import { Alert } from '../components/ui/alert';
-import { hasAccountBalance } from '../displayData';
+import { hasAccountBalance, openPositions } from '../displayData';
 import { formatLeverage, formatStatus, formatUSDT } from '../formatters';
 import { t, useLanguage } from '../i18n';
 
@@ -21,8 +21,7 @@ export function AccountRiskPage() {
   const [positions, setPositions] = useState<Record<string, unknown>[]>([]);
   const [pendingCount, setPendingCount] = useState<number | null>(null);
   const [positionError, setPositionError] = useState('');
-  const [closeDialogPosition, setCloseDialogPosition] = useState<Record<string, unknown> | null>(null);
-  const [closingKey, setClosingKey] = useState('');
+  const closePosition = useClosePosition(load);
 
   async function load() {
     setLoading(true);
@@ -36,7 +35,7 @@ export function AccountRiskPage() {
     setAccount(accountResult.status === 'fulfilled' ? (accountResult.value as Record<string, unknown> | null) ?? {} : {});
     setRisk(riskResult.status === 'fulfilled' ? (riskResult.value as Record<string, unknown> | null) ?? {} : {});
     setPendingCount(orderResult.status === 'fulfilled' && Array.isArray(orderResult.value) ? orderResult.value.length : null);
-    setPositions(positionResult.status === 'fulfilled' && Array.isArray(positionResult.value) ? positionResult.value : []);
+    setPositions(positionResult.status === 'fulfilled' && Array.isArray(positionResult.value) ? openPositions(positionResult.value) : []);
     if (positionResult.status === 'rejected') {
       const error = positionResult.reason;
       setPositionError(error instanceof Error ? error.message : t('持仓接口调用失败'));
@@ -47,25 +46,6 @@ export function AccountRiskPage() {
       notify(error instanceof Error ? error.message : t('加载账户与风控失败'), { type: 'error' });
     }
     setLoading(false);
-  }
-
-  async function confirmClosePosition() {
-    if (!closeDialogPosition) return;
-    setClosingKey(positionKey(closeDialogPosition));
-    try {
-      await quantApi.closePosition({
-        instId: String(closeDialogPosition.instId ?? ''),
-        posSide: String(closeDialogPosition.posSide ?? ''),
-        marginMode: String(closeDialogPosition.marginMode ?? ''),
-      });
-      notify(`${t('已提交平仓：')}${String(closeDialogPosition.instId ?? '-')}`, { type: 'success' });
-      setCloseDialogPosition(null);
-      await load();
-    } catch (error) {
-      notify(error instanceof Error ? error.message : t('平仓提交失败'), { type: 'error', multiLine: true });
-    } finally {
-      setClosingKey('');
-    }
   }
 
   useEffect(() => { void load(); }, []);
@@ -83,7 +63,7 @@ export function AccountRiskPage() {
         title={t('账户与风控')}
         subtitle={t('集中查看 OKX 账户总览、可用余额、持仓快照和风控拦截原因。自动交易使用可用余额。')}
         status={<StatusChip value={accountMode} />}
-        onRefresh={() => void load()}
+        onRefresh={() => { void load(); void closePosition.refreshMode(); }}
       />
       <div className="mt-4 space-y-4">
         {accountMode === 'OKX_UNBOUND' ? <Alert severity="warning">{t('尚未绑定OKX API，余额和持仓不会返回真实数据。')}</Alert> : null}
@@ -109,12 +89,12 @@ export function AccountRiskPage() {
           <section>
             <h2 className="mb-2 text-[13px] font-semibold">{t('持仓快照')}</h2>
             {positionError ? <Alert severity="error">{t('持仓不可用，不代表账户空仓：')}{positionError}</Alert> : (
-              <PositionSnapshotTable positions={positions} closingKey={closingKey} onClosePosition={setCloseDialogPosition} />
+              <PositionSnapshotTable positions={positions} closing={closePosition.loading} closeDisabledReason={closePosition.disabledReason} onClosePosition={closePosition.select} />
             )}
           </section>
         </div>
       </div>
-      <ClosePositionDialog open={Boolean(closeDialogPosition)} position={closeDialogPosition} loading={Boolean(closingKey)} onCancel={() => setCloseDialogPosition(null)} onConfirm={() => void confirmClosePosition()} />
+      <ClosePositionDialog {...closePosition.dialog} />
     </PageShell>
   );
 }

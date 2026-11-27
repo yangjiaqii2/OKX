@@ -1,14 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNotify } from 'react-admin';
+import { Link } from 'react-router-dom';
 import { quantApi } from '../api/quantApi';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PanelState } from '../components/PanelState';
 import { PositionSnapshotTable } from '../components/PositionSnapshotTable';
 import { Alert } from '../components/ui/alert';
-import { hasAccountBalance, openPositions } from '../displayData';
+import { hasAccountBalance, openPositions, POLL_INTERVAL_MS } from '../displayData';
 import { formatLeverage, formatNumber, formatPercent, formatPrice, formatStatus, formatUSDT, pnlColor } from '../formatters';
 import { cn } from '../lib/cn';
-import { t, useLanguage } from '../i18n';
+import { getLanguage, t, useLanguage } from '../i18n';
 
 type DashboardState = {
   risk?: Record<string, unknown>;
@@ -29,29 +30,31 @@ export function Dashboard() {
   useLanguage();
   const notify = useNotify();
   const [loading, setLoading] = useState(true);
-  const [assetCurrency, setAssetCurrency] = useState<'USD' | 'RMB'>('USD');
+  const [assetCurrency, setAssetCurrency] = useState<'USDT' | 'RMB'>('USDT');
   const [state, setState] = useState<DashboardState>({ contracts: [], orders: [], positions: [] });
 
-  async function load() {
-    setLoading(true);
+  const loadRunning = useRef(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function load(source: 'initial' | 'poll' | 'manual') {
+    if (loadRunning.current) return;
+    loadRunning.current = true;
+    if (source === 'manual') setRefreshing(true);
     try {
-      const [riskResult, accountResult, profitResult, contractResult, orderResult, fxRateResult] = await Promise.allSettled([
+      const [riskResult, accountResult, profitResult, contractResult, orderResult, fxRateResult, positionResult] = await Promise.allSettled([
         quantApi.riskStatus(),
         quantApi.accountSummary(),
         quantApi.autoTradeProfitSummary(),
         quantApi.contractCandidates(),
         quantApi.pendingOrders(),
         quantApi.fxRate('USD', 'CNY'),
+        quantApi.positions(),
       ]);
-      let positions: Record<string, unknown>[] = [];
-      let positionsError = '';
-      try {
-        const positionData = await quantApi.positions();
-        if (!Array.isArray(positionData)) throw new Error(t('持仓响应格式异常'));
-        positions = openPositions(positionData as Record<string, unknown>[]);
-      } catch (error) {
-        positionsError = error instanceof Error ? error.message : t('持仓接口调用失败');
-      }
+      const positionData = positionResult.status === 'fulfilled' ? positionResult.value : undefined;
+      const positions = Array.isArray(positionData) ? openPositions(positionData) : [];
+      const positionsError = positionResult.status === 'rejected'
+        ? (positionResult.reason instanceof Error ? positionResult.reason.message : t('持仓接口调用失败'))
+        : Array.isArray(positionData) ? '' : t('持仓响应格式异常');
       const contractsError = contractResult.status === 'rejected'
         ? (contractResult.reason instanceof Error ? contractResult.reason.message : t('合约机会池加载失败'))
         : Array.isArray(contractResult.value) ? '' : t('合约机会响应格式异常');
@@ -64,12 +67,13 @@ export function Dashboard() {
       const fxRateError = fxRateResult.status === 'rejected'
         ? (fxRateResult.reason instanceof Error ? fxRateResult.reason.message : t('汇率加载失败'))
         : '';
-      if (fxRateError) setAssetCurrency('USD');
+      const fxRate = fxRateResult.status === 'fulfilled' ? fxRateResult.value as Record<string, unknown> : undefined;
+      if (fxRateError || !Number.isFinite(Number(fxRate?.rate)) || Number(fxRate?.rate) <= 0) setAssetCurrency('USDT');
       setState({
         risk: riskResult.status === 'fulfilled' ? riskResult.value as Record<string, unknown> : {},
         account: accountResult.status === 'fulfilled' ? accountResult.value as Record<string, unknown> : {},
         profit: profitResult.status === 'fulfilled' ? profitResult.value as Record<string, unknown> : {},
-        fxRate: fxRateResult.status === 'fulfilled' ? fxRateResult.value as Record<string, unknown> : undefined,
+        fxRate,
         contracts: contractResult.status === 'fulfilled' && Array.isArray(contractResult.value) ? contractResult.value : [],
         orders: orderResult.status === 'fulfilled' && Array.isArray(orderResult.value) ? orderResult.value : [],
         positions,
@@ -79,17 +83,38 @@ export function Dashboard() {
         profitError,
         fxRateError,
       });
-      if (riskResult.status === 'rejected' || accountResult.status === 'rejected') {
+      if (source !== 'poll' && (riskResult.status === 'rejected' || accountResult.status === 'rejected')) {
         notify(t('核心账户或风控数据加载失败，请检查后端服务。'), { type: 'warning' });
       }
     } catch (error) {
-      notify(error instanceof Error ? error.message : t('加载总览失败'), { type: 'error' });
+      if (source !== 'poll') notify(error instanceof Error ? error.message : t('加载总览失败'), { type: 'error' });
     } finally {
+      loadRunning.current = false;
       setLoading(false);
+      setRefreshing(false);
     }
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    let timer: number | undefined;
+    function schedule() {
+      window.clearInterval(timer);
+      if (document.visibilityState === 'visible') {
+        timer = window.setInterval(() => { void load('poll'); }, POLL_INTERVAL_MS);
+      }
+    }
+    function onVisibilityChange() {
+      schedule();
+      if (document.visibilityState === 'visible') void load('poll');
+    }
+    void load('initial');
+    schedule();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
 
   if (loading) {
     return (
@@ -119,7 +144,7 @@ export function Dashboard() {
         subtitle={t('OKX 合约信号进入待确认后执行。账户与风控优先于下单。')}
         actions={
           <div className="flex rounded-lg bg-[#E7EAF0] p-0.5 dark:bg-sunken">
-            {(['USD', 'RMB'] as const).map((value) => (
+            {(['USDT', 'RMB'] as const).map((value) => (
               <button
                 key={value}
                 type="button"
@@ -127,19 +152,20 @@ export function Dashboard() {
                 className={cn('h-[26px] min-w-12 rounded-md px-2.5 font-sans text-[12px] font-medium', assetCurrency === value ? 'bg-field text-ink shadow-[0_1px_1px_rgba(23,26,33,0.04),0_0_0_1px_rgba(23,26,33,0.04)]' : 'text-muted')}
                 onClick={() => {
                   if (value === 'RMB' && !fxRateAvailable) {
-                    setAssetCurrency('USD');
-                    notify(t('RMB汇率不可用，已回退USD显示。'), { type: 'warning' });
+                    setAssetCurrency('USDT');
+                    notify(t('人民币汇率不可用，已回退 USDT 显示。'), { type: 'warning' });
                     return;
                   }
                   setAssetCurrency(value);
                 }}
               >
-                {value}
+                {value === 'RMB' ? t('人民币（估算）') : value}
               </button>
             ))}
           </div>
         }
-        onRefresh={() => void load()}
+        onRefresh={() => void load('manual')}
+        refreshing={refreshing}
       />
 
       <div className="mt-4 space-y-2">
@@ -147,10 +173,10 @@ export function Dashboard() {
         {state.contractsError ? <Alert severity="warning">{t('OKX合约机会池暂不可用：')}{state.contractsError}</Alert> : null}
         {state.ordersError ? <Alert severity="warning">{t('待确认订单暂不可用：')}{state.ordersError}</Alert> : null}
         {state.profitError ? <Alert severity="warning">{t('自动交易收益暂不可用：')}{state.profitError}</Alert> : null}
-        {state.fxRateError ? <Alert severity="warning">{t('RMB汇率不可用，已回退USD：')}{state.fxRateError}</Alert> : null}
+        {state.fxRateError ? <Alert severity="warning">{t('人民币汇率不可用，已回退 USDT：')}{state.fxRateError}</Alert> : null}
         {assetCurrency === 'RMB' && fxRateAvailable ? (
           <Alert severity="info">
-            {t('RMB按')} {String(state.fxRate?.source ?? 'CONFIGURED')} {t('汇率 USD/CNY=')}{formatNumber(state.fxRate?.rate, 4)}
+            {t('人民币估算采用')} {String(state.fxRate?.source ?? 'CONFIGURED')} {t('汇率 USD/CNY=')}{formatNumber(state.fxRate?.rate, 4)}
             {state.fxRate?.updatedAt ? `${t('，更新时间 ')}${String(state.fxRate.updatedAt)}` : ''}
           </Alert>
         ) : null}
@@ -177,19 +203,19 @@ export function Dashboard() {
       </div>
 
       <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-[13px] leading-5 text-muted">
-        <span>{t('风控')} <b className={risk.passed === false ? 'text-down' : 'text-up'}>{risk.passed === false ? t('未通过') : risk.passed === true ? t('通过') : formatStatus(risk.riskLevel)}</b></span>
+        <span>{t('风控')} <b className={risk.passed === true ? 'text-up' : risk.passed === false ? 'text-down' : 'text-muted'}>{risk.passed === false ? t('未通过') : risk.passed === true ? t('通过') : t('未知')}</b></span>
         <span>{t('等级')} <b className="font-medium text-ink">{formatStatus(risk.riskLevel)}</b></span>
         <span>{t('建议杠杆')} <b className="font-medium text-ink">{formatLeverage(risk.adjustedLeverage)}</b></span>
         <span>{t('单笔亏损')} <b className="font-medium text-ink">{formatUSDT(risk.maxLossAmount)}</b></span>
         <span>{t('待确认')} <b className="font-medium text-ink">{pendingCount ?? t('不可用')}</b></span>
-        <span>{t('检查时间')} <b className="font-medium tabular-nums text-ink">{String(risk.createdAt ?? '').slice(11, 19) || '-'}</b></span>
+        <span>{t('检查时间')} <b className="font-medium tabular-nums text-ink">{formatCheckTime(risk.createdAt)}</b></span>
       </div>
       {risk.rejectReason ? <Alert className="mt-3" severity={risk.passed === false ? 'error' : 'warning'}>{String(risk.rejectReason)}</Alert> : null}
 
       <div className="mt-6 flex flex-wrap gap-x-6 gap-y-2 text-[13px] text-muted">
         <Mini label={t('已实现毛收益')} value={formatAsset(state.profit?.grossRealizedPnlUsdt)} />
-        <Mini label={t('交易手续费')} value={formatAsset(state.profit?.tradingFeesUsdt)} />
-        <Mini label={t('资金费')} value={formatAsset(state.profit?.fundingUsdt)} />
+        <Mini label={t('交易手续费')} value={formatAsset(state.profit?.tradingFeesUsdt)} color={pnlColor(state.profit?.tradingFeesUsdt)} />
+        <Mini label={t('资金费')} value={formatAsset(state.profit?.fundingUsdt)} color={pnlColor(state.profit?.fundingUsdt)} />
         <Mini label={t('预算收益率')} value={formatPercent(state.profit?.budgetRoiPct)} />
         <Mini label={t('合约机会')} value={state.contractsError ? t('不可用') : String(state.contracts.length)} />
         <Mini label={t('自动交易净 PnL')} value={state.profit?.totalNetPnlUsdt == null ? t('不可用') : formatAsset(state.profit.totalNetPnlUsdt)} color={pnlColor(state.profit?.totalNetPnlUsdt)} />
@@ -205,11 +231,11 @@ export function Dashboard() {
         {pendingCount == null ? <p className="text-[13px] text-muted">{t('待确认订单不可用。')}</p> : pendingCount === 0 ? <p className="text-[13px] text-muted">{t('当前没有待确认订单。')}</p> : (
           <div className="max-w-[640px]">
             {(state.orders as Record<string, unknown>[]).slice(0, 5).map((order) => (
-              <div key={String(order.id)} className="grid grid-cols-[180px_88px_1fr] gap-3 border-t border-line py-2.5 text-[13px]">
+              <Link key={String(order.id)} to="/pendingOrders" className="grid grid-cols-[minmax(0,180px)_88px_1fr] gap-3 border-t border-line py-2.5 text-[13px] hover:bg-sunken">
                 <b className="font-semibold tracking-[-0.015em]">{String(order.instId ?? '-')}</b>
                 <span className="text-muted">{formatStatus(order.status)}</span>
                 <span className="text-muted tabular-nums">{String(order.leverage ?? '-')}{t('x · 止损')} {formatPrice(order.stopLossPrice)}</span>
-              </div>
+              </Link>
             ))}
           </div>
         )}
@@ -258,14 +284,23 @@ function toneOf(value: unknown): 'up' | 'down' | undefined {
   return number > 0 ? 'up' : 'down';
 }
 
-function formatAssetMoney(value: unknown, currency: 'USD' | 'RMB', fxRate?: Record<string, unknown>) {
+function formatAssetMoney(value: unknown, currency: 'USDT' | 'RMB', fxRate?: Record<string, unknown>) {
   if (value == null || value === '') return '-';
   const number = Number(value);
   if (!Number.isFinite(number)) return '-';
   if (currency === 'RMB') {
     const rate = Number(fxRate?.rate);
-    if (Number.isFinite(rate) && rate > 0) return `¥${formatNumber(number * rate, 2)}`;
+    if (Number.isFinite(rate) && rate > 0) return t('约 ¥{amount}', { amount: formatNumber(number * rate, 2) });
   }
   return formatUSDT(number);
 }
 
+function formatCheckTime(value: unknown) {
+  if (typeof value !== 'string' && typeof value !== 'number') return '-';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleTimeString(getLanguage(), {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}

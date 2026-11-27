@@ -26,20 +26,45 @@ async function authFetch(path: string, options: RequestInit = {}) {
     } catch {
       // Keep the original response text.
     }
-    throw new Error(message);
+    throw Object.assign(new Error(message), { status: response.status });
   }
   return (await response.json()) as AuthSession;
 }
 
-async function bestEffortAuthFetch(path: string, options: RequestInit = {}) {
+let validatedSession: { token: string; expiresAt: number } | undefined;
+let sessionRequest: { token: string; promise: Promise<void> } | undefined;
+
+async function validateSession(token: string): Promise<void> {
+  let session: AuthSession | undefined;
   try {
-    return await authFetch(path, options);
+    session = await authFetch('/auth/session', { cache: 'no-store' });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('404') || message.includes('500') || message.includes('Failed to fetch')) {
-      return { authenticated: false } as AuthSession;
-    }
-    throw error;
+    if (getAuthToken() !== token) return checkSession();
+    const status = (error as { status?: number } | null)?.status;
+    if (status !== 401 && status !== 403) throw new Error(t('登录会话校验失败'));
+  }
+  if (getAuthToken() !== token) return checkSession();
+  if (!session?.authenticated || session.token !== token) {
+    validatedSession = undefined;
+    clearAuthSession();
+    throw new Error(t('登录已失效'));
+  }
+  setAuthSession(session);
+  validatedSession = { token, expiresAt: session.expiresAtEpochMillis ?? Infinity };
+}
+
+async function checkSession(): Promise<void> {
+  const token = getAuthToken();
+  if (!token) throw new Error(t('需要登录'));
+  if (validatedSession?.token === token && validatedSession.expiresAt > Date.now()) return;
+  if (sessionRequest?.token === token) return sessionRequest.promise;
+
+  const promise = validateSession(token);
+  sessionRequest = { token, promise };
+  try {
+    await promise;
+  } finally {
+    if (sessionRequest?.promise === promise) sessionRequest = undefined;
   }
 }
 
@@ -59,25 +84,24 @@ export const authProvider: AuthProvider = {
   },
 
   async logout() {
+    const token = getAuthToken();
+    validatedSession = undefined;
     try {
-      if (getAuthToken()) {
-        await bestEffortAuthFetch('/auth/logout', { method: 'POST' });
+      if (token) {
+        await authFetch('/auth/logout', { method: 'POST' });
       }
     } catch {
       // Logout must clear local state even when the backend is unavailable or the session already expired.
     } finally {
-      clearAuthSession();
+      if (getAuthToken() === token) clearAuthSession();
     }
   },
 
-  async checkAuth() {
-    if (!getAuthToken()) {
-      throw new Error(t("需要登录"));
-    }
-  },
+  checkAuth: checkSession,
 
   async checkError(error) {
     if (error?.status === 401 || String(error?.message ?? '').includes('401')) {
+      validatedSession = undefined;
       clearAuthSession();
       throw new Error(t("登录已失效"));
     }

@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNotify } from 'react-admin';
+import { Link } from 'react-router-dom';
 import { quantApi } from '../api/quantApi';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PanelState } from '../components/PanelState';
-import { PositionSnapshotTable } from '../components/PositionSnapshotTable';
 import { ScrollableTable } from '../components/ScrollableTable';
 import { StatusChip } from '../components/StatusChip';
 import { Alert } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { Input, SelectInput } from '../components/ui/field';
 import { TableBody, TableCell, TableHead, TableRow } from '../components/ui/table';
-import { accountPositionPnl, openPositions } from '../displayData';
+import { accountPositionPnl } from '../displayData';
 import { formatAutoTradeReason, formatDecisionSource, formatEntryMode, formatLeverage, formatNumber, formatOpenDirection, formatPrice, formatScanAction, formatSignalType, formatStage, formatStatus, formatTrend, formatUSDT } from '../formatters';
 import { getLanguage, t, useLanguage } from '../i18n';
 
@@ -101,13 +101,16 @@ export function AutoTradeRecordList() {
         onRefresh={() => void load(page, true)}
         refreshing={busy}
         filters={
-          <>
+          <form className="flex w-full flex-wrap items-center gap-2" onSubmit={(event) => {
+            event.preventDefault();
+            if (!busy) void load(0, false, { status, instId: instId.trim() });
+          }}>
             <SelectInput className="w-full sm:w-44" aria-label={t('状态筛选')} value={status} onChange={(event) => setStatus(event.target.value)}>
               {statusOptions.map((option) => <option key={option.value || 'all'} value={option.value}>{t(option.label)}</option>)}
             </SelectInput>
             <Input className="h-8 w-full text-[13px] font-normal sm:w-56" value={instId} placeholder={t('搜索合约')} aria-label={t('搜索合约')} onChange={(event) => setInstId(event.target.value)} />
-            <Button variant="ghost" disabled={busy} onClick={() => void load(0, false, { status, instId: instId.trim() })}>{t('查询')}</Button>
-          </>
+            <Button type="submit" variant="ghost" disabled={busy}>{t('查询')}</Button>
+          </form>
         }
       />
       <div className="mt-4 space-y-3">
@@ -128,7 +131,7 @@ export function AutoTradeRecordList() {
                   <TableCell>{formatTrend(record.trendDirection)}</TableCell>
                   <TableCell>{record.status === 'SKIPPED' ? '—' : formatOpenDirection(record.action, record.posSide)}</TableCell>
                   <TableCell align="right">{formatNumber(record.candidateScore, 0)}</TableCell>
-                  <TableCell align="right">{formatNumber(record.finalRankScore, 8)}</TableCell>
+                  <TableCell align="right">{formatNumber(record.finalRankScore, 2)}</TableCell>
                   <TableCell>{formatSignalType(record.signalType)}</TableCell>
                   <TableCell>{formatScanAction(record.scanAction, record.reasonMessage ?? record.message)}</TableCell>
                   <TableCell>
@@ -161,10 +164,7 @@ export function AutoTradeRecordList() {
             <Button variant="ghost" disabled={!hasNext || busy} onClick={() => void load(page + 1, true)}>{t('下一页')}</Button>
           </div>
         </div>
-        <section>
-          <h2 className="mb-2 text-[13px] font-semibold">{t('当前账户持仓')}</h2>
-          {positions ? <PositionSnapshotTable positions={openPositions(positions)} /> : loading ? <PanelState loading /> : <Alert severity="warning">{t('当前持仓数据不可用。')}</Alert>}
-        </section>
+        <Link to="/positions" className="inline-block text-[13px] font-medium text-accent-ink hover:underline">{t('前往当前持仓')}</Link>
       </div>
     </PageShell>
   );

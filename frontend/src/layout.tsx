@@ -17,6 +17,7 @@ import {
 import { useState, type ReactNode } from 'react';
 import { useGetIdentity, useLogout } from 'react-admin';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { getAuthRole } from './api/auth';
 import { LanguageSwitch } from './components/LanguageSwitch';
 import { RuntimeStatusBar } from './components/RuntimeStatusBar';
 import { ThemeToggle } from './components/ThemeToggle';
@@ -28,7 +29,7 @@ const trade = [
   { to: '/contractCandidates', label: 'OKX合约', icon: CandlestickChart },
   { to: '/positions', label: '当前持仓', icon: Wallet },
   { to: '/pendingOrders', label: '待确认订单', icon: ListChecks },
-  { to: '/currentOkxOrders', label: '当前委托', icon: Timer },
+  { to: '/currentOkxOrders', label: '当前委托/保护单', icon: Timer },
 ];
 
 const review = [
@@ -83,7 +84,7 @@ function NavGroups({ onNavigate }: { onNavigate?: () => void }) {
       <p className="mb-1.5 mt-[18px] px-2 text-[12px] font-medium leading-4 text-muted">{t('复盘')}</p>
       {review.map((item) => <NavItem key={item.to} {...item} onClick={onNavigate} />)}
       <p className="mb-1.5 mt-[18px] px-2 text-[12px] font-medium leading-4 text-muted">{t('系统')}</p>
-      {system.map((item) => <NavItem key={item.to} {...item} onClick={onNavigate} />)}
+      {system.filter((item) => item.to !== '/system-control' || getAuthRole() === 'ADMIN').map((item) => <NavItem key={item.to} {...item} onClick={onNavigate} />)}
     </nav>
   );
 }
@@ -135,11 +136,11 @@ function MobileNav() {
   const main = [
     { label: '总览', path: '/', icon: LayoutDashboard },
     { label: '机会', path: '/contractCandidates', icon: CandlestickChart },
-    { label: '订单', path: '/currentOkxOrders', icon: ScrollText },
+    { label: '订单', path: '/pendingOrders', icon: ScrollText },
     { label: '持仓', path: '/positions', icon: Wallet },
   ];
   const moreItems = [
-    ['待确认订单', '/pendingOrders'], ['交易复盘', '/autoTradeRecords'], ['生命周期', '/autoTradeLifecycle'],
+    ['当前委托/保护单', '/currentOkxOrders'], ['交易复盘', '/autoTradeRecords'], ['生命周期', '/autoTradeLifecycle'],
     ['平仓记录', '/closePositionRecords'], ['账户与风控', '/account-risk'], ['账号绑定', '/account-binding'],
     ['账号安全', '/security'], ['系统控制', '/system-control'],
   ] as const;
@@ -168,7 +169,7 @@ function MobileNav() {
           <button type="button" className="absolute inset-0 bg-[var(--overlay)]" aria-label={t('关闭')} onClick={() => setMore(false)} />
           <div className="absolute inset-x-0 bottom-0 max-h-[80dvh] overflow-auto rounded-t-2xl bg-raised px-2 pb-[calc(16px+env(safe-area-inset-bottom))] pt-3">
             <p className="px-3 pb-2 text-sm font-semibold">{t('更多功能')}</p>
-            {moreItems.map(([label, path]) => (
+            {moreItems.filter(([, path]) => path !== '/system-control' || getAuthRole() === 'ADMIN').map(([label, path]) => (
               <button key={path} type="button" className={cn('flex h-11 w-full items-center rounded-lg px-3 text-left text-[14px]', location.pathname === path && 'bg-accent-soft text-accent-ink')} onClick={() => { setMore(false); navigate(path); }}>
                 {t(label)}
               </button>

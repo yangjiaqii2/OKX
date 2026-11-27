@@ -731,12 +731,19 @@ public class ClosePositionRecoveryService {
 
     private boolean hasOpenPosition(ClosePositionRecordEntity record, List<PositionSummary> positions) {
         return positions.stream()
+                .filter(position -> matchingMarginMode(record.getMarginMode(), position))
                 .anyMatch(position -> PositionSideMatcher.matches(record.getInstId(), record.getPosSide(), null, position));
     }
 
     private boolean hasOpenPosition(PendingOrder order, List<PositionSummary> positions) {
         return positions.stream()
+                .filter(position -> matchingMarginMode(order.tdMode(), position))
                 .anyMatch(position -> PositionSideMatcher.matches(order.instId(), order.posSide(), order.side(), position));
+    }
+
+    private static boolean matchingMarginMode(String marginMode, PositionSummary position) {
+        return position != null && (!hasText(marginMode) || !hasText(position.marginMode())
+                || marginMode.equalsIgnoreCase(position.marginMode()));
     }
 
     private static BigDecimal decimal(String value) {

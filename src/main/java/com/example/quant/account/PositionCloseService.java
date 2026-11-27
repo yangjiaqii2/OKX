@@ -85,16 +85,23 @@ public class PositionCloseService {
         if (!hasText(instId)) {
             throw new IllegalArgumentException("平仓合约不能为空");
         }
-        PositionSummary position = positionSnapshotService.positions().stream()
+        List<PositionSummary> matching = positionSnapshotService.positions().stream()
+                .filter(item -> item != null && (!hasText(marginMode) || marginMode.equalsIgnoreCase(marginModeOrCross(item))))
                 .filter(item -> PositionSideMatcher.matches(instId, posSide, null, item))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("当前没有可平仓持仓：" + instId));
-        String closePosSide = hasText(posSide) ? posSide : position.posSide();
-        String closeMarginMode = hasText(marginMode) ? marginMode : position.marginMode();
-        if (!hasText(closeMarginMode)) {
-            closeMarginMode = "cross";
+                .limit(2)
+                .toList();
+        if (matching.isEmpty()) {
+            throw new IllegalArgumentException("当前没有可平仓持仓：" + instId);
         }
-        rejectDuplicateUnresolvedClose(position);
+        if (matching.size() > 1) {
+            throw new IllegalArgumentException("无法唯一确定要平仓的持仓");
+        }
+        PositionSummary position = matching.get(0);
+        String closePosSide = "net".equalsIgnoreCase(position.posSide())
+                ? (new BigDecimal(position.size()).signum() < 0 ? "short" : "long")
+                : position.posSide();
+        String closeMarginMode = marginModeOrCross(position);
+        rejectDuplicateUnresolvedClose(position, closeMarginMode);
         String closeClOrdId = closeClientOrderId();
         ClosePositionRecordEntity record = createCloseIntent(position, closePosSide, closeMarginMode, closeClOrdId);
         Optional<PendingOrder> boundOrder = bindAutoTradeReference(record, position);
@@ -107,8 +114,7 @@ public class PositionCloseService {
                     TradingOperationContext.of(TradingOperationType.CLOSE_POSITION,
                             record.getUserName(), record.getPendingOrderId(),
                             boundOrder.map(PendingOrder::tradePlanId).map(UUID::toString).orElse(null))
-                            .withDirection("net".equalsIgnoreCase(position.posSide())
-                                    ? (decimal(position.size()).signum() < 0 ? "short" : "long") : position.posSide()));
+                            .withDirection(closePosSide));
             record.setCloseOrderId(result.externalOrderId());
             record.setStatus("CLOSE_SUBMITTED");
             record.setRequestSent(true);
@@ -320,7 +326,7 @@ public class PositionCloseService {
     }
 
     private Optional<PendingOrder> bindAutoTradeReference(ClosePositionRecordEntity record, PositionSummary position) {
-        Optional<PendingOrder> matched = matchingActivePendingOrder(position);
+        Optional<PendingOrder> matched = matchingActivePendingOrder(position, record.getMarginMode());
         if (matched.isEmpty()) {
             return Optional.empty();
         }
@@ -335,13 +341,14 @@ public class PositionCloseService {
         return matched;
     }
 
-    private void rejectDuplicateUnresolvedClose(PositionSummary position) {
+    private void rejectDuplicateUnresolvedClose(PositionSummary position, String marginMode) {
         if (closePositionRecordRepository == null) {
             return;
         }
         String username = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
         for (String status : List.of("CLOSE_SUBMITTING", "CLOSE_SUBMIT_UNKNOWN", "CLOSE_SUBMITTED")) {
             boolean duplicate = closePositionRecordRepository.findByUserNameAndStatus(username, status).stream()
+                    .filter(record -> !hasText(record.getMarginMode()) || marginMode.equalsIgnoreCase(record.getMarginMode()))
                     .anyMatch(record -> PositionSideMatcher.matches(record.getInstId(), record.getPosSide(), null, position));
             if (duplicate) {
                 throw new IllegalStateException("已有待确认平仓，请先等待OKX持仓同步，禁止重复提交：" + position.instId());
@@ -380,14 +387,19 @@ public class PositionCloseService {
         }
     }
 
-    private Optional<PendingOrder> matchingActivePendingOrder(PositionSummary position) {
+    private Optional<PendingOrder> matchingActivePendingOrder(PositionSummary position, String marginMode) {
         if (pendingOrderService == null) {
             return Optional.empty();
         }
         return pendingOrderService.allOrders().stream()
                 .filter(order -> AUTO_CLOSE_BINDING_STATUSES.contains(order.status()))
+                .filter(order -> marginMode.equalsIgnoreCase(hasText(order.tdMode()) ? order.tdMode() : "cross"))
                 .filter(order -> PositionSideMatcher.matches(order.instId(), order.posSide(), order.side(), position))
                 .findFirst();
+    }
+
+    private static String marginModeOrCross(PositionSummary position) {
+        return hasText(position.marginMode()) ? position.marginMode() : "cross";
     }
 
     private static BigDecimal decimal(String value) {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
 import { PageHeader, PageShell } from '../components/PageShell';
@@ -21,8 +21,11 @@ export function ClosePositionRecordList() {
   const [page, setPage] = useState<CloseRecordPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const inFlight = useRef(false);
 
   async function load(nextPage = page?.page ?? 0) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setLoading(true);
     setError('');
     try {
@@ -36,6 +39,7 @@ export function ClosePositionRecordList() {
       setError(message);
       notify(message, { type: 'error' });
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }
@@ -48,9 +52,12 @@ export function ClosePositionRecordList() {
         title={t('平仓记录')}
         subtitle={page ? `${t('共 ')}${page.total}${t(' 条平仓请求')}` : loading ? t('正在加载平仓记录') : t('平仓记录不可用')}
         onRefresh={() => void load()}
-        refreshing={loading}
+        refreshing={loading && !page}
       />
       <div className="mt-4 space-y-3">
+        {loading && page && (
+          <div role="progressbar" aria-label={t('正在加载平仓记录')} className="h-0.5 rounded-full bg-accent motion-safe:animate-pulse" />
+        )}
         {error ? <Alert severity="error">{error}</Alert> : null}
         {loading && !page ? <PanelState loading /> : page == null ? null : page.items.length === 0 ? <PanelState>{t('暂无记录。')}</PanelState> : (
           <ScrollableTable label={t('平仓记录')}>

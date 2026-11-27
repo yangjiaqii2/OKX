@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useNotify } from 'react-admin';
 import { quantApi } from '../api/quantApi';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PanelState } from '../components/PanelState';
 import { ScrollableTable } from '../components/ScrollableTable';
 import { StatusChip } from '../components/StatusChip';
+import { Button } from '../components/ui/button';
 import { Alert } from '../components/ui/alert';
 import { TableBody, TableCell, TableHead, TableRow } from '../components/ui/table';
 import { formatAutoTradeReason, formatPercent, formatPrice, formatSide, formatUSDT, pnlColor } from '../formatters';
@@ -14,18 +14,20 @@ type LifecycleRow = Record<string, unknown>;
 
 export function AutoTradeLifecycleList() {
   useLanguage();
-  const notify = useNotify();
   const [rows, setRows] = useState<LifecycleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState('');
 
   async function load(silent = false) {
     silent ? setRefreshing(true) : setLoading(true);
     try {
       const result = await quantApi.autoTradeLifecycle();
-      setRows(Array.isArray(result) ? result as LifecycleRow[] : []);
+      if (!Array.isArray(result)) throw new Error(t('生命周期加载失败'));
+      setRows(result as LifecycleRow[]);
+      setError('');
     } catch (error) {
-      notify(error instanceof Error ? error.message : t('生命周期加载失败'), { type: 'error' });
+      setError(error instanceof Error ? error.message : t('生命周期加载失败'));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -36,14 +38,42 @@ export function AutoTradeLifecycleList() {
 
   return (
     <PageShell title={t('自动交易生命周期')}>
-      <PageHeader title={t('自动交易生命周期')} subtitle={`${t('自动交易仓位 ')}${rows.length}${t(' 条')}`} onRefresh={() => void load(true)} refreshing={refreshing} />
+      <PageHeader title={t('自动交易生命周期')} subtitle={`${t('自动交易仓位 ')}${rows.length}${t(' 条')}`} onRefresh={() => void load(true)} refreshing={loading || refreshing} />
       <div className="mt-4 space-y-3">
         <Alert severity="info">{t('预算占用来自入场委托或实际入场仓位；止损、TP1、TP2、TP3 是 reduceOnly 保护单，不计入新的开仓预算。')}</Alert>
-        {loading ? <PanelState loading /> : rows.length === 0 ? <PanelState>{t('暂无记录。')}</PanelState> : (
+        {error && (
+          <Alert severity="error">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{t('生命周期加载失败')} · {error}</span>
+              <Button disabled={refreshing} onClick={() => void load(true)}>{t('重试')}</Button>
+            </div>
+          </Alert>
+        )}
+        {loading ? <PanelState loading /> : rows.length === 0 ? (
+          error ? null : <PanelState>{t('暂无记录。')}</PanelState>
+        ) : (
           <ScrollableTable label={t('自动交易生命周期')}>
             <TableHead>
               <TableRow>
-                {[t('合约'), t('方向'), t('生命周期'), t('入场状态'), t('保护单状态'), t('成交数量'), t('保护单'), t('当前持仓'), t('平仓'), t('预算'), t('最近事件'), t('人工处理'), t('持仓时长'), t('入场价'), t('均价'), t('浮盈亏'), t('浮盈亏%'), t('预算占用'), t('下一步')].map((label) => <TableCell key={label}>{label}</TableCell>)}
+                <TableCell>{t('合约')}</TableCell>
+                <TableCell>{t('方向')}</TableCell>
+                <TableCell>{t('生命周期')}</TableCell>
+                <TableCell>{t('入场状态')}</TableCell>
+                <TableCell>{t('保护单状态')}</TableCell>
+                <TableCell align="right">{t('成交数量')}</TableCell>
+                <TableCell>{t('保护单')}</TableCell>
+                <TableCell>{t('当前持仓')}</TableCell>
+                <TableCell>{t('平仓')}</TableCell>
+                <TableCell>{t('预算')}</TableCell>
+                <TableCell>{t('最近事件')}</TableCell>
+                <TableCell>{t('人工处理')}</TableCell>
+                <TableCell align="right">{t('持仓时长')}</TableCell>
+                <TableCell align="right">{t('入场价')}</TableCell>
+                <TableCell align="right">{t('均价')}</TableCell>
+                <TableCell align="right">{t('浮盈亏')}</TableCell>
+                <TableCell align="right">{t('浮盈亏%')}</TableCell>
+                <TableCell align="right">{t('预算占用')}</TableCell>
+                <TableCell>{t('下一步')}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>

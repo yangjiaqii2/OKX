@@ -9,6 +9,7 @@ import { Alert } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { Field, Input } from '../components/ui/field';
+import { formatUSDT } from '../formatters';
 import { t, useLanguage } from '../i18n';
 
 type BindingStatus = { bound?: boolean; maskedApiKey?: string; tradingMode?: 'DISABLED' | 'DEMO' | 'LIVE' };
@@ -25,6 +26,7 @@ export function AccountBindingPage() {
   const [form, setForm] = useState(emptyForm);
   const [unbindOpen, setUnbindOpen] = useState(false);
   const [showSecrets, setShowSecrets] = useState(false);
+  const [replaceForm, setReplaceForm] = useState<typeof emptyForm | null>(null);
   const username = getAuthUser() || t('当前用户');
 
   async function load() {
@@ -40,12 +42,28 @@ export function AccountBindingPage() {
 
   useEffect(() => { void load(); }, []);
 
-  async function bind(event: FormEvent<HTMLFormElement>) {
+  async function prepareBinding(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting || replaceForm) return;
+    setSubmitting(true);
+    try {
+      const current = await quantApi.accountBindingStatus() as BindingStatus;
+      if (typeof current?.bound !== 'boolean') throw new Error(t('加载绑定状态失败'));
+      setStatus(current);
+      if (current.bound) setReplaceForm(form);
+      else await bind(form);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('加载绑定状态失败'), { type: 'error' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function bind(payload: typeof emptyForm) {
     setSubmitting(true);
     setVerification(null);
     try {
-      const nextStatus = (await quantApi.bindOkxAccount(form)) as BindingStatus;
+      const nextStatus = (await quantApi.bindOkxAccount(payload)) as BindingStatus;
       setStatus(nextStatus);
       setForm(emptyForm);
       notify(t('OKX账号已绑定，请点击“验证接口”确认API可用'), { type: 'success' });
@@ -53,6 +71,7 @@ export function AccountBindingPage() {
       notify(error instanceof Error ? error.message : t('绑定失败'), { type: 'error' });
     } finally {
       setSubmitting(false);
+      setReplaceForm(null);
     }
   }
 
@@ -103,12 +122,15 @@ export function AccountBindingPage() {
         {verification ? (
           <Alert severity={verification.ok ? 'success' : 'error'}>
             {verification.message}
-            {verification.ok ? `${t(' 可用余额：')}${verification.availableBalance ?? t('不可用')}` : ''}
+            {verification.ok && <div>
+              {t('账户总权益')} · {verification.equity == null ? t('不可用') : formatUSDT(verification.equity)}
+              {' · '}{t('可用余额')} · {verification.availableBalance == null ? t('不可用') : formatUSDT(verification.availableBalance)}
+            </div>}
           </Alert>
         ) : null}
         <Alert severity="warning">{t('OKX返回401时，优先检查三项：API Key/Secret/Passphrase是否属于同一个API，API是否开启读取和交易权限，IP白名单是否包含当前后端服务器出口IP。生产环境请为数据库和后端配置访问控制。')}</Alert>
       </div>
-      <form className="mt-6 max-w-[520px] space-y-4" onSubmit={(event) => void bind(event)}>
+      <form className="mt-6 max-w-[520px] space-y-4" onSubmit={(event) => void prepareBinding(event)}>
         <Field label="API Key"><Input required autoComplete="off" value={form.apiKey} onChange={(event) => setForm((current) => ({ ...current, apiKey: event.target.value }))} /></Field>
         <Field label="Secret">
           <div className="relative">
@@ -118,11 +140,24 @@ export function AccountBindingPage() {
         </Field>
         <Field label="Passphrase"><Input required type={showSecrets ? 'text' : 'password'} autoComplete="new-password" value={form.passphrase} onChange={(event) => setForm((current) => ({ ...current, passphrase: event.target.value }))} /></Field>
         <div className="flex flex-wrap gap-2">
-          <Button variant="primary" type="submit" disabled={submitting}>{t('绑定账号')}</Button>
+          <Button variant="primary" type="submit" disabled={submitting || Boolean(replaceForm)} aria-busy={submitting}>
+            {submitting ? t('提交中') : t('绑定账号')}
+          </Button>
           <Button variant="ghost" type="button" disabled={submitting || !status.bound} onClick={() => void verify()}>{t('验证接口')}</Button>
           <Button variant="warning" type="button" disabled={submitting || !status.bound} onClick={() => setUnbindOpen(true)}>{t('解绑')}</Button>
         </div>
       </form>
+      {replaceForm && <ConfirmDialog
+        open
+        title={t('替换 OKX API Key')}
+        content={t('确认后将替换现有 API Key。')}
+        confirmLabel={submitting ? t('提交中') : t('确认替换')}
+        cancelLabel={t('返回')}
+        tone="warning"
+        pending={submitting}
+        onConfirm={() => { if (!submitting) void bind(replaceForm); }}
+        onClose={() => setReplaceForm(null)}
+      />}
       <ConfirmDialog
         open={unbindOpen}
         title={t('解绑 OKX 账号')}

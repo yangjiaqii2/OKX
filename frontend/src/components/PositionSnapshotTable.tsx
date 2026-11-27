@@ -2,17 +2,18 @@ import { positionDirection } from '../displayData';
 import { PanelState } from './PanelState';
 import { ScrollableTable } from './ScrollableTable';
 import { TableBody, TableCell, TableHead, TableRow } from './ui/table';
-import { Button } from './ui/button';
+import { ClosePositionButton } from './ClosePositionDialog';
 import { formatLeverage, formatNumber, formatPrice, formatSide, formatStatus, formatUSDT, pnlColor } from '../formatters';
 import { t, useLanguage } from '../i18n';
 
 type PositionSnapshotTableProps = {
   positions: Record<string, unknown>[];
-  closingKey?: string;
+  closing?: boolean;
+  closeDisabledReason?: string;
   onClosePosition?: (position: Record<string, unknown>) => void;
 };
 
-export function PositionSnapshotTable({ positions, closingKey, onClosePosition }: PositionSnapshotTableProps) {
+export function PositionSnapshotTable({ positions, closing = false, closeDisabledReason = '', onClosePosition }: PositionSnapshotTableProps) {
   useLanguage();
   if (positions.length === 0) {
     return <PanelState>{t('暂无持仓。若 OKX 实际有仓位，请查看接口错误信息和 API 读取权限。')}</PanelState>;
@@ -39,9 +40,8 @@ export function PositionSnapshotTable({ positions, closingKey, onClosePosition }
                 <Fact label={t('归属')} value={formatStatus(position.ownership)} />
               </dl>
               {onClosePosition ? (
-                <Button className="mt-3" variant="ghost" disabled={closingKey === key} onClick={() => onClosePosition(position)}>
-                  {closingKey === key ? t('提交中') : t('平仓')}
-                </Button>
+                <div className="mt-3"><ClosePositionButton disabledReason={closeDisabledReason} loading={closing}
+                  onClick={() => onClosePosition(position)} /></div>
               ) : null}
             </details>
           );
@@ -66,7 +66,6 @@ export function PositionSnapshotTable({ positions, closingKey, onClosePosition }
           <TableBody>
             {positions.map((position) => {
               const key = positionKey(position);
-              const closing = closingKey === key;
               return (
                 <TableRow key={key}>
                   <TableCell className="font-semibold">{String(position.instId ?? '-')}</TableCell>
@@ -82,9 +81,8 @@ export function PositionSnapshotTable({ positions, closingKey, onClosePosition }
                   </TableCell>
                   {onClosePosition ? (
                     <TableCell align="right">
-                      <Button variant="ghost" disabled={closing} onClick={() => onClosePosition(position)}>
-                        {closing ? t('提交中') : t('平仓')}
-                      </Button>
+                      <ClosePositionButton disabledReason={closeDisabledReason} loading={closing}
+                        onClick={() => onClosePosition(position)} />
                     </TableCell>
                   ) : null}
                 </TableRow>
@@ -107,5 +105,5 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 export function positionKey(position: Record<string, unknown>) {
-  return `${String(position.instId ?? '-')}-${String(position.posSide ?? 'net')}`;
+  return `${String(position.instId ?? '-')}-${String(position.posSide ?? 'net')}-${String(position.marginMode ?? '')}`;
 }

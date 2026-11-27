@@ -5,6 +5,7 @@ import com.example.quant.account.ExchangePositionRepository;
 import com.example.quant.account.OkxCredentialStore;
 import com.example.quant.account.dto.AccountSummary;
 import com.example.quant.agent.execution.TradeOrderRepository;
+import com.example.quant.auth.AdminOnly;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.account.dto.OkxAccountVerificationResult;
 import com.example.quant.config.TradingProperties;
@@ -131,16 +132,19 @@ public class SystemControlController {
         }
     }
 
+    @AdminOnly
     @PostMapping("/emergency-stop")
     public Object emergencyStop() {
         return systemControlService.emergencyStop();
     }
 
+    @AdminOnly
     @PostMapping("/resume")
     public Object resume() {
         return systemControlService.resume();
     }
 
+    @AdminOnly
     @PostMapping("/auto-trade/enable")
     public Object enableAutoTrade(@RequestParam(required = false) BigDecimal marginUsdt,
                                   @RequestParam(required = false) BigDecimal marginPct,
@@ -165,6 +169,7 @@ public class SystemControlController {
         return systemControlService.enableAutoTrade(marginUsdt, riskMode, noRiskMinScore, minLeverage);
     }
 
+    @AdminOnly
     @PostMapping("/auto-trade/disable")
     public Object disableAutoTrade() {
         return systemControlService.disableAutoTrade();

@@ -7,7 +7,7 @@ import { ScrollableTable } from '../components/ScrollableTable';
 import { StatusChip } from '../components/StatusChip';
 import { Alert } from '../components/ui/alert';
 import { TableBody, TableCell, TableHead, TableRow } from '../components/ui/table';
-import { directionTone, formatPrice, formatSide } from '../formatters';
+import { formatPrice, formatSide } from '../formatters';
 import { cn } from '../lib/cn';
 import { getLanguage, t, useLanguage } from '../i18n';
 
@@ -58,6 +58,7 @@ export function CurrentOkxOrderList() {
         refreshing={refreshing}
       />
       <div className="mt-4 space-y-3">
+        <p className="text-[13px] text-muted">{t('撤单请到 OKX 操作。')}</p>
         {availabilityMessage ? <Alert severity="warning">{availabilityMessage}</Alert> : null}
         <div className="flex gap-4 text-[13px] font-medium">
           {[t('普通委托'), t('保护单')].map((label, index) => (
@@ -83,13 +84,16 @@ export function CurrentOkxOrderList() {
             <TableBody>
               {rows.map((row, index) => {
                 const orderId = [row.ordId, row.algoId, row.clOrdId, row.algoClOrdId].find((value) => value != null && String(value).trim() !== '');
-                const tone = directionTone(row.side);
+
                 return (
                   <TableRow key={String(orderId ?? index)}>
                     <TableCell className="font-semibold">{String(row.instId ?? '-')}</TableCell>
                     <TableCell className="max-w-40 break-all">{String(orderId ?? '—')}</TableCell>
                     <TableCell>{String(row.role ?? '-')}</TableCell>
-                    <TableCell className={tone === 'success' ? 'text-up' : tone === 'error' ? 'text-down' : undefined}>{formatSide(row.side)} / {formatSide(row.posSide)}</TableCell>
+                    <TableCell>
+                      <span className={orderSideColor(row.side)}>{formatSide(row.side)}</span>{' / '}
+                      <span className={orderSideColor(row.posSide)}>{formatSide(row.posSide)}</span>
+                    </TableCell>
                     <TableCell>{formatSide(row.ordType)}</TableCell>
                     <TableCell align="right">{formatPrice(row.size)}</TableCell>
                     <TableCell align="right">{Number(row.price) > 0 && String(row.ordType).toLowerCase() !== 'market' ? formatPrice(row.price) : '—'}</TableCell>
@@ -110,4 +114,11 @@ export function CurrentOkxOrderList() {
 function formatTime(value: unknown) {
   const date = new Date(String(value ?? ''));
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString(getLanguage());
+}
+
+function orderSideColor(value: unknown) {
+  const side = String(value ?? '').toLowerCase();
+  if (side === 'buy' || side === 'long') return 'text-up';
+  if (side === 'sell' || side === 'short') return 'text-down';
+  return 'text-muted';
 }

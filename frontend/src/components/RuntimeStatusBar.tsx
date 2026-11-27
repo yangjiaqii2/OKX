@@ -35,8 +35,11 @@ export function RuntimeStatusBar() {
   const [open, setOpen] = useState(false);
   const needsAttention = (status.unknownOrders ?? 0) > 0
     || (status.unmanagedPositions ?? 0) > 0
+    || status.okxRest === 'ERROR'
     || ['ERROR', 'EMERGENCY_STOP', 'BLOCKED', 'FAILED'].includes(status.tradingEngine);
-  const healthy = status.tradingEngine === 'AUTO_RUNNING' || status.tradingEngine === 'READY' || status.okxRest === 'CONNECTED';
+  const healthy = !needsAttention && ['READY', 'AUTO_RUNNING'].includes(status.tradingEngine);
+  const engineLabel = displayValue(status.tradingEngine);
+  const summary = healthy ? t('运行正常') : needsAttention ? `${engineLabel} · ${t('运行异常')}` : engineLabel;
 
   useEffect(() => {
     let request: AbortController | undefined;
@@ -61,9 +64,9 @@ export function RuntimeStatusBar() {
 
   return (
     <div className="relative flex items-center gap-3">
-      <span className="hidden items-center gap-2 text-[13px] font-medium text-muted md:inline-flex">
-        <i className={cn('size-1.5 rounded-full', needsAttention ? 'bg-down' : healthy ? 'bg-up' : 'bg-warning')} />
-        {needsAttention ? t('运行异常') : healthy ? t('运行正常') : t('运行状态')}
+      <span className={cn('hidden items-center gap-2 text-[13px] font-medium md:inline-flex', needsAttention ? 'text-warning' : 'text-muted')}>
+        <i className={cn('size-1.5 rounded-full', needsAttention ? 'bg-warning' : healthy ? 'bg-up' : 'bg-current')} />
+        {summary}
       </span>
       <span className={cn('text-[13px] font-medium', status.tradingMode === 'LIVE' ? 'text-down' : 'text-muted')}>
         {modeLabel(status.tradingMode)}
@@ -125,6 +128,12 @@ function modeLabel(value: string) {
 function displayValue(value: string) {
   const labels: Record<string, string> = {
     NOT_IMPLEMENTED: t('未接入'),
+    READY: t('就绪'),
+    MANUAL_CONFIRM: t('人工确认'),
+    SHADOW_ONLY: t('Shadow 观察'),
+    EMERGENCY_STOP: t('紧急停止'),
+    ERROR: t('异常'),
+    FAILED: t('失败'),
     MONITORING_ONLY: t('仅监控'),
     AUTO_RUNNING: t('运行中'),
     AUTO_ENABLED: t('已启用'),
