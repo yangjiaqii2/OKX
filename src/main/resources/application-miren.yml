@@ -34,9 +34,9 @@ quant:
     recovery:
       enabled: ${QUANT_AGENT_RECOVERY_ENABLED:true}
     selection:
-      deep-analysis-limit: ${QUANT_AGENT_DEEP_ANALYSIS_LIMIT:18}
-      deep-analysis-concurrency: ${QUANT_AGENT_DEEP_ANALYSIS_CONCURRENCY:6}
-      deep-analysis-rotation-quota: ${QUANT_AGENT_DEEP_ANALYSIS_ROTATION_QUOTA:10}
+      deep-analysis-limit: ${QUANT_AGENT_DEEP_ANALYSIS_LIMIT:12}
+      deep-analysis-concurrency: ${QUANT_AGENT_DEEP_ANALYSIS_CONCURRENCY:3}
+      deep-analysis-rotation-quota: ${QUANT_AGENT_DEEP_ANALYSIS_ROTATION_QUOTA:6}
     timeout:
       scan-round-timeout-seconds: ${QUANT_AGENT_SCAN_ROUND_TIMEOUT_SECONDS:75}
 

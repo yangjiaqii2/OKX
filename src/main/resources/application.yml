@@ -90,7 +90,7 @@ quant:
     # V2: Universe Hard Filter + Provider TTL 配置
     selection:
       deep-analysis-limit: ${QUANT_AGENT_DEEP_ANALYSIS_LIMIT:}
-      deep-analysis-concurrency: ${QUANT_AGENT_DEEP_ANALYSIS_CONCURRENCY:6}
+      deep-analysis-concurrency: ${QUANT_AGENT_DEEP_ANALYSIS_CONCURRENCY:3}
       # deep-analysis-limit 中划给轮换覆盖的名额（不新增分析量，只改变分配）。设 0 = 纯成交额截断。
       deep-analysis-rotation-quota: ${QUANT_AGENT_DEEP_ANALYSIS_ROTATION_QUOTA:20}
       universe:
