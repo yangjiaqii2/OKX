@@ -5,18 +5,23 @@ import com.example.quant.ai.AiAnalysisService;
 import com.example.quant.ai.LlmRuntimeConfig;
 import com.example.quant.ai.UserLlmProfileService;
 import com.example.quant.auth.AuthUserContext;
+import com.example.quant.config.TradingProperties;
 import com.example.quant.crypto.ContractAnalysisService;
 import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.crypto.selection.V2SelectionScoreResult;
 import com.example.quant.market.DirectionBias;
 import com.example.quant.market.MarketType;
+import com.example.quant.order.OrderConfirmService;
+import com.example.quant.order.OrderExecutionResult;
 import com.example.quant.order.PendingOrder;
 import com.example.quant.order.PendingOrderService;
+import com.example.quant.system.SystemControlService;
 import com.example.quant.tradeplan.TradePlan;
 import com.example.quant.tradeplan.TradePlanService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -48,6 +53,20 @@ public class TradingAgentOrchestrator {
     private final TradePlanService tradePlanService;
     private final PendingOrderService pendingOrderService;
     private final ObjectMapper objectMapper;
+    private OrderConfirmService orderConfirmService;
+    private TradingProperties tradingProperties;
+    private SystemControlService systemControlService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void configureAutoExecution(
+            OrderConfirmService orderConfirmService,
+            TradingProperties tradingProperties,
+            SystemControlService systemControlService
+    ) {
+        this.orderConfirmService = orderConfirmService;
+        this.tradingProperties = tradingProperties;
+        this.systemControlService = systemControlService;
+    }
 
     public TradingAgentOrchestrator(
             TradingAgentRepository agentRepository,
@@ -236,10 +255,39 @@ public class TradingAgentOrchestrator {
                 summaryReason = "已生成待确认订单 " + pending.id() + " (" + selectedInstId + " " + selectedDirection + ")，请前往「待确认订单」复核下单";
                 steps.add(new AgentRunStep(stepNo++, "EXECUTION", "PASSED", summaryReason, elapsedMs(execStart)));
             } else {
-                decision = "BLOCKED";
-                errorCode = "AUTO_MODE_REQUIRES_PHASE3_WS";
-                summaryReason = "AUTO 全自动模式将在 Phase 3 多用户私有 WS 与独立对账上线后开放，当前请使用 PAPER 模拟或 MANUAL_CONFIRM 模式";
-                steps.add(new AgentRunStep(stepNo++, "EXECUTION", "BLOCKED", summaryReason, elapsedMs(execStart)));
+                if (systemControlService != null && systemControlService.emergencyStopEnabled()) {
+                    decision = "BLOCKED";
+                    errorCode = "PLATFORM_EMERGENCY_STOPPED";
+                    summaryReason = "平台已触发全局紧急停止，所有 AUTO 自动下单已暂停";
+                    steps.add(new AgentRunStep(stepNo++, "EXECUTION", "BLOCKED", summaryReason, elapsedMs(execStart)));
+                } else if (tradingProperties == null || !tradingProperties.mode().writesEnabled()) {
+                    decision = "BLOCKED";
+                    errorCode = "TRADING_MODE_DISABLED";
+                    summaryReason = "当前环境交易模式为 DISABLED，AUTO 模式仅在 DEMO 或 LIVE 环境允许下单";
+                    steps.add(new AgentRunStep(stepNo++, "EXECUTION", "BLOCKED", summaryReason, elapsedMs(execStart)));
+                } else if (orderConfirmService == null) {
+                    decision = "BLOCKED";
+                    errorCode = "ORDER_CONFIRM_SERVICE_UNAVAILABLE";
+                    summaryReason = "自动下单执行器不可用";
+                    steps.add(new AgentRunStep(stepNo++, "EXECUTION", "BLOCKED", summaryReason, elapsedMs(execStart)));
+                } else {
+                    String instToCreate = selectedInstId;
+                    BigDecimal perTradeMargin = agent.getAllocatedBudgetUsdt()
+                            .divide(BigDecimal.valueOf(Math.max(1, agent.getMaxOpenPositions())), 2, RoundingMode.DOWN)
+                            .max(BigDecimal.ONE);
+                    OrderExecutionResult execResult = AuthUserContext.callAs(agent.getUserName(), () -> {
+                        TradePlan plan = tradePlanService.createContractPlan(instToCreate);
+                        PendingOrder pending = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, plan);
+                        return orderConfirmService.confirmAuto(pending.id(), perTradeMargin);
+                    });
+                    decision = execResult.executed() ? "AUTO_ORDER_EXECUTED" : "BLOCKED";
+                    summaryReason = (execResult.executed() ? "AUTO 自动下单已提交" : "AUTO 下单被风控/网关拦截")
+                            + " (" + selectedInstId + " " + selectedDirection
+                            + ", 保证金 " + perTradeMargin.toPlainString() + " USDT"
+                            + (execResult.message() != null ? ", " + truncate(execResult.message(), 160) : "") + ")";
+                    steps.add(new AgentRunStep(stepNo++, "EXECUTION", execResult.executed() ? "PASSED" : "BLOCKED",
+                            summaryReason, elapsedMs(execStart)));
+                }
             }
 
             return persistRun(agent, scanId, decision, selectedInstId, selectedDirection, llmModel, summaryReason, errorCode, steps, elapsedMs(startedAt));

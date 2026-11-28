@@ -915,5 +915,18 @@
   "切换状态失败": "Failed to toggle status",
   "试跑失败": "Run failed",
   "交易 Agent 已删除": "Trading Agent deleted",
-  "删除失败": "Failed to delete"
+  "删除失败": "Failed to delete",
+  "私有 WS": "Private WS",
+  "AUTO · 自动执行（需 DEMO / LIVE 环境）": "AUTO · Automated execution (DEMO / LIVE)",
+  "Agent 平台总览与全局急停": "Agent Platform Overview & Global Stop",
+  "实时监控所有注册用户的活跃交易 Agent 与私有 WebSocket 连接池。": "Monitor active user trading Agents and dynamic private WebSocket pool sessions.",
+  "暂停全平台 Agent": "Pause all Agents",
+  "平台总 Agent": "Total Agents",
+  "运行中 Agent": "Running Agents",
+  "活跃用户 / WS 会话": "Active Users / WS",
+  "暂停全平台所有活跃 Agent": "Pause all running platform Agents",
+  "确认后将立即暂停所有用户的 RUNNING 状态 Agent 并开启系统紧急停止。": "Immediately pauses every RUNNING Agent across all users and activates system emergency stop.",
+  "确认暂停": "Confirm pause",
+  "已暂停全平台活跃 Agent：": "Paused running platform Agents: ",
+  "全局暂停失败": "Failed to pause all Agents"
 }

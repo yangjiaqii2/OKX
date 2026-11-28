@@ -132,6 +132,7 @@ export function AgentsPage() {
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [agents, setAgents] = useState<TradingAgent[]>([]);
   const [llmProfiles, setLlmProfiles] = useState<LlmProfileOption[]>([]);
+  const [wsStatus, setWsStatus] = useState<{ state?: string; reason?: string }>({});
   const [editorOpen, setEditorOpen] = useState(false);
   const [form, setForm] = useState<AgentFormState>(() => defaultFormFromTemplate());
   const [selectedTraceAgent, setSelectedTraceAgent] = useState<TradingAgent | null>(null);
@@ -142,14 +143,16 @@ export function AgentsPage() {
   async function loadAll() {
     setLoading(true);
     try {
-      const [tpls, list, profiles] = await Promise.all([
+      const [tpls, list, profiles, ws] = await Promise.all([
         quantApi.agentTemplates() as Promise<AgentTemplate[]>,
         quantApi.agents() as Promise<TradingAgent[]>,
         quantApi.llmProfiles() as Promise<LlmProfileOption[]>,
+        quantApi.agentWsStatus().catch(() => ({})) as Promise<{ state?: string; reason?: string }>,
       ]);
       setTemplates(Array.isArray(tpls) ? tpls : []);
       setAgents(Array.isArray(list) ? list : []);
       setLlmProfiles(Array.isArray(profiles) ? profiles : []);
+      setWsStatus(ws ?? {});
     } catch (error) {
       notify(error instanceof Error ? error.message : t('加载交易 Agent 失败'), { type: 'error' });
     } finally {
@@ -308,10 +311,18 @@ export function AgentsPage() {
         subtitle={t('共享全市场量化扫描与硬风控底座；每个 Agent 使用你自己的大模型 API 与独立策略边界，每轮思考与拦截原因全程可追溯。')}
         onRefresh={() => void loadAll()}
         actions={
-          <Button variant="primary" size="sm" onClick={openCreate}>
-            <Plus size={14} />
-            {t('新建 Agent')}
-          </Button>
+          <div className="flex items-center gap-2">
+            {wsStatus.state ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-raised px-3 py-1 text-[12px] text-muted">
+                <span className={cn('size-1.5 rounded-full', wsStatus.state === 'READY' ? 'bg-up' : 'bg-faint')} />
+                {t('私有 WS')}: {wsStatus.state}
+              </span>
+            ) : null}
+            <Button variant="primary" size="sm" onClick={openCreate}>
+              <Plus size={14} />
+              {t('新建 Agent')}
+            </Button>
+          </div>
         }
       />
 
@@ -554,7 +565,7 @@ export function AgentsPage() {
                   >
                     <option value="PAPER">{t('PAPER · 纯模拟观察（推荐首用）')}</option>
                     <option value="MANUAL_CONFIRM">{t('MANUAL · 生成待确认订单')}</option>
-                    <option value="AUTO">{t('AUTO · 自动执行（Phase 3 开放）')}</option>
+                    <option value="AUTO">{t('AUTO · 自动执行（需 DEMO / LIVE 环境）')}</option>
                   </select>
                 </Field>
               </div>
@@ -741,7 +752,7 @@ function DecisionBadge({ decision }: { decision: string }) {
   const cls =
     decision === 'PAPER_TRADE'
       ? 'bg-[#D6EE8A] text-[#13261B]'
-      : decision === 'MANUAL_ORDER_CREATED'
+      : decision === 'MANUAL_ORDER_CREATED' || decision === 'AUTO_ORDER_EXECUTED'
         ? 'bg-[#16382B] text-[#F7FAF4]'
         : decision === 'SKIP'
           ? 'bg-sunken text-muted'

@@ -1,5 +1,22 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - Agent 平台 Phase 3：多用户私有 WebSocket 连接池、独立恢复、开放 AUTO 模式与管理员全局急停
+
+- **变更摘要**：完成 Agent 平台第三阶段闭环，新增按活跃用户动态管理的私有 WebSocket 连接池，升级定时恢复任务按用户隔离遍历，正式开放个人 Agent 的 `AUTO` 自动下单模式（受平台全局急停与 `TRADING_MODE` 硬守卫约束），并在管理员系统控制页上线「Agent 平台总览与全局急停」面板。
+- **涉及文件**：
+  - 多用户私有 WS 与恢复：`src/main/java/com/example/quant/crypto/UserPrivateWebSocketPool.java`、`src/main/java/com/example/quant/task/AutoTradeRecoveryTask.java`
+  - AUTO 执行与管理总览：`src/main/java/com/example/quant/agent/platform/AdminAgentOverview.java`、`src/main/java/com/example/quant/agent/platform/TradingAgentOrchestrator.java`、`src/main/java/com/example/quant/agent/platform/TradingAgentService.java`、`src/main/java/com/example/quant/controller/TradingAgentController.java`
+  - 前端：`frontend/src/api/quantApi.ts`、`frontend/src/pages/AgentsPage.tsx`、`frontend/src/pages/SystemControlPage.tsx`、`frontend/src/i18n.en.json`
+  - 测试：`src/test/java/com/example/quant/crypto/UserPrivateWebSocketPoolTest.java`
+- **影响范围**：
+  - `UserPrivateWebSocketPool` 仅为拥有 `RUNNING` 状态非 `PAPER` Agent 的用户建立独立 OKX 私有 WebSocket 连接，闲置自动释放，单用户异常隔离；`/api/quant/agents/ws-status` 暴露当前用户的私有 WS 状态。
+  - `AutoTradeRecoveryTask.runScheduled()` 在原有主 Owner 恢复基础上，按用户隔离恢复所有拥有活跃非 `PAPER` Agent 的注册用户。
+  - `TradingAgentOrchestrator` 的 `AUTO` 模式接入 `OrderConfirmService.confirmAuto`（受 `emergencyStop` 与 `TRADING_MODE` 写入权限双守卫）。
+  - 新增 `@AdminOnly` 接口 `GET /api/quant/agents/admin/overview` 与 `POST /api/quant/agents/admin/pause-all`，支持管理员一键暂停全平台所有活跃 Agent 并触发全局急停。
+- **验证结果**：
+  - 后端：`mvn -B -o test -Dtest=UserPrivateWebSocketPoolTest,TradingAgentPlatformTest,OkxWebSocketServiceTest,AutoTradeRecoveryTaskTest,QuantAssistantApplicationContextTest,SystemControlControllerWebTest` 共 23 项全部通过（0 失败、0 错误，Spring 完整上下文、多用户私有 WS 连接池、独立恢复与系统控制测试均通过）。
+  - 前端：`npm --prefix frontend run build` 通过 `tsc` 类型检查与 Vite 6.4.3 生产构建（4,984 个模块，0 错误）。
+
 ### 2026-11-28 - Agent 平台 Phase 2：个人交易 Agent 引擎、共享扫盘分派与「我的 Agent」工作台
 
 - **变更摘要**：完成 Agent 平台第二阶段核心改造，新增按用户隔离的 `quant_trading_agent` / `quant_agent_run` 模型与 Flyway V56 迁移，实现全市场共享扫盘分派、同账户币种排他锁、平台硬风控上限截断、`PAPER`/`MANUAL_CONFIRM` 模式路由，并上线前端「我的 Agent」工作台与决策追踪时间线。

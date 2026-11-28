@@ -225,6 +225,7 @@ export function SystemControlPage() {
           <Button variant="ghost" disabled={disabled || !status?.autoTradeEnabled} onClick={() => setAutoDisableOpen(true)}>{t('关闭自动交易')}</Button>
         </div>
       </section>
+      <AdminAgentPlatformSection onEmergencyTriggered={() => void loadStatus()} />
       <ConfirmDialog open={emergencyOpen} title={t('触发紧急停止')} content={t('确认后后端会切换到紧急停止状态。请先确认当前 OKX 没有未处理订单。')} confirmLabel={t('紧急停止')} cancelLabel={t('返回')} tone="danger" pending={submitting} onConfirm={() => void emergencyStop()} onClose={() => setEmergencyOpen(false)} />
       <ConfirmDialog open={resumeOpen} title={t('恢复系统运行')} content={t('确认恢复后，扫描和交易流程将重新按后端配置运行。')} confirmLabel={t('恢复运行')} cancelLabel={t('返回')} pending={submitting} onConfirm={() => void resume()} onClose={() => setResumeOpen(false)} />
       <ConfirmDialog
@@ -258,5 +259,112 @@ function Segment<T extends string>({ value, options, onChange, disabled }: { val
         </button>
       ))}
     </div>
+  );
+}
+
+type AdminOverviewData = {
+  totalAgents: number;
+  runningAgents: number;
+  activeUsers: number;
+  emergencyStopped: boolean;
+  wsSessions: Array<{ username: string; state: string; reason: string }>;
+  agents: Array<{ id: number; userName: string; name: string; status: string; runMode: string; lastDecision?: string }>;
+};
+
+function AdminAgentPlatformSection({ onEmergencyTriggered }: { onEmergencyTriggered: () => void }) {
+  const notify = useNotify();
+  const [overview, setOverview] = useState<AdminOverviewData | null>(null);
+  const [pausing, setPausing] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  async function loadOverview() {
+    try {
+      const data = (await quantApi.adminAgentOverview()) as AdminOverviewData;
+      setOverview(data);
+    } catch {
+      // Non-critical admin widget.
+    }
+  }
+
+  useEffect(() => {
+    void loadOverview();
+  }, []);
+
+  async function pauseAll() {
+    setPausing(true);
+    try {
+      const res = (await quantApi.adminPauseAllAgents()) as { pausedCount?: number; overview?: AdminOverviewData };
+      if (res.overview) setOverview(res.overview);
+      notify(`${t('已暂停全平台活跃 Agent：')}${res.pausedCount ?? 0}`, { type: 'warning' });
+      onEmergencyTriggered();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('全局暂停失败'), { type: 'error' });
+    } finally {
+      setPausing(false);
+      setConfirmOpen(false);
+    }
+  }
+
+  if (!overview) return null;
+
+  return (
+    <section className="mt-8 rounded-[22px] border border-line bg-raised p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-[15px] font-semibold text-ink">{t('Agent 平台总览与全局急停')}</h2>
+          <p className="mt-0.5 text-[12px] text-muted">
+            {t('实时监控所有注册用户的活跃交易 Agent 与私有 WebSocket 连接池。')}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="ghost" size="sm" onClick={() => void loadOverview()}>{t('刷新')}</Button>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={pausing || overview.runningAgents === 0}
+            onClick={() => setConfirmOpen(true)}
+          >
+            {t('暂停全平台 Agent')}
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-3 gap-4 rounded-[16px] bg-canvas p-3.5 text-[13px]">
+        <div>
+          <div className="text-[11px] text-muted">{t('平台总 Agent')}</div>
+          <div className="mt-0.5 font-semibold text-ink">{overview.totalAgents}</div>
+        </div>
+        <div>
+          <div className="text-[11px] text-muted">{t('运行中 Agent')}</div>
+          <div className="mt-0.5 font-semibold text-up">{overview.runningAgents}</div>
+        </div>
+        <div>
+          <div className="text-[11px] text-muted">{t('活跃用户 / WS 会话')}</div>
+          <div className="mt-0.5 font-semibold text-ink">{overview.activeUsers} / {overview.wsSessions.length}</div>
+        </div>
+      </div>
+
+      {overview.wsSessions.length > 0 ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {overview.wsSessions.map((ws) => (
+            <span key={ws.username} className="rounded-full border border-line bg-canvas px-2.5 py-0.5 text-[11px] text-muted">
+              {ws.username} · WS {ws.state}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title={t('暂停全平台所有活跃 Agent')}
+        content={t('确认后将立即暂停所有用户的 RUNNING 状态 Agent 并开启系统紧急停止。')}
+        confirmLabel={t('确认暂停')}
+        cancelLabel={t('返回')}
+        tone="danger"
+        pending={pausing}
+        onConfirm={() => void pauseAll()}
+        onClose={() => setConfirmOpen(false)}
+      />
+    </section>
   );
 }

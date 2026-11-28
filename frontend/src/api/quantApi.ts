@@ -91,6 +91,9 @@ export const quantApi = {
     quantFetch(`/agents/${encodeURIComponent(String(id))}/runs?limit=${encodeURIComponent(String(limit))}`),
   deleteAgent: (id: number) =>
     quantFetch(`/agents/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
+  agentWsStatus: () => quantFetch('/agents/ws-status'),
+  adminAgentOverview: () => quantFetch('/agents/admin/overview'),
+  adminPauseAllAgents: () => quantFetch('/agents/admin/pause-all', { method: 'POST' }),
   systemStatus: () => quantFetch('/system/status'),
   runtimeStatus: (signal?: AbortSignal) => quantFetch('/system/runtime-status', { signal }),
   fxRate: (base = 'USD', quote = 'CNY') =>

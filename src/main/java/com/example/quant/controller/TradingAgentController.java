@@ -1,8 +1,15 @@
 package com.example.quant.controller;
 
+import com.example.quant.account.OkxCredentialStore;
 import com.example.quant.agent.platform.SaveTradingAgentRequest;
 import com.example.quant.agent.platform.TradingAgentOrchestrator;
 import com.example.quant.agent.platform.TradingAgentService;
+import com.example.quant.auth.AdminOnly;
+import com.example.quant.auth.AuthUserContext;
+import com.example.quant.crypto.UserPrivateWebSocketPool;
+import com.example.quant.system.SystemControlService;
+import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -17,15 +24,31 @@ import org.springframework.web.bind.annotation.RestController;
 public class TradingAgentController {
     private final TradingAgentService agentService;
     private final TradingAgentOrchestrator orchestrator;
+    private final UserPrivateWebSocketPool wsPool;
+    private final SystemControlService systemControlService;
 
-    public TradingAgentController(TradingAgentService agentService, TradingAgentOrchestrator orchestrator) {
+    @Autowired
+    public TradingAgentController(
+            TradingAgentService agentService,
+            TradingAgentOrchestrator orchestrator,
+            UserPrivateWebSocketPool wsPool,
+            SystemControlService systemControlService
+    ) {
         this.agentService = agentService;
         this.orchestrator = orchestrator;
+        this.wsPool = wsPool;
+        this.systemControlService = systemControlService;
     }
 
     @GetMapping("/templates")
     public Object templates() {
         return agentService.listTemplates();
+    }
+
+    @GetMapping("/ws-status")
+    public Object wsStatus() {
+        String user = AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
+        return wsPool.statusForUser(user);
     }
 
     @GetMapping
@@ -67,5 +90,28 @@ public class TradingAgentController {
     public Object delete(@PathVariable Long id) {
         agentService.deleteForCurrentUser(id);
         return agentService.listForCurrentUser();
+    }
+
+    @AdminOnly
+    @GetMapping("/admin/overview")
+    public Object adminOverview() {
+        return agentService.adminOverview(
+                systemControlService.emergencyStopEnabled(),
+                wsPool.poolSnapshot()
+        );
+    }
+
+    @AdminOnly
+    @PostMapping("/admin/pause-all")
+    public Object pauseAllRunningAgents() {
+        int pausedCount = agentService.pauseAllRunningAgents();
+        systemControlService.emergencyStop();
+        return Map.of(
+                "pausedCount", pausedCount,
+                "overview", agentService.adminOverview(
+                        systemControlService.emergencyStopEnabled(),
+                        wsPool.poolSnapshot()
+                )
+        );
     }
 }

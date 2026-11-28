@@ -202,6 +202,44 @@ public class TradingAgentService {
     }
 
     @Transactional(readOnly = true)
+    public AdminAgentOverview adminOverview(
+            boolean emergencyStopped,
+            List<com.example.quant.crypto.UserPrivateWebSocketPool.UserWsStatus> wsSessions
+    ) {
+        List<TradingAgentEntity> all = agentRepository.findAll();
+        int running = (int) all.stream().filter(a -> a.getStatus() == TradingAgentStatus.RUNNING).count();
+        int activeUsers = (int) all.stream()
+                .filter(a -> a.getStatus() == TradingAgentStatus.RUNNING)
+                .map(TradingAgentEntity::getUserName)
+                .distinct()
+                .count();
+        List<AdminAgentOverview.AdminAgentSummary> summaries = all.stream()
+                .map(AdminAgentOverview.AdminAgentSummary::from)
+                .toList();
+        return new AdminAgentOverview(
+                all.size(),
+                running,
+                activeUsers,
+                emergencyStopped,
+                wsSessions == null ? List.of() : wsSessions,
+                summaries
+        );
+    }
+
+    @Transactional
+    public int pauseAllRunningAgents() {
+        List<TradingAgentEntity> running = agentRepository.findByStatusOrderByUpdatedAtAsc(TradingAgentStatus.RUNNING);
+        Instant now = Instant.now();
+        for (TradingAgentEntity agent : running) {
+            agent.setStatus(TradingAgentStatus.PAUSED);
+            agent.setLastSummary("管理员触发平台全局紧急暂停");
+            agent.setUpdatedAt(now);
+            agentRepository.save(agent);
+        }
+        return running.size();
+    }
+
+    @Transactional(readOnly = true)
     public List<AgentRunView> listRunsForCurrentUser(Long agentId, int limit) {
         return listRunsForUser(currentUsername(), agentId, limit);
     }

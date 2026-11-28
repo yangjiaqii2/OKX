@@ -47,6 +47,7 @@ public class AutoTradeRecoveryTask {
     private final OkxCurrentOrderSyncService currentOrderSyncService;
     private final SystemControlService systemControlService;
     private final TradeEventService tradeEventService;
+    private com.example.quant.agent.platform.TradingAgentRepository tradingAgentRepository;
 
     public AutoTradeRecoveryTask(PendingOrderService pendingOrderService, AutoTradeBudgetService budgetService,
                                  AgentProperties agentProperties) {
@@ -110,6 +111,11 @@ public class AutoTradeRecoveryTask {
         this(pendingOrderService, budgetService, agentProperties, okxTradeAdapter, lifecycleService, null, null, null);
     }
 
+    @Autowired(required = false)
+    void configureTradingAgentRepository(com.example.quant.agent.platform.TradingAgentRepository tradingAgentRepository) {
+        this.tradingAgentRepository = tradingAgentRepository;
+    }
+
     @Scheduled(
             fixedRateString = "${quant.agent.recovery.interval-seconds:30}",
             initialDelayString = "${quant.agent.recovery.interval-seconds:30}",
@@ -117,6 +123,29 @@ public class AutoTradeRecoveryTask {
     )
     public void runScheduled() {
         runOnce();
+        recoverActiveAgentOwners();
+    }
+
+    void recoverActiveAgentOwners() {
+        if (tradingAgentRepository == null || !agentProperties.recovery().enabled()) {
+            return;
+        }
+        String primaryOwner = systemControlService == null ? "" : systemControlService.autoTradeOwnerUsername();
+        tradingAgentRepository.findByStatusOrderByUpdatedAtAsc(com.example.quant.agent.platform.TradingAgentStatus.RUNNING)
+                .stream()
+                .filter(agent -> agent.getRunMode() != com.example.quant.agent.platform.TradingAgentRunMode.PAPER)
+                .map(com.example.quant.agent.platform.TradingAgentEntity::getUserName)
+                .filter(AutoTradeRecoveryTask::hasText)
+                .filter(user -> !user.equals(primaryOwner))
+                .distinct()
+                .forEach(user -> {
+                    try {
+                        runOnceForOwner(user);
+                    } catch (RuntimeException ex) {
+                        log.warn("Isolated agent recovery failed for user={}: {}", user, ex.getMessage());
+                        recordRecoveryFailed(user, null, "AGENT_USER_RECOVERY_FAILED", ex.getMessage());
+                    }
+                });
     }
 
     public RecoveryResult runOnce() {
