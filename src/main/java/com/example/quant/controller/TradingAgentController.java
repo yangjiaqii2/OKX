@@ -1,6 +1,8 @@
 package com.example.quant.controller;
 
 import com.example.quant.account.OkxCredentialStore;
+import com.example.quant.agent.platform.AgentMemoryService;
+import com.example.quant.agent.platform.SaveAgentMemoryRequest;
 import com.example.quant.agent.platform.SaveTradingAgentRequest;
 import com.example.quant.agent.platform.TradingAgentOrchestrator;
 import com.example.quant.agent.platform.TradingAgentService;
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class TradingAgentController {
     private final TradingAgentService agentService;
     private final TradingAgentOrchestrator orchestrator;
+    private final AgentMemoryService memoryService;
     private final UserPrivateWebSocketPool wsPool;
     private final SystemControlService systemControlService;
 
@@ -31,11 +34,13 @@ public class TradingAgentController {
     public TradingAgentController(
             TradingAgentService agentService,
             TradingAgentOrchestrator orchestrator,
+            AgentMemoryService memoryService,
             UserPrivateWebSocketPool wsPool,
             SystemControlService systemControlService
     ) {
         this.agentService = agentService;
         this.orchestrator = orchestrator;
+        this.memoryService = memoryService;
         this.wsPool = wsPool;
         this.systemControlService = systemControlService;
     }
@@ -84,6 +89,32 @@ public class TradingAgentController {
     @GetMapping("/{id}/runs")
     public Object runs(@PathVariable Long id, @RequestParam(defaultValue = "20") int limit) {
         return agentService.listRunsForCurrentUser(id, limit);
+    }
+
+    @GetMapping("/{id}/memories")
+    public Object memories(@PathVariable Long id) {
+        return memoryService.listForCurrentUser(id);
+    }
+
+    @PostMapping("/{id}/memories")
+    public Object addMemory(@PathVariable Long id, @RequestBody SaveAgentMemoryRequest request) {
+        return memoryService.addForCurrentUser(id, request);
+    }
+
+    @PostMapping("/{id}/memories/{memoryId}/pin")
+    public Object togglePinMemory(@PathVariable Long id, @PathVariable Long memoryId) {
+        return memoryService.togglePinForCurrentUser(id, memoryId);
+    }
+
+    @DeleteMapping("/{id}/memories/{memoryId}")
+    public Object deleteMemory(@PathVariable Long id, @PathVariable Long memoryId) {
+        memoryService.deleteForCurrentUser(id, memoryId);
+        return memoryService.listForCurrentUser(id);
+    }
+
+    @PostMapping("/{id}/reflect")
+    public Object reflect(@PathVariable Long id) {
+        return memoryService.reflectNowForCurrentUser(id);
     }
 
     @DeleteMapping("/{id}")

@@ -92,6 +92,19 @@ export const quantApi = {
   deleteAgent: (id: number) =>
     quantFetch(`/agents/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
   agentWsStatus: () => quantFetch('/agents/ws-status'),
+  agentMemories: (id: number) => quantFetch(`/agents/${encodeURIComponent(String(id))}/memories`),
+  addAgentMemory: (id: number, payload: { memoryType: string; instId?: string; content: string; pinned?: boolean }) =>
+    quantFetch(`/agents/${encodeURIComponent(String(id))}/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  togglePinAgentMemory: (id: number, memoryId: number) =>
+    quantFetch(`/agents/${encodeURIComponent(String(id))}/memories/${encodeURIComponent(String(memoryId))}/pin`, { method: 'POST' }),
+  deleteAgentMemory: (id: number, memoryId: number) =>
+    quantFetch(`/agents/${encodeURIComponent(String(id))}/memories/${encodeURIComponent(String(memoryId))}`, { method: 'DELETE' }),
+  reflectAgent: (id: number) =>
+    quantFetch(`/agents/${encodeURIComponent(String(id))}/reflect`, { method: 'POST' }),
   adminAgentOverview: () => quantFetch('/agents/admin/overview'),
   adminPauseAllAgents: () => quantFetch('/agents/admin/pause-all', { method: 'POST' }),
   systemStatus: () => quantFetch('/system/status'),

@@ -187,6 +187,35 @@ class TradingAgentPlatformTest {
         assertThat(runs.get(2).getSummaryReason()).contains("FAKE-USDT-SWAP");
     }
 
+    @Test
+    void supportsBoundedReadOnlyToolCallingBeforeFinalDecision() throws Exception {
+        LlmRuntimeConfig aliceLlm = new LlmRuntimeConfig("https://api.deepseek.com/v1", "sk-alice", "deepseek-chat");
+        when(llmProfileService.resolveRuntimeConfig(eq("alice"), any())).thenReturn(Optional.of(aliceLlm));
+
+        TradingAgentView agent = agentService.saveForUser("alice", new SaveTradingAgentRequest(
+                null, "ToolAgent", "TREND_BALANCED", "PAPER", null,
+                new BigDecimal("100"), 2, 5, 60, 60,
+                new BigDecimal("1.2"), new BigDecimal("3.0"),
+                "BOTH", "", "", "", true
+        ));
+        agentService.startForUser("alice", agent.id());
+
+        when(aiAnalysisService.completeJson(eq(aliceLlm), anyString(), anyString()))
+                .thenReturn(
+                        objectMapper.readTree("{\"action\":\"TOOL_CALL\",\"tool\":\"inspect_candidate_detail\",\"instId\":\"SOL-USDT-SWAP\",\"reason\":\"核对盘口深度与资金费率\"}"),
+                        objectMapper.readTree("{\"action\":\"TRADE\",\"instId\":\"SOL-USDT-SWAP\",\"reason\":\"盘口深度充足，确认入场\"}")
+                );
+
+        ContractCandidate sol = sampleCandidate("SOL-USDT-SWAP", 84, new BigDecimal("82"));
+        orchestrator.dispatchScan("scan-tool-1", List.of(sol), Map.of());
+
+        assertThat(runs).hasSize(1);
+        AgentRunView view = agentService.toRunView(runs.get(0));
+        assertThat(view.decision()).isEqualTo("PAPER_TRADE");
+        assertThat(view.steps()).extracting(AgentRunStep::stage)
+                .containsExactly("FILTER", "TOOL_CALL", "LLM_DECISION", "RISK_GATE", "EXECUTION");
+    }
+
     private static ContractCandidate sampleCandidate(String instId, int score, BigDecimal finalRank) {
         return new ContractCandidate(
                 MarketType.OKX_SWAP,

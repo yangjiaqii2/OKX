@@ -1,5 +1,20 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - Agent 平台 Phase 4：受控只读 Tool Calling、长期记忆与 AI 复盘反思
+
+- **变更摘要**：完成 Agent 平台第四阶段智能化进化，新增 `quant_agent_memory` 表（Flyway V57）与 `AgentMemoryService`，在决策引擎中接入最多 2 步的受控只读工具查证（`inspect_candidate_detail` / `inspect_symbol_history`）与历史记忆注入，并在前端「我的 Agent」页面上线长期记忆管理与一键 AI 复盘反思面板。
+- **涉及文件**：
+  - 数据库迁移：`src/main/resources/db/migration/V57__agent_memory_and_tools.sql`
+  - 后端记忆与工具调用：`src/main/java/com/example/quant/agent/platform/AgentMemoryEntity.java`、`AgentMemoryRepository.java`、`AgentMemoryView.java`、`SaveAgentMemoryRequest.java`、`AgentMemoryService.java`、`TradingAgentEntity.java`、`TradingAgentView.java`、`SaveTradingAgentRequest.java`、`TradingAgentService.java`、`TradingAgentOrchestrator.java`、`src/main/java/com/example/quant/controller/TradingAgentController.java`
+  - 前端：`frontend/src/api/quantApi.ts`、`frontend/src/pages/AgentsPage.tsx`、`frontend/src/i18n.en.json`
+  - 测试：`src/test/java/com/example/quant/agent/platform/TradingAgentPlatformTest.java`
+- **影响范围**：
+  - 决策前允许 Agent 最多调用 2 次只读查证工具（严禁暴露任何下单/写操作工具），每次查证结果自动落入 `TOOL_CALL` 步骤并展示在决策追踪时间线中。
+  - 启用的 `quant_agent_memory` 记忆自动注入每轮决策 Prompt；支持用户手动添加/置顶/删除规则，或通过 `POST /api/quant/agents/{id}/reflect` 调用个人 BYOK 模型自动复盘提炼近期教训。
+- **验证结果**：
+  - 后端：`mvn -B -o test -Dtest=TradingAgentPlatformTest,UserPrivateWebSocketPoolTest,QuantAssistantApplicationContextTest,StrategyDecisionServiceTest,UserLlmProfileServiceTest,AuthUserServiceTest` 共 20 项全部通过（0 失败、0 错误，Flyway 成功迁移至 V57，受控只读 Tool Calling 流程与 Spring 完整上下文均通过）。
+  - 前端：`npm --prefix frontend run build` 通过 `tsc` 类型检查与 Vite 6.4.3 生产构建（4,984 个模块，0 错误）。
+
 ### 2026-11-28 - Agent 平台 Phase 3：多用户私有 WebSocket 连接池、独立恢复、开放 AUTO 模式与管理员全局急停
 
 - **变更摘要**：完成 Agent 平台第三阶段闭环，新增按活跃用户动态管理的私有 WebSocket 连接池，升级定时恢复任务按用户隔离遍历，正式开放个人 Agent 的 `AUTO` 自动下单模式（受平台全局急停与 `TRADING_MODE` 硬守卫约束），并在管理员系统控制页上线「Agent 平台总览与全局急停」面板。

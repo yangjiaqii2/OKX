@@ -150,6 +150,7 @@ public class TradingAgentService {
                 ? template.defaultSystemPrompt()
                 : request.systemPrompt().trim();
         entity.setSystemPrompt(prompt);
+        entity.setToolCallingEnabled(request.toolCallingEnabled() == null || request.toolCallingEnabled());
         entity.setUpdatedAt(now);
 
         return TradingAgentView.from(agentRepository.save(entity));

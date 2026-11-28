@@ -1,4 +1,4 @@
-import { Bot, Pause, Play, Plus, Sparkles, Terminal, Trash2, Zap } from 'lucide-react';
+import { BookOpen, Bot, Pause, Pin, Play, Plus, Sparkles, Terminal, Trash2, Zap } from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { Link } from 'react-router-dom';
@@ -45,6 +45,7 @@ type TradingAgent = {
   symbolWhitelist: string;
   symbolBlacklist: string;
   systemPrompt: string;
+  toolCallingEnabled?: boolean;
   versionNo: number;
   lastDecision?: string | null;
   lastSummary?: string | null;
@@ -83,6 +84,17 @@ type LlmProfileOption = {
   active: boolean;
 };
 
+type AgentMemory = {
+  id: number;
+  agentId: number;
+  memoryType: string;
+  instId?: string | null;
+  content: string;
+  pinned: boolean;
+  enabled: boolean;
+  updatedAt: string;
+};
+
 type AgentFormState = {
   id: number | null;
   name: string;
@@ -100,6 +112,7 @@ type AgentFormState = {
   symbolWhitelist: string;
   symbolBlacklist: string;
   systemPrompt: string;
+  toolCallingEnabled: boolean;
 };
 
 function defaultFormFromTemplate(template?: AgentTemplate): AgentFormState {
@@ -120,6 +133,7 @@ function defaultFormFromTemplate(template?: AgentTemplate): AgentFormState {
     symbolWhitelist: '',
     symbolBlacklist: '',
     systemPrompt: template?.defaultSystemPrompt ?? '',
+    toolCallingEnabled: true,
   };
 }
 
@@ -138,6 +152,11 @@ export function AgentsPage() {
   const [selectedTraceAgent, setSelectedTraceAgent] = useState<TradingAgent | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [loadingRuns, setLoadingRuns] = useState(false);
+  const [selectedMemoryAgent, setSelectedMemoryAgent] = useState<TradingAgent | null>(null);
+  const [memories, setMemories] = useState<AgentMemory[]>([]);
+  const [loadingMemories, setLoadingMemories] = useState(false);
+  const [reflecting, setReflecting] = useState(false);
+  const [newMemory, setNewMemory] = useState({ memoryType: 'USER_RULE', instId: '', content: '', pinned: true });
   const [deleteTarget, setDeleteTarget] = useState<TradingAgent | null>(null);
 
   async function loadAll() {
@@ -177,6 +196,74 @@ export function AgentsPage() {
     }
   }
 
+  async function loadMemories(agent: TradingAgent) {
+    setSelectedMemoryAgent(agent);
+    setLoadingMemories(true);
+    try {
+      const list = (await quantApi.agentMemories(agent.id)) as AgentMemory[];
+      setMemories(Array.isArray(list) ? list : []);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('加载 Agent 记忆失败'), { type: 'error' });
+    } finally {
+      setLoadingMemories(false);
+    }
+  }
+
+  async function addMemory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedMemoryAgent || !newMemory.content.trim()) return;
+    setSubmitting(true);
+    try {
+      await quantApi.addAgentMemory(selectedMemoryAgent.id, {
+        memoryType: newMemory.memoryType,
+        instId: newMemory.instId.trim() || undefined,
+        content: newMemory.content.trim(),
+        pinned: newMemory.pinned,
+      });
+      setNewMemory({ memoryType: 'USER_RULE', instId: '', content: '', pinned: true });
+      notify(t('记忆条目已保存'), { type: 'success' });
+      await loadMemories(selectedMemoryAgent);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('保存记忆失败'), { type: 'error' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function triggerReflect() {
+    if (!selectedMemoryAgent || reflecting) return;
+    setReflecting(true);
+    try {
+      const added = (await quantApi.reflectAgent(selectedMemoryAgent.id)) as AgentMemory[];
+      notify(`${t('AI 复盘完成，新提炼记忆：')}${Array.isArray(added) ? added.length : 0}`, { type: 'success' });
+      await loadMemories(selectedMemoryAgent);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('AI 复盘反思失败'), { type: 'error' });
+    } finally {
+      setReflecting(false);
+    }
+  }
+
+  async function togglePinMemory(memoryId: number) {
+    if (!selectedMemoryAgent) return;
+    try {
+      await quantApi.togglePinAgentMemory(selectedMemoryAgent.id, memoryId);
+      await loadMemories(selectedMemoryAgent);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('操作失败'), { type: 'error' });
+    }
+  }
+
+  async function deleteMemory(memoryId: number) {
+    if (!selectedMemoryAgent) return;
+    try {
+      await quantApi.deleteAgentMemory(selectedMemoryAgent.id, memoryId);
+      await loadMemories(selectedMemoryAgent);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('删除失败'), { type: 'error' });
+    }
+  }
+
   function openCreate() {
     setForm(defaultFormFromTemplate(templates[0]));
     setEditorOpen(true);
@@ -200,6 +287,7 @@ export function AgentsPage() {
       symbolWhitelist: agent.symbolWhitelist ?? '',
       symbolBlacklist: agent.symbolBlacklist ?? '',
       systemPrompt: agent.systemPrompt ?? '',
+      toolCallingEnabled: agent.toolCallingEnabled !== false,
     });
     setEditorOpen(true);
   }
@@ -235,6 +323,7 @@ export function AgentsPage() {
         symbolWhitelist: form.symbolWhitelist,
         symbolBlacklist: form.symbolBlacklist,
         systemPrompt: form.systemPrompt,
+        toolCallingEnabled: form.toolCallingEnabled,
       });
       notify(form.id ? t('交易 Agent 配置已更新') : t('交易 Agent 已创建'), { type: 'success' });
       setEditorOpen(false);
@@ -423,6 +512,10 @@ export function AgentsPage() {
                   <Terminal size={13} />
                   {t('决策轨迹')}
                 </Button>
+                <Button variant="ghost" size="sm" onClick={() => void loadMemories(agent)}>
+                  <BookOpen size={13} />
+                  {t('记忆与复盘')}
+                </Button>
                 <Button variant="quiet" size="sm" onClick={() => openEdit(agent)}>
                   {t('编辑')}
                 </Button>
@@ -440,6 +533,91 @@ export function AgentsPage() {
           ))
         )}
       </div>
+
+      {/* Agent Memory & Reflection Panel */}
+      {selectedMemoryAgent ? (
+        <div className="mt-8 rounded-[24px] border border-line bg-raised p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-serif text-[22px] font-medium text-ink">
+                {selectedMemoryAgent.name} · {t('长期记忆与复盘反思')}
+              </h2>
+              <p className="mt-1 text-[13px] text-muted">
+                {t('启用的记忆会自动注入该 Agent 每轮决策上下文；可手动添加规则或点击「AI 复盘提炼」总结近期教训。')}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="primary" size="sm" disabled={reflecting} onClick={() => void triggerReflect()}>
+                <Sparkles size={13} />
+                {reflecting ? t('复盘提炼中...') : t('AI 复盘提炼记忆')}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedMemoryAgent(null)}>
+                {t('收起')}
+              </Button>
+            </div>
+          </div>
+
+          <form className="mt-5 grid gap-3 rounded-[18px] bg-canvas p-4 sm:grid-cols-[140px_140px_minmax(0,1fr)_auto]" onSubmit={(e) => void addMemory(e)}>
+            <select
+              className="h-10 rounded-[10px] border border-line-strong bg-field px-2.5 text-[13px] text-ink"
+              value={newMemory.memoryType}
+              onChange={(e) => setNewMemory((c) => ({ ...c, memoryType: e.target.value }))}
+            >
+              <option value="USER_RULE">{t('用户规则')}</option>
+              <option value="LESSON">{t('复盘教训')}</option>
+              <option value="SYMBOL_NOTE">{t('币种笔记')}</option>
+              <option value="MARKET_REGIME">{t('行情状态')}</option>
+            </select>
+            <Input
+              className="h-10"
+              placeholder={t('合约(可选)')}
+              value={newMemory.instId}
+              onChange={(e) => setNewMemory((c) => ({ ...c, instId: e.target.value }))}
+            />
+            <Input
+              className="h-10"
+              required
+              placeholder={t('例如：连续长上影线突破时避免追高，优先等待 5M 回踩')}
+              value={newMemory.content}
+              onChange={(e) => setNewMemory((c) => ({ ...c, content: e.target.value }))}
+            />
+            <Button variant="primary" size="sm" type="submit" disabled={submitting} className="h-10">
+              {t('添加记忆')}
+            </Button>
+          </form>
+
+          {loadingMemories ? (
+            <PanelState loading className="mt-5" />
+          ) : memories.length === 0 ? (
+            <p className="mt-5 text-[13px] text-muted">{t('暂无记忆条目。可手动添加交易纪律，或在运行几轮后点击「AI 复盘提炼记忆」。')}</p>
+          ) : (
+            <div className="mt-4 space-y-2.5">
+              {memories.map((m) => (
+                <div key={m.id} className="flex items-start justify-between gap-3 rounded-[16px] border border-line bg-canvas px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
+                      <span className={cn('rounded-full px-2 py-0.5', m.pinned ? 'bg-[#D6EE8A] text-[#13261B]' : 'bg-sunken text-muted')}>
+                        {m.memoryType}
+                      </span>
+                      {m.instId ? <span className="text-ink">{m.instId}</span> : null}
+                      {m.pinned ? <span className="text-accent-ink">{t('置顶')}</span> : null}
+                    </div>
+                    <p className="mt-1.5 text-[13px] leading-5 text-ink">{m.content}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button variant="quiet" size="icon" aria-label={t('置顶')} onClick={() => void togglePinMemory(m.id)}>
+                      <Pin size={13} className={m.pinned ? 'text-accent-ink' : 'text-muted'} />
+                    </Button>
+                    <Button variant="quiet" size="icon" aria-label={t('删除')} onClick={() => void deleteMemory(m.id)}>
+                      <Trash2 size={13} className="text-muted hover:text-down" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
 
       {/* Decision Trace Panel */}
       {selectedTraceAgent ? (
@@ -687,6 +865,15 @@ export function AgentsPage() {
                   onChange={(event) => setForm((c) => ({ ...c, systemPrompt: event.target.value }))}
                 />
               </Field>
+
+              <label className="flex items-center gap-2 text-[13px] text-ink">
+                <input
+                  type="checkbox"
+                  checked={form.toolCallingEnabled}
+                  onChange={(event) => setForm((c) => ({ ...c, toolCallingEnabled: event.target.checked }))}
+                />
+                {t('启用受控只读工具查证（决策前最多 2 步查盘口/历史，严禁下单工具）')}
+              </label>
 
               <div className="flex justify-end gap-2 pt-2">
                 <Button variant="ghost" type="button" onClick={() => setEditorOpen(false)}>

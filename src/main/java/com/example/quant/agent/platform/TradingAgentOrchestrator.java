@@ -42,6 +42,7 @@ import org.springframework.stereotype.Service;
 public class TradingAgentOrchestrator {
     private static final Logger log = LoggerFactory.getLogger(TradingAgentOrchestrator.class);
     private static final int TOP_LLM_CANDIDATES = 3;
+    private static final int MAX_READ_ONLY_TOOL_STEPS = 2;
 
     private final TradingAgentRepository agentRepository;
     private final AgentRunRepository runRepository;
@@ -56,6 +57,7 @@ public class TradingAgentOrchestrator {
     private OrderConfirmService orderConfirmService;
     private TradingProperties tradingProperties;
     private SystemControlService systemControlService;
+    private AgentMemoryService memoryService;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void configureAutoExecution(
@@ -66,6 +68,11 @@ public class TradingAgentOrchestrator {
         this.orderConfirmService = orderConfirmService;
         this.tradingProperties = tradingProperties;
         this.systemControlService = systemControlService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void configureMemoryService(AgentMemoryService memoryService) {
+        this.memoryService = memoryService;
     }
 
     public TradingAgentOrchestrator(
@@ -176,9 +183,37 @@ public class TradingAgentOrchestrator {
 
             LlmRuntimeConfig runtime = runtimeOpt.get();
             llmModel = runtime.modelName();
-            String systemPrompt = buildSystemPrompt(agent);
-            String userPrompt = buildCandidateDigestPrompt(agent, filtered, v2Scores);
-            JsonNode llmJson = aiAnalysisService.completeJson(runtime, systemPrompt, userPrompt);
+            String memoryContext = memoryService == null
+                    ? ""
+                    : memoryService.buildMemoryContext(agent.getId(), agent.getUserName());
+            String systemPrompt = buildSystemPrompt(agent, agent.isToolCallingEnabled());
+            StringBuilder promptBuilder = new StringBuilder(buildCandidateDigestPrompt(agent, filtered, v2Scores, memoryContext));
+
+            JsonNode llmJson = aiAnalysisService.completeJson(runtime, systemPrompt, promptBuilder.toString());
+            int toolCallsUsed = 0;
+            while (agent.isToolCallingEnabled()
+                    && toolCallsUsed < MAX_READ_ONLY_TOOL_STEPS
+                    && "TOOL_CALL".equalsIgnoreCase(llmJson.path("action").asText("").trim())) {
+                long toolStart = System.nanoTime();
+                String toolName = llmJson.path("tool").asText("").trim();
+                String targetInst = llmJson.path("instId").asText("").trim().toUpperCase();
+                String toolResult = executeReadOnlyTool(agent, filtered, toolName, targetInst);
+                toolCallsUsed++;
+                steps.add(new AgentRunStep(
+                        stepNo++,
+                        "TOOL_CALL",
+                        "PASSED",
+                        toolName + "(" + (targetInst.isEmpty() ? "-" : targetInst) + ") → " + truncate(toolResult, 260),
+                        elapsedMs(toolStart)
+                ));
+                promptBuilder.append("\n\n[只读工具返回 #").append(toolCallsUsed).append("] ")
+                        .append(toolName).append("(").append(targetInst).append("): ")
+                        .append(toolResult)
+                        .append(toolCallsUsed >= MAX_READ_ONLY_TOOL_STEPS
+                                ? "\n（已达工具调用上限，请立即给出最终 TRADE 或 SKIP JSON 决策）"
+                                : "\n请继续给出最终 TRADE 或 SKIP JSON 决策（或最多再查 1 次）。");
+                llmJson = aiAnalysisService.completeJson(runtime, systemPrompt, promptBuilder.toString());
+            }
 
             String action = llmJson.path("action").asText("SKIP").trim().toUpperCase();
             String pickedInstId = llmJson.path("instId").asText("").trim().toUpperCase();
@@ -331,24 +366,67 @@ public class TradingAgentOrchestrator {
         return bias == DirectionBias.BEARISH;
     }
 
-    private static String buildSystemPrompt(TradingAgentEntity agent) {
-        return agent.getSystemPrompt()
+    private String executeReadOnlyTool(
+            TradingAgentEntity agent,
+            List<ContractCandidate> filtered,
+            String toolName,
+            String instId
+    ) {
+        if ("inspect_candidate_detail".equalsIgnoreCase(toolName)) {
+            ContractCandidate c = filtered.stream()
+                    .filter(item -> instId.equalsIgnoreCase(item.instId()))
+                    .findFirst()
+                    .orElse(null);
+            if (c == null) {
+                return "标的 " + instId + " 不在本轮合格候选池中。";
+            }
+            return "instId=" + c.instId()
+                    + ", 24hChg=" + formatNum(c.changePercent24h()) + "%"
+                    + ", 5mChg=" + formatNum(c.changePercent5m()) + "%"
+                    + ", funding=" + formatNum(c.fundingRate())
+                    + ", oiChg=" + formatNum(c.openInterestChange())
+                    + ", bidDepth=" + formatNum(c.bidDepthUsdt())
+                    + ", askDepth=" + formatNum(c.askDepthUsdt())
+                    + ", atr20m=" + formatNum(c.atrPct20m()) + "%"
+                    + ", slPct=" + formatNum(c.stopLossPct()) + "%"
+                    + ", reasons=" + (c.candidateReasonList() == null ? "[]" : c.candidateReasonList())
+                    + ", riskTags=" + (c.riskTagList() == null ? "[]" : c.riskTagList());
+        }
+        if ("inspect_symbol_history".equalsIgnoreCase(toolName)) {
+            if (memoryService == null) {
+                return "历史记忆服务未启用。";
+            }
+            return memoryService.inspectSymbolHistory(agent.getId(), agent.getUserName(), instId);
+        }
+        return "不支持的只读工具：" + toolName + "（仅支持 inspect_candidate_detail / inspect_symbol_history）。";
+    }
+
+    private static String buildSystemPrompt(TradingAgentEntity agent, boolean toolCallingEnabled) {
+        String base = agent.getSystemPrompt()
                 + "\n\n【强制输出协议】你必须且只能输出严格 JSON 对象，不要包含 Markdown 代码块或多余文字："
-                + "\n{\"action\":\"TRADE\"|\"SKIP\",\"instId\":\"候选中的合约ID或空字符串\",\"reason\":\"简明中文理由(80字以内)\"}"
-                + "\n你只能从用户消息提供的候选列表中选择 instId；如果没有高把握机会，必须返回 action=\"SKIP\"。";
+                + "\n最终决策格式：{\"action\":\"TRADE\"|\"SKIP\",\"instId\":\"候选中的合约ID或空字符串\",\"reason\":\"简明中文理由(80字以内)\"}";
+        if (toolCallingEnabled) {
+            base += "\n在最终决策前，你最多可调用 2 次只读查证工具（严禁下单工具），格式："
+                    + "{\"action\":\"TOOL_CALL\",\"tool\":\"inspect_candidate_detail\"|\"inspect_symbol_history\",\"instId\":\"候选中的合约ID\",\"reason\":\"查证目的\"}";
+        }
+        return base + "\n你只能从用户消息提供的候选列表中选择 instId；如果没有高把握机会，必须返回 action=\"SKIP\"。";
     }
 
     private static String buildCandidateDigestPrompt(
             TradingAgentEntity agent,
             List<ContractCandidate> candidates,
-            Map<String, V2SelectionScoreResult> v2Scores
+            Map<String, V2SelectionScoreResult> v2Scores,
+            String memoryContext
     ) {
         StringBuilder sb = new StringBuilder();
         sb.append("Agent=").append(agent.getName())
                 .append(", Mode=").append(agent.getRunMode())
                 .append(", BudgetUSDT=").append(agent.getAllocatedBudgetUsdt())
-                .append(", MaxLeverage=").append(agent.getMaxLeverage()).append("x\n")
-                .append("合格候选列表（按评分排序，最多 3 个）：\n");
+                .append(", MaxLeverage=").append(agent.getMaxLeverage()).append("x\n");
+        if (memoryContext != null && !memoryContext.isBlank()) {
+            sb.append("【该 Agent 历史复盘与长期记忆】\n").append(memoryContext).append("\n\n");
+        }
+        sb.append("合格候选列表（按评分排序，最多 3 个）：\n");
         for (int i = 0; i < candidates.size(); i++) {
             ContractCandidate c = candidates.get(i);
             V2SelectionScoreResult v2 = v2Scores.get(c.instId());
