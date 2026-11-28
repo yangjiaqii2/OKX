@@ -1,5 +1,12 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 优化定时扫盘超时与并发配置，保障 Agent 稳定派发与新鲜 K 线
+
+- **变更摘要**：针对代理网络环境下单轮扫盘 45 秒分析 30 币频繁触发 `PARTIAL_TIMEOUT` 导致不派发 Agent 与候选缓存过期的问题，将 `application.yml` 默认单轮扫盘超时放宽至 `75s`（支持 `QUANT_AGENT_SCAN_ROUND_TIMEOUT_SECONDS`）、深度分析并发提升至 `6`；在 `application-miren.yml` 中配置 `deep-analysis-limit: 18`（轮换配额 `10`），确保单轮扫盘在 15～25 秒内稳定 `COMPLETED`；同时在 `ContractMarketScanTask` 中补充兜底：即使偶发 `PARTIAL_TIMEOUT`，只要本轮已产出新鲜合格候选，依然派发给个人交易 Agent 评估。
+- **涉及文件**：`src/main/resources/application.yml`、`src/main/resources/application-miren.yml`、`src/main/java/com/example/quant/task/ContractMarketScanTask.java`
+- **影响范围**：消除定时扫盘频繁超时，保障个人交易 Agent 按冷却节奏持续收到最新 K 线的合格候选并完成自动评估与执行。
+- **验证结果**：`mvn -B -o test -Dtest=ContractMarketScanTaskTest,TradingAgentPlatformTest` 通过（0 错误），同步推送至 `origin/main` 并部署至 Miren `local` 验证实时扫盘与 Agent 自动运行。
+
 ### 2026-11-28 - 解除 Miren 配置中的 OKX 离线桩（127.0.0.1:9）并默认启用 DEMO 与扫盘
 
 - **变更摘要**：将 `src/main/resources/application-miren.yml` 中早期首次部署遗留的离线桩配置（`okx.api.base-url: http://127.0.0.1:9`、`websocket: ws://127.0.0.1:9`、`trading.mode: DISABLED`、`quant.contract.enabled: false`）全部改为环境变量驱动并默认指向真实 OKX 接口、`TRADING_MODE=DEMO` 与开启合约扫盘；同步在 `.miren/app.toml` 中补充 `-Djava.net.preferIPv4Stack=true` 与 `TRADING_MODE=DEMO`。

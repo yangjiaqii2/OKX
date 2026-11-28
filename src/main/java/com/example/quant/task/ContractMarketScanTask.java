@@ -146,6 +146,21 @@ public class ContractMarketScanTask {
             ScanRunStatus scanStatus = scanResult.status();
             recordShadowSelections(scanId, candidates);
             if (scanStatus != ScanRunStatus.COMPLETED) {
+                if (scanStatus == ScanRunStatus.PARTIAL_TIMEOUT
+                        && agentOrchestrator != null
+                        && candidates != null
+                        && !candidates.isEmpty()) {
+                    try {
+                        int dispatchedAgents = agentOrchestrator.dispatchScan(scanId, candidates, scanResult.v2Scores());
+                        if (dispatchedAgents > 0) {
+                            log.info("contract-market-scan dispatched on partial timeout scanId={} candidates={} activeAgents={}",
+                                    scanId, candidates.size(), dispatchedAgents);
+                        }
+                    } catch (RuntimeException ex) {
+                        log.warn("contract-market-scan partial agent dispatch failed scanId={} error={}",
+                                scanId, ex.getMessage());
+                    }
+                }
                 String reason = report == null ? "SCAN_REPORT_MISSING" : scanStatus.name();
                 ScanTaskLog result = new ScanTaskLog(
                         "contract-market-scan",
