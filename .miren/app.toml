@@ -1,0 +1,44 @@
+name = "okx-quant"
+
+[build]
+dockerfile = "Dockerfile"
+
+[services.web]
+command = "exec /app/start-miren.sh"
+port = 8080
+port_timeout = "3m"
+
+[services.web.concurrency]
+mode = "fixed"
+num_instances = 1
+shutdown_timeout = "40s"
+
+[addons.miren-mysql]
+variant = "shared"
+version = "8"
+
+[[env]]
+key = "SPRING_PROFILES_ACTIVE"
+value = "miren,evaluation"
+
+[[env]]
+key = "JAVA_TOOL_OPTIONS"
+value = "-Xms96m -Xmx384m -XX:ActiveProcessorCount=2 -Dfile.encoding=UTF-8"
+
+[[env]]
+key = "TRADING_MODE"
+value = "DISABLED"
+
+[[env]]
+key = "QUANT_AGENT_AUTO_TRADE_ENABLED"
+value = "false"
+
+[[env]]
+key = "QUANT_CREDENTIAL_MASTER_KEY"
+backend = "cluster"
+ref = "okx-quant/credential-master-key"
+
+[[env]]
+key = "QUANT_AUTH_PASSWORD"
+backend = "cluster"
+ref = "okx-quant/bootstrap-admin-password"

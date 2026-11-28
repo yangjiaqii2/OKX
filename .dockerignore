@@ -14,6 +14,10 @@
 !src/main/resources/application.properties
 !src/main/resources/application.yml
 !src/main/resources/application-local.yml
+!src/main/resources/application-miren.yml
 !src/main/resources/META-INF/spring.factories
 !src/main/resources/coingecko-okx-coin-ids.properties
 !src/main/resources/db/migration/V*__*.sql
+!akshare-service/requirements.txt
+!akshare-service/server.py
+!scripts/start-miren.sh

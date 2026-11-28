@@ -1,0 +1,46 @@
+server:
+  port: 8080
+  # The Miren ingress terminates HTTPS and sets X-Forwarded-Proto and Host.
+  forward-headers-strategy: native
+
+spring:
+  datasource:
+    url: "jdbc:mysql://${MYSQL_HOST}:${MYSQL_PORT}/${MYSQL_DATABASE}?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true"
+    username: ${MYSQL_USER}
+    password: ${MYSQL_PASSWORD}
+    hikari:
+      minimum-idle: 1
+      maximum-pool-size: 4
+  sql:
+    init:
+      mode: never
+  flyway:
+    enabled: true
+    create-schemas: false
+    clean-disabled: true
+    baseline-on-migrate: false
+    validate-on-migrate: true
+
+quant:
+  auth:
+    password: ${QUANT_AUTH_PASSWORD}
+  security:
+    credential-master-key: ${QUANT_CREDENTIAL_MASTER_KEY}
+  contract:
+    enabled: false
+  agent:
+    auto-trade:
+      enabled: false
+    recovery:
+      enabled: false
+
+trading:
+  mode: DISABLED
+
+# The first deployment must stay offline even for reconciliation and private reads.
+okx:
+  api:
+    base-url: http://127.0.0.1:9
+  websocket:
+    public-url: ws://127.0.0.1:9
+    private-url: ws://127.0.0.1:9

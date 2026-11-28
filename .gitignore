@@ -25,7 +25,7 @@ target/
 /repomix-output.xml
 /okx-backup*.sql
 
-# Local credentials, deployment files, and backups.
+# Miren source uploads honor .gitignore before Docker sees the build context.
 .aws/
 .ssh/
 .agents/
@@ -54,4 +54,5 @@ backups/
 *.7z
 *.sqlite*
 *.mv.db
-/.miren/
+/.miren/*
+!/.miren/app.toml
