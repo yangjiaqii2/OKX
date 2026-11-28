@@ -1,5 +1,14 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 修复 Agent 自动执行跨 K 线报错并优化扫盘状态文案
+
+- **变更摘要**：
+  1. 在 `TradingAgentOrchestrator` 中，将 `AUTO` 模式改为调用 `tradePlanService.createContractPlan(chosen)`（走自动执行计划链路，完整保留账户/杠杆/仓位/盘口硬风控，不再因扫盘跨越 5 分钟整点而被手动刷新门禁 `LIVE_REFRESH_CANDLE_CHANGED_REANALYZE_REQUIRED` 误杀）；同时在 `MANUAL_CONFIRM` 与 `AUTO` 模式中统一前置拦截 `WATCH` 计划，优雅记为 `BLOCKED` 并附带风控原因，不再抛出未捕获异常记成 `ERROR`。
+  2. 将前端 `formatters.ts` 中旧版扫盘状态码 `auto_trade_disabled_by_config` / `auto_trade_runtime_switch_off` 的文案更新为「旧版全局自动交易已关闭（由「我的 Agent」自动执行）」，消除「OKX合约」页的误导提示。
+- **涉及文件**：`src/main/java/com/example/quant/agent/platform/TradingAgentOrchestrator.java`、`frontend/src/formatters.ts`、`frontend/src/i18n.en.json`
+- **影响范围**：彻底解决个人 Agent 在跨 5 分钟整点扫盘时全员报 `ERROR` 的问题，并明确区分旧版全局开关与 Agent 自动执行状态。
+- **验证结果**：`mvn -B -o test -Dtest=TradingAgentPlatformTest` 与 `npm --prefix frontend run build` 均通过（0 错误），同步推送至 `origin/main` 并部署至 Miren `local` 集群。
+
 ### 2026-11-28 - 优化定时扫盘超时与并发配置，保障 Agent 稳定派发与新鲜 K 线
 
 - **变更摘要**：针对代理网络环境下单轮扫盘频繁触发 `PARTIAL_TIMEOUT` 与高并发导致 `OI_TIMEOUT / HTTP connect timed out` 的问题，将 `application.yml` 默认单轮扫盘超时放宽至 `75s`（支持 `QUANT_AGENT_SCAN_ROUND_TIMEOUT_SECONDS`）、深度分析并发收敛为 `3` 避免打爆代理并发连接；在 `application-miren.yml` 中配置 `deep-analysis-limit: 12`（轮换配额 `6`），确保单轮扫盘稳定 `COMPLETED`；同时在 `ContractMarketScanTask` 中补充兜底：即使偶发 `PARTIAL_TIMEOUT`，只要本轮已产出新鲜合格候选，依然派发给个人交易 Agent 评估。

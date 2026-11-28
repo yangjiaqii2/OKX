@@ -295,13 +295,27 @@ public class TradingAgentOrchestrator {
                 steps.add(new AgentRunStep(stepNo++, "EXECUTION", "PASSED", summaryReason, elapsedMs(execStart)));
             } else if (agent.getRunMode() == TradingAgentRunMode.MANUAL_CONFIRM) {
                 String instToCreate = selectedInstId;
-                PendingOrder pending = AuthUserContext.callAs(agent.getUserName(), () -> {
-                    TradePlan plan = tradePlanService.createContractPlan(instToCreate);
-                    return pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, plan);
+                ContractCandidate candidateForPlan = chosen;
+                TradePlan plan = AuthUserContext.callAs(agent.getUserName(), () -> {
+                    TradePlan p = tradePlanService.createContractPlan(instToCreate);
+                    if (p != null && p.action() == com.example.quant.tradeplan.TradePlanType.WATCH
+                            && containsCandleChangedReason(p)) {
+                        return tradePlanService.createContractPlan(candidateForPlan);
+                    }
+                    return p;
                 });
-                decision = "MANUAL_ORDER_CREATED";
-                summaryReason = "已生成待确认订单 " + pending.id() + " (" + selectedInstId + " " + selectedDirection + ")，请前往「待确认订单」复核下单";
-                steps.add(new AgentRunStep(stepNo++, "EXECUTION", "PASSED", summaryReason, elapsedMs(execStart)));
+                if (plan == null || plan.action() == com.example.quant.tradeplan.TradePlanType.WATCH) {
+                    decision = "BLOCKED";
+                    errorCode = "PLAN_DOWNGRADED_TO_WATCH";
+                    summaryReason = "交易计划未通过实时风控校验（降级为观察）：" + summarizeWatchPlan(plan);
+                    steps.add(new AgentRunStep(stepNo++, "EXECUTION", "BLOCKED", summaryReason, elapsedMs(execStart)));
+                } else {
+                    PendingOrder pending = AuthUserContext.callAs(agent.getUserName(),
+                            () -> pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, plan));
+                    decision = "MANUAL_ORDER_CREATED";
+                    summaryReason = "已生成待确认订单 " + pending.id() + " (" + selectedInstId + " " + selectedDirection + ")，请前往「待确认订单」复核下单";
+                    steps.add(new AgentRunStep(stepNo++, "EXECUTION", "PASSED", summaryReason, elapsedMs(execStart)));
+                }
             } else {
                 if (systemControlService != null && systemControlService.emergencyStopEnabled()) {
                     decision = "BLOCKED";
@@ -319,22 +333,30 @@ public class TradingAgentOrchestrator {
                     summaryReason = "自动下单执行器不可用";
                     steps.add(new AgentRunStep(stepNo++, "EXECUTION", "BLOCKED", summaryReason, elapsedMs(execStart)));
                 } else {
-                    String instToCreate = selectedInstId;
+                    ContractCandidate candidateForPlan = chosen;
                     BigDecimal perTradeMargin = agent.getAllocatedBudgetUsdt()
                             .divide(BigDecimal.valueOf(Math.max(1, agent.getMaxOpenPositions())), 2, RoundingMode.DOWN)
                             .max(BigDecimal.ONE);
-                    OrderExecutionResult execResult = AuthUserContext.callAs(agent.getUserName(), () -> {
-                        TradePlan plan = tradePlanService.createContractPlan(instToCreate);
-                        PendingOrder pending = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, plan);
-                        return orderConfirmService.confirmAuto(pending.id(), perTradeMargin);
-                    });
-                    decision = execResult.executed() ? "AUTO_ORDER_EXECUTED" : "BLOCKED";
-                    summaryReason = (execResult.executed() ? "AUTO 自动下单已提交" : "AUTO 下单被风控/网关拦截")
-                            + " (" + selectedInstId + " " + selectedDirection
-                            + ", 保证金 " + perTradeMargin.toPlainString() + " USDT"
-                            + (execResult.message() != null ? ", " + truncate(execResult.message(), 160) : "") + ")";
-                    steps.add(new AgentRunStep(stepNo++, "EXECUTION", execResult.executed() ? "PASSED" : "BLOCKED",
-                            summaryReason, elapsedMs(execStart)));
+                    TradePlan plan = AuthUserContext.callAs(agent.getUserName(),
+                            () -> tradePlanService.createContractPlan(candidateForPlan));
+                    if (plan == null || plan.action() == com.example.quant.tradeplan.TradePlanType.WATCH) {
+                        decision = "BLOCKED";
+                        errorCode = "PLAN_DOWNGRADED_TO_WATCH";
+                        summaryReason = "AUTO 交易计划被风控拦截（降级为观察）：" + summarizeWatchPlan(plan);
+                        steps.add(new AgentRunStep(stepNo++, "EXECUTION", "BLOCKED", summaryReason, elapsedMs(execStart)));
+                    } else {
+                        OrderExecutionResult execResult = AuthUserContext.callAs(agent.getUserName(), () -> {
+                            PendingOrder pending = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, plan);
+                            return orderConfirmService.confirmAuto(pending.id(), perTradeMargin);
+                        });
+                        decision = execResult.executed() ? "AUTO_ORDER_EXECUTED" : "BLOCKED";
+                        summaryReason = (execResult.executed() ? "AUTO 自动下单已提交" : "AUTO 下单被风控/网关拦截")
+                                + " (" + selectedInstId + " " + selectedDirection
+                                + ", 保证金 " + perTradeMargin.toPlainString() + " USDT"
+                                + (execResult.message() != null ? ", " + truncate(execResult.message(), 160) : "") + ")";
+                        steps.add(new AgentRunStep(stepNo++, "EXECUTION", execResult.executed() ? "PASSED" : "BLOCKED",
+                                summaryReason, elapsedMs(execStart)));
+                    }
                 }
             }
 
@@ -513,6 +535,31 @@ public class TradingAgentOrchestrator {
                 .filter(s -> !s.isEmpty())
                 .map(String::toUpperCase)
                 .collect(Collectors.toSet());
+    }
+
+    private static boolean containsCandleChangedReason(TradePlan plan) {
+        if (plan == null) {
+            return false;
+        }
+        if (plan.riskList() != null && plan.riskList().stream()
+                .anyMatch(r -> r != null && r.contains("LIVE_REFRESH_CANDLE_CHANGED_REANALYZE_REQUIRED"))) {
+            return true;
+        }
+        return plan.reasonList() != null && plan.reasonList().stream()
+                .anyMatch(r -> r != null && r.contains("LIVE_REFRESH_CANDLE_CHANGED_REANALYZE_REQUIRED"));
+    }
+
+    private static String summarizeWatchPlan(TradePlan plan) {
+        if (plan == null) {
+            return "未生成有效交易计划";
+        }
+        if (plan.riskList() != null && !plan.riskList().isEmpty()) {
+            return truncate(String.join("；", plan.riskList()), 220);
+        }
+        if (plan.reasonList() != null && !plan.reasonList().isEmpty()) {
+            return truncate(String.join("；", plan.reasonList()), 220);
+        }
+        return "计划为观察状态";
     }
 
     private static String safeUpper(String value) {

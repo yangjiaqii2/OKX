@@ -283,6 +283,7 @@
   "模型选择观望": "The model chose to wait",
   "默认排序": "Default Sort",
   "配置已关闭自动交易": "Auto trading is disabled in settings",
+  "旧版全局自动交易已关闭（由「我的 Agent」自动执行）": "Legacy global auto-trade off (managed by My Agents)",
   "平仓": "Close Position",
   "平仓记录": "Close History",
   "平仓记录不可用": "Close-position history unavailable",
