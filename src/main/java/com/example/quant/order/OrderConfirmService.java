@@ -137,11 +137,11 @@ public class OrderConfirmService {
     }
 
     public OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount) {
-        return confirm(orderId, marginAmount, null, false, false, null, null);
+        return confirm(orderId, marginAmount, null, false, false, null, null, null);
     }
 
     public OrderExecutionResult confirmAuto(UUID orderId, BigDecimal marginAmount) {
-        return confirm(orderId, marginAmount, null, true, false, null, null);
+        return confirm(orderId, marginAmount, null, true, false, null, null, null);
     }
 
     public OrderExecutionResult confirmAgentAuto(
@@ -150,11 +150,21 @@ public class OrderConfirmService {
             Integer maxLeverageOverride,
             BigDecimal maxSingleLossPctOverride
     ) {
-        return confirm(orderId, marginAmount, null, true, true, maxLeverageOverride, maxSingleLossPctOverride);
+        return confirmAgentAuto(orderId, marginAmount, maxLeverageOverride, maxSingleLossPctOverride, null);
+    }
+
+    public OrderExecutionResult confirmAgentAuto(
+            UUID orderId,
+            BigDecimal marginAmount,
+            Integer maxLeverageOverride,
+            BigDecimal maxSingleLossPctOverride,
+            BigDecimal maxDailyLossPctOverride
+    ) {
+        return confirm(orderId, marginAmount, null, true, true, maxLeverageOverride, maxSingleLossPctOverride, maxDailyLossPctOverride);
     }
 
     public OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount, ContractRiskRequest riskRequest) {
-        return confirm(orderId, marginAmount, riskRequest, false, false, null, null);
+        return confirm(orderId, marginAmount, riskRequest, false, false, null, null, null);
     }
 
     public OrderExecutionResult resolveUnknownSubmit(UUID orderId) {
@@ -187,7 +197,8 @@ public class OrderConfirmService {
 
     private OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount, ContractRiskRequest providedRiskRequest,
                                          boolean autoFixedMargin, boolean agentManagedAuto,
-                                         Integer maxLeverageOverride, BigDecimal maxSingleLossPctOverride) {
+                                         Integer maxLeverageOverride, BigDecimal maxSingleLossPctOverride,
+                                         BigDecimal maxDailyLossPctOverride) {
         PendingOrder order = pendingOrderService.get(orderId);
         synchronized (order) {
             Instant now = clock.instant();
@@ -329,8 +340,11 @@ public class OrderConfirmService {
                 try {
                     if (executionRisk != null) {
                         BigDecimal loss = order.canonicalExecutablePlan().risk().estimatedNetStopLossAmount();
-                        dailyRisk = dailyRiskService.claimAutomaticEntry(owner, order.id().toString(),
-                                riskRequest.accountEquity(), now, loss);
+                        dailyRisk = agentManagedAuto
+                                ? dailyRiskService.claimAutomaticEntry(owner, order.id().toString(),
+                                        riskRequest.accountEquity(), now, loss, maxSingleLossPctOverride, maxDailyLossPctOverride)
+                                : dailyRiskService.claimAutomaticEntry(owner, order.id().toString(),
+                                        riskRequest.accountEquity(), now, loss);
                     } else {
                         dailyRisk = dailyRiskService.claimEntry(owner, order.id().toString(), riskRequest.accountEquity(), now);
                     }

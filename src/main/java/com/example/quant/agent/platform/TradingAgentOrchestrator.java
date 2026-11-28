@@ -391,7 +391,8 @@ public class TradingAgentOrchestrator {
                         OrderExecutionResult execResult = AuthUserContext.callAs(agent.getUserName(), () -> {
                             PendingOrder pending = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, plan);
                             return orderConfirmService.confirmAgentAuto(
-                                    pending.id(), perTradeMargin, agent.getMaxLeverage(), agent.getMaxSingleLossPct());
+                                    pending.id(), perTradeMargin, agent.getMaxLeverage(),
+                                    agent.getMaxSingleLossPct(), agent.getMaxDailyLossPct());
                         });
                         recordedMargin = perTradeMargin;
                         recordedLeverage = plan.suggestedLeverage();

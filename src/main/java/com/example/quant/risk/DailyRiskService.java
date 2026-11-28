@@ -31,31 +31,44 @@ public class DailyRiskService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.example.quant.config.ContractProperties contractLimits;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.example.quant.ledger.AccountBillLedgerService billLedger;
+
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Decision checkRound(String owner, BigDecimal equity, Instant now) {
-        return checkOrClaim(owner, null, equity, now, BigDecimal.ZERO);
+        return checkOrClaim(owner, null, equity, now, BigDecimal.ZERO, null);
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Decision claimEntry(String owner, String entryKey, BigDecimal accountEquity, Instant now) {
         if (entryKey == null) return Decision.blocked("DAILY_RISK_IDENTITY_MISSING");
-        return checkOrClaim(owner, entryKey, accountEquity, now, BigDecimal.ZERO);
+        return checkOrClaim(owner, entryKey, accountEquity, now, BigDecimal.ZERO, null);
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Decision claimAutomaticEntry(String owner, String entryKey, BigDecimal equity, Instant now,
                                         BigDecimal projectedLoss) {
+        return claimAutomaticEntry(owner, entryKey, equity, now, projectedLoss, null, null);
+    }
+
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public Decision claimAutomaticEntry(String owner, String entryKey, BigDecimal equity, Instant now,
+                                        BigDecimal projectedLoss, BigDecimal maxSingleLossPctOverride,
+                                        BigDecimal maxDailyLossPctOverride) {
         if (entryKey == null) return Decision.blocked("DAILY_RISK_IDENTITY_MISSING");
         if (projectedLoss == null || projectedLoss.signum() <= 0) return Decision.blocked("DAILY_RISK_COST_UNKNOWN");
         if (equity == null || equity.signum() <= 0) return Decision.blocked("ACCOUNT_EQUITY_UNAVAILABLE");
-        if (projectedLoss.compareTo(equity.multiply(percentRate(properties.risk().singleTradeRiskPercent()))) > 0) {
+        BigDecimal effectiveSingleRiskPct = maxSingleLossPctOverride != null && maxSingleLossPctOverride.signum() > 0
+                ? maxSingleLossPctOverride
+                : properties.risk().singleTradeRiskPercent();
+        if (projectedLoss.compareTo(equity.multiply(percentRate(effectiveSingleRiskPct))) > 0) {
             return Decision.blocked("DAILY_RISK_SINGLE_TRADE_COST_LIMIT");
         }
-        return checkOrClaim(owner, entryKey, equity, now, projectedLoss);
+        return checkOrClaim(owner, entryKey, equity, now, projectedLoss, maxDailyLossPctOverride);
     }
 
     private Decision checkOrClaim(String owner, String entryKey, BigDecimal accountEquity, Instant now,
-                                  BigDecimal projectedLoss) {
+                                  BigDecimal projectedLoss, BigDecimal maxDailyLossPctOverride) {
         if (owner == null || owner.isBlank() || (entryKey != null && entryKey.isBlank())) {
             return Decision.blocked("DAILY_RISK_IDENTITY_MISSING");
         }
@@ -65,6 +78,11 @@ public class DailyRiskService {
         Instant effectiveNow = now == null ? Instant.now() : now;
         LocalDate day = tradingDayResolver.tradingDate(effectiveNow);
         LedgerPnlService.Summary summary = pnl == null ? null : pnl.summary(owner);
+        if ((summary == null || summary.todayNetRealizedPnl() == null
+                || !"EXCHANGE_RECENT_LEDGER".equals(summary.dataQuality())) && billLedger != null) {
+            billLedger.syncRecent();
+            summary = pnl == null ? null : pnl.summary(owner);
+        }
         if (summary == null || summary.todayNetRealizedPnl() == null
                 || !"EXCHANGE_RECENT_LEDGER".equals(summary.dataQuality())) {
             return Decision.blocked("DAILY_LEDGER_SYNC_REQUIRED");
@@ -76,9 +94,14 @@ public class DailyRiskService {
         }
         if (claims.unsettledCloses(owner) > 0) return Decision.blocked("DAILY_RISK_PRIOR_CLOSE_UNSETTLED");
         BigDecimal baseline = positive(state.getStartingEquity(), accountEquity);
-        BigDecimal maxDailyLoss = baseline.multiply(percentRate(properties.risk().maxDailyLossPercent()));
-        if (contractLimits != null && contractLimits.maxDailyLossRate() != null) {
-            maxDailyLoss = maxDailyLoss.min(baseline.multiply(contractLimits.maxDailyLossRate()));
+        BigDecimal maxDailyLoss;
+        if (maxDailyLossPctOverride != null && maxDailyLossPctOverride.signum() > 0) {
+            maxDailyLoss = baseline.multiply(percentRate(maxDailyLossPctOverride));
+        } else {
+            maxDailyLoss = baseline.multiply(percentRate(properties.risk().maxDailyLossPercent()));
+            if (contractLimits != null && contractLimits.maxDailyLossRate() != null) {
+                maxDailyLoss = maxDailyLoss.min(baseline.multiply(contractLimits.maxDailyLossRate()));
+            }
         }
         BigDecimal reserved = claims.outstandingLoss(owner);
         BigDecimal committedLoss = summary.todayNetRealizedPnl().min(BigDecimal.ZERO).abs()
