@@ -1,6 +1,7 @@
 package com.example.quant.agent.platform;
 
 import com.example.quant.account.OkxCredentialStore;
+import com.example.quant.agent.execution.AutoTradeRecordService;
 import com.example.quant.ai.AiAnalysisService;
 import com.example.quant.ai.LlmRuntimeConfig;
 import com.example.quant.ai.UserLlmProfileService;
@@ -33,6 +34,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +64,13 @@ public class TradingAgentOrchestrator {
     private TradingProperties tradingProperties;
     private SystemControlService systemControlService;
     private AgentMemoryService memoryService;
+    private AutoTradeRecordService autoTradeRecordService;
+
+    private static final ExecutorService AGENT_DISPATCH_POOL = Executors.newFixedThreadPool(6, runnable -> {
+        Thread thread = new Thread(runnable, "agent-dispatch-worker");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void configureAutoExecution(
@@ -73,6 +86,11 @@ public class TradingAgentOrchestrator {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void configureMemoryService(AgentMemoryService memoryService) {
         this.memoryService = memoryService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void configureAutoTradeRecordService(AutoTradeRecordService autoTradeRecordService) {
+        this.autoTradeRecordService = autoTradeRecordService;
     }
 
     public TradingAgentOrchestrator(
@@ -108,24 +126,46 @@ public class TradingAgentOrchestrator {
         if (runningAgents.isEmpty()) {
             return 0;
         }
-        Map<String, Set<String>> claimedSymbolsByUser = new HashMap<>();
         Instant now = Instant.now();
-        int executed = 0;
-        for (TradingAgentEntity agent : runningAgents) {
-            if (isWithinEvalCooldown(agent, now)) {
-                continue;
-            }
-            Set<String> userClaimed = claimedSymbolsByUser.computeIfAbsent(agent.getUserName(), k -> new HashSet<>());
+        List<TradingAgentEntity> dueAgents = runningAgents.stream()
+                .filter(agent -> !isWithinEvalCooldown(agent, now))
+                .toList();
+        if (dueAgents.isEmpty()) {
+            return 0;
+        }
+        List<ContractCandidate> safeCandidates = candidates == null ? List.of() : List.copyOf(candidates);
+        Map<String, V2SelectionScoreResult> safeV2Scores = v2Scores == null ? Map.of() : Map.copyOf(v2Scores);
+        Map<String, Set<String>> claimedSymbolsByUser = new ConcurrentHashMap<>();
+        AtomicInteger executed = new AtomicInteger(0);
+
+        if (dueAgents.size() == 1) {
+            TradingAgentEntity single = dueAgents.get(0);
+            Set<String> userClaimed = claimedSymbolsByUser.computeIfAbsent(single.getUserName(), k -> ConcurrentHashMap.newKeySet());
             try {
-                executeAgentRound(agent, scanId, candidates == null ? List.of() : candidates,
-                        v2Scores == null ? Map.of() : v2Scores, userClaimed);
-                executed++;
+                executeAgentRound(single, scanId, safeCandidates, safeV2Scores, userClaimed);
+                executed.incrementAndGet();
             } catch (Exception ex) {
                 log.warn("Agent dispatch failed agentId={} user={} scanId={} error={}",
-                        agent.getId(), agent.getUserName(), scanId, ex.getMessage());
+                        single.getId(), single.getUserName(), scanId, ex.getMessage());
             }
+            return executed.get();
         }
-        return executed;
+
+        List<CompletableFuture<Void>> futures = dueAgents.stream()
+                .map(agent -> CompletableFuture.runAsync(() -> {
+                    Set<String> userClaimed = claimedSymbolsByUser.computeIfAbsent(
+                            agent.getUserName(), k -> ConcurrentHashMap.newKeySet());
+                    try {
+                        executeAgentRound(agent, scanId, safeCandidates, safeV2Scores, userClaimed);
+                        executed.incrementAndGet();
+                    } catch (Exception ex) {
+                        log.warn("Agent dispatch failed agentId={} user={} scanId={} error={}",
+                                agent.getId(), agent.getUserName(), scanId, ex.getMessage());
+                    }
+                }, AGENT_DISPATCH_POOL))
+                .toList();
+        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+        return executed.get();
     }
 
     private static boolean isWithinEvalCooldown(TradingAgentEntity agent, Instant now) {
@@ -162,6 +202,10 @@ public class TradingAgentOrchestrator {
         String llmModel = null;
         String summaryReason = "";
         String errorCode = null;
+        ContractCandidate chosenCandidate = null;
+        BigDecimal recordedMargin = null;
+        Integer recordedLeverage = null;
+        String recordedOkxOrderId = null;
 
         try {
             // Step 1: Deterministic Filter + Symbol Exclusivity Lock
@@ -254,6 +298,8 @@ public class TradingAgentOrchestrator {
 
             selectedInstId = chosen.instId();
             selectedDirection = chosen.trendDirection() == DirectionBias.BEARISH ? "SHORT" : "LONG";
+            chosenCandidate = chosen;
+            recordedLeverage = agent.getMaxLeverage();
             steps.add(new AgentRunStep(stepNo++, "LLM_DECISION", "PASSED",
                     "模型 " + llmModel + " 选择 " + selectedInstId + " (" + selectedDirection + "): " + truncate(llmReason, 280),
                     elapsedMs(llmStart)));
@@ -349,6 +395,9 @@ public class TradingAgentOrchestrator {
                             PendingOrder pending = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, plan);
                             return orderConfirmService.confirmAuto(pending.id(), perTradeMargin);
                         });
+                        recordedMargin = perTradeMargin;
+                        recordedLeverage = plan.suggestedLeverage();
+                        recordedOkxOrderId = execResult.externalOrderId();
                         decision = execResult.executed() ? "AUTO_ORDER_EXECUTED" : "BLOCKED";
                         summaryReason = (execResult.executed() ? "AUTO 自动下单已提交" : "AUTO 下单被风控/网关拦截")
                                 + " (" + selectedInstId + " " + selectedDirection
@@ -360,12 +409,26 @@ public class TradingAgentOrchestrator {
                 }
             }
 
+            if (autoTradeRecordService != null) {
+                autoTradeRecordService.recordAgentExecution(
+                        agent, scanId, decision, selectedInstId, selectedDirection,
+                        candidates.size(), chosenCandidate, recordedMargin, recordedLeverage,
+                        recordedOkxOrderId, llmModel, summaryReason, errorCode
+                );
+            }
             return persistRun(agent, scanId, decision, selectedInstId, selectedDirection, llmModel, summaryReason, errorCode, steps, elapsedMs(startedAt));
         } catch (Exception ex) {
             decision = "ERROR";
             errorCode = ex.getClass().getSimpleName();
             summaryReason = "本轮运行异常：" + truncate(ex.getMessage() == null ? errorCode : ex.getMessage(), 400);
             steps.add(new AgentRunStep(stepNo, "EXECUTION", "ERROR", summaryReason, 0L));
+            if (autoTradeRecordService != null) {
+                autoTradeRecordService.recordAgentExecution(
+                        agent, scanId, decision, selectedInstId, selectedDirection,
+                        candidates.size(), chosenCandidate, recordedMargin, recordedLeverage,
+                        recordedOkxOrderId, llmModel, summaryReason, errorCode
+                );
+            }
             return persistRun(agent, scanId, decision, selectedInstId, selectedDirection, llmModel, summaryReason, errorCode, steps, elapsedMs(startedAt));
         }
     }

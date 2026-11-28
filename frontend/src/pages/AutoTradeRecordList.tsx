@@ -119,15 +119,18 @@ export function AutoTradeRecordList() {
           <ScrollableTable label={t('自动交易记录')}>
             <TableHead>
               <TableRow>
-                {[t('时间'), t('状态'), t('合约'), t('候选趋势'), t('订单方向'), t('综合评分'), t('最终排名分'), t('信号'), t('扫描动作'), t('AI 决策'), t('保证金'), t('杠杆'), t('计划入场'), t('候选毛盈亏比'), t('阶段'), t('原因'), t('OKX订单号'), t('AI 说明')].map((label) => <TableCell key={label}>{label}</TableCell>)}
+                {[t('时间'), t('Agent'), t('状态'), t('合约'), t('候选趋势'), t('订单方向'), t('综合评分'), t('最终排名分'), t('信号'), t('扫描动作'), t('AI 决策'), t('保证金'), t('杠杆'), t('计划入场'), t('候选毛盈亏比'), t('阶段'), t('原因'), t('OKX订单号'), t('AI 说明')].map((label) => <TableCell key={label}>{label}</TableCell>)}
               </TableRow>
             </TableHead>
             <TableBody>
               {data.items.map((record) => (
                 <TableRow key={String(record.id)}>
                   <TableCell className="whitespace-nowrap">{formatTime(record.createdAt)}</TableCell>
+                  <TableCell className="whitespace-nowrap font-medium text-ink">
+                    {record.agentName ? String(record.agentName) : record.agentId ? `#${String(record.agentId)}` : '—'}
+                  </TableCell>
                   <TableCell><StatusChip value={String(record.status ?? '-')} /></TableCell>
-                  <TableCell className="font-semibold">{String(record.instId ?? '-')}</TableCell>
+                  <TableCell className="font-semibold">{String(record.instId ?? '—')}</TableCell>
                   <TableCell>{formatTrend(record.trendDirection)}</TableCell>
                   <TableCell>{record.status === 'SKIPPED' ? '—' : formatOpenDirection(record.action, record.posSide)}</TableCell>
                   <TableCell align="right">{formatNumber(record.candidateScore, 0)}</TableCell>

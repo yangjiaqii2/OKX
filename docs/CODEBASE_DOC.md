@@ -1,5 +1,19 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 解决 6 项平台体验与并发问题（复盘归属 Agent、清理旧版空记录、实时风控诊断与多 Agent 并发）
+
+- **变更摘要**：
+  1. 移除「OKX合约」页旧版全局 AI 选币警告条，避免已绑定个人 BYOK Key 时仍误报 `AI_API_KEY 未配置`。
+  2. 停止 `AutoTradeService` 在旧版全局自动交易关闭时每轮往 `auto_trade_record` 写入 `auto_trade_disabled_by_config` 空壳记录，并在 `AutoTradeRecordService` 查询时自动过滤历史旧版空记录。
+  3. 打通个人交易 Agent 与 `auto_trade_record`：实体与视图新增 `agentId` / `agentName`，`TradingAgentOrchestrator` 每轮执行完成后同步写入合约名、Agent 名称、方向、保证金、杠杆与执行结论；前端「自动交易记录」新增「Agent」列。
+  4. 升级 `RiskController`（`/api/quant/risk/status`）按当前登录用户实时计算账户就绪度、运行中 Agent 数量、最大杠杆、预估单笔最大亏损及最近评估状态，彻底消除总览「风控解释」长期显示 `UNKNOWN / -` 的问题。
+  5. 升级 `TradingAgentOrchestrator.dispatchScan` 为两阶段并发：所有到期 Agent 通过 6 线程守护池并发执行大模型分析与只读查证，同时通过 `ConcurrentHashMap.newKeySet()` 保持同账户币种排他锁原子互斥。
+- **涉及文件**：
+  - 后端：`src/main/java/com/example/quant/agent/execution/AutoTradeService.java`、`AutoTradeRecordEntity.java`、`AutoTradeRecordView.java`、`AutoTradeRecordService.java`、`src/main/java/com/example/quant/agent/platform/TradingAgentOrchestrator.java`、`src/main/java/com/example/quant/controller/RiskController.java`
+  - 前端：`frontend/src/pages/AutoTradeRecordList.tsx`、`frontend/src/pages/ContractCandidateList.tsx`、`frontend/src/i18n.en.json`
+- **影响范围**：消除每 3 分钟刷空壳复盘记录的噪音，自动交易记录清晰呈现 Agent 名称与合约标的，总览风控解释实时有效，多 Agent 并发决策提速 3～5 倍。
+- **验证结果**：后端核心单测与前端 `npm --prefix frontend run build` 均通过（0 错误），同步推送至 `origin/main` 并部署至 Miren `local` 集群。
+
 ### 2026-11-28 - 修复 Agent 自动执行跨 K 线报错并优化扫盘状态文案
 
 - **变更摘要**：

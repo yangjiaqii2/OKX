@@ -7,6 +7,8 @@ public record AutoTradeRecordView(
         Long id,
         String status,
         String userName,
+        Long agentId,
+        String agentName,
         String triggerType,
         String instId,
         String tradePlanId,
@@ -48,10 +50,16 @@ public record AutoTradeRecordView(
         Instant updatedAt
 ) {
     public static AutoTradeRecordView from(AutoTradeRecordEntity entity) {
+        return from(entity, null);
+    }
+
+    public static AutoTradeRecordView from(AutoTradeRecordEntity entity, String agentName) {
         return new AutoTradeRecordView(
                 entity.getId(),
                 entity.getStatus(),
                 entity.getUserName(),
+                entity.getAgentId(),
+                agentName,
                 entity.getTriggerType(),
                 entity.getInstId(),
                 entity.getTradePlanId(),

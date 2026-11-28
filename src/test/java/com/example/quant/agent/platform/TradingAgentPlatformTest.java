@@ -35,8 +35,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class TradingAgentPlatformTest {
-    private final List<TradingAgentEntity> agents = new ArrayList<>();
-    private final List<AgentRunEntity> runs = new ArrayList<>();
+    private final List<TradingAgentEntity> agents = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<AgentRunEntity> runs = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final AtomicLong agentSeq = new AtomicLong(1);
     private final AtomicLong runSeq = new AtomicLong(1);
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -174,10 +174,12 @@ class TradingAgentPlatformTest {
 
         assertThat(dispatched).isEqualTo(2);
         assertThat(runs).hasSize(2);
-        assertThat(runs.get(0).getDecision()).isEqualTo("PAPER_TRADE");
-        assertThat(runs.get(0).getSelectedInstId()).isEqualTo("SOL-USDT-SWAP");
-        // Second agent under same user must not duplicate SOL-USDT-SWAP
-        assertThat(runs.get(1).getDecision()).isEqualTo("SKIP");
+        long paperTrades = runs.stream().filter(r -> "PAPER_TRADE".equals(r.getDecision())).count();
+        long prevented = runs.stream().filter(r -> "SKIP".equals(r.getDecision()) || "BLOCKED".equals(r.getDecision())).count();
+        assertThat(paperTrades).isEqualTo(1);
+        assertThat(prevented).isEqualTo(1);
+        assertThat(runs.stream().filter(r -> "PAPER_TRADE".equals(r.getDecision())).findFirst().orElseThrow().getSelectedInstId())
+                .isEqualTo("SOL-USDT-SWAP");
 
         // Cooldown check: immediate second dispatch within evalIntervalMinutes is skipped
         assertThat(orchestrator.dispatchScan("scan-cooldown", List.of(sol), Map.of())).isEqualTo(0);

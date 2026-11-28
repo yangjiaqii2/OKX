@@ -997,5 +997,6 @@
   "执行入口：Agent 平台": "Execution engine: Agent Platform",
   "关闭旧版自动交易": "Disable legacy auto-trade",
   "确认后将关闭旧版单账户全局自动交易，后续全部自动交易统一由「我的 Agent」执行。": "Disables the legacy single-account global auto-trade switch. All future automated trading runs exclusively via My Agents.",
+  "共享全市场量化扫描与硬风控准入池。你创建的个人交易 Agent 将使用各自绑定的大模型 API 独立评估并执行决策。": "Shared market scanning and hard risk gate pool. Your personal trading Agents evaluate and execute independently using their bound LLM APIs.",
   "确认关闭": "Confirm disable"
 }

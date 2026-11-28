@@ -265,16 +265,8 @@ export function ContractCandidateList() {
           <Stat label={t('最高分候选')} value={String(top?.instId ?? '--')} hint={`${formatTrend(top?.trendDirection)} ${formatNumber(top?.score, 0)}${t('分')}`} />
           <Stat label={t('持仓浮盈亏')} value={errors.positions && positions.length === 0 ? t('不可用') : formatUSDT(totalPnl)} color={pnlColor(totalPnl)} hint={t('OKX未实现盈亏')} />
         </div>
-        <Alert severity="info">{t('AI 在规则准入池内主导合约、方向和入场模式；规则继续计算价格、仓位并执行所有硬风控。')}</Alert>
+        <Alert severity="info">{t('共享全市场量化扫描与硬风控准入池。你创建的个人交易 Agent 将使用各自绑定的大模型 API 独立评估并执行决策。')}</Alert>
         <SectionError label={t('当前持仓')} message={errors.positions} />
-        <SectionError label={t('AI 选择')} message={errors.selection} />
-        {(!errors.selection || aiSelection) && <Alert severity={aiSelection?.source === 'RULE_FALLBACK' ? 'warning' : 'info'}>
-          {aiSelection?.source === 'AI_PRIMARY'
-            ? `${t('AI 主选 ')}${String(aiSelection.selectedInstId)} ${formatSide(aiSelection.direction)} ${String(aiSelection.entryMode)}${t(' · 置信度 ')}${formatPercent(Number(aiSelection.confidence ?? 0) * 100)}`
-            : aiSelection?.source === 'AI_WAIT' ? t('AI 本轮选择等待，不会触发规则保底下单。')
-              : aiSelection?.source === 'RULE_FALLBACK' ? `${t('AI 不可用，已进入规则保底：')}${String(aiSelection.fallbackReason ?? t('原因不可用'))}`
-                : t('AI 尚未完成本轮选择。')}
-        </Alert>}
         <SectionError label={t('合约机会')} message={errors.contracts} />
         {loading ? <PanelState loading /> : filtered.length === 0 ? (
           errors.contracts ? null : <PanelState>{t('当前没有满足数据准入条件的合约候选。')}</PanelState>

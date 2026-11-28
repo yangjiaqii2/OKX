@@ -313,8 +313,7 @@ class AutoTradeServiceTest {
 
         assertThat(result.status()).isEqualTo("SKIPPED");
         assertThat(result.message()).isEqualTo("auto_trade_runtime_switch_off");
-        assertThat(recordService.records).extracting(AutoTradeService.AutoTradeResult::status)
-                .containsExactly("SKIPPED");
+        assertThat(recordService.records).isEmpty();
     }
 
     @Test

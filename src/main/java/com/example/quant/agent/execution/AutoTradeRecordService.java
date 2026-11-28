@@ -1,6 +1,8 @@
 package com.example.quant.agent.execution;
 
 import com.example.quant.agent.execution.AutoTradeService.AutoTradeResult;
+import com.example.quant.agent.platform.TradingAgentEntity;
+import com.example.quant.agent.platform.TradingAgentRepository;
 import com.example.quant.account.OkxCredentialStore;
 import com.example.quant.auth.AuthUserContext;
 import com.example.quant.common.PageResult;
@@ -8,9 +10,15 @@ import com.example.quant.crypto.dto.ContractCandidate;
 import com.example.quant.agent.selection.ContractSelectionDecision;
 import com.example.quant.agent.selection.AiEntryObservationService;
 import jakarta.persistence.criteria.Predicate;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,13 +32,23 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AutoTradeRecordService {
     private static final Logger log = LoggerFactory.getLogger(AutoTradeRecordService.class);
+    private static final List<String> LEGACY_NOISE_REASONS = List.of(
+            "auto_trade_disabled_by_config",
+            "auto_trade_runtime_switch_off"
+    );
 
     private final AutoTradeRecordRepository repository;
     private AiEntryObservationService observations;
+    private TradingAgentRepository agentRepository;
 
     @Autowired
     void configureEntryObservations(AiEntryObservationService observations) {
         this.observations = observations;
+    }
+
+    @Autowired(required = false)
+    void configureAgentRepository(TradingAgentRepository agentRepository) {
+        this.agentRepository = agentRepository;
     }
 
     public AutoTradeRecordService(AutoTradeRecordRepository repository) {
@@ -129,18 +147,120 @@ public class AutoTradeRecordService {
         entity.setSelectionReason(hasText(reason) ? reason : null);
     }
 
+    @Transactional
+    public void recordAgentExecution(
+            TradingAgentEntity agent,
+            String scanId,
+            String decision,
+            String instId,
+            String direction,
+            int candidateCount,
+            ContractCandidate candidate,
+            BigDecimal marginAmount,
+            Integer leverage,
+            String okxOrderId,
+            String llmModel,
+            String summaryReason,
+            String errorCode
+    ) {
+        if (repository == null || agent == null) {
+            return;
+        }
+        try {
+            Instant now = Instant.now();
+            AutoTradeRecordEntity entity = new AutoTradeRecordEntity();
+            entity.setUserName(agent.getUserName());
+            entity.setAgentId(agent.getId());
+            entity.setTriggerType("AGENT_" + (agent.getRunMode() == null ? "AUTO" : agent.getRunMode().name()));
+            entity.setScanId(scanId);
+            entity.setStatus(mapAgentDecisionToRecordStatus(decision));
+            entity.setInstId(hasText(instId) ? instId : candidate != null ? candidate.instId() : null);
+            if ("LONG".equalsIgnoreCase(direction)) {
+                entity.setAction("BUY");
+                entity.setPosSide("long");
+            } else if ("SHORT".equalsIgnoreCase(direction)) {
+                entity.setAction("SELL");
+                entity.setPosSide("short");
+            }
+            entity.setLeverage(leverage != null ? leverage : agent.getMaxLeverage());
+            entity.setMarginAmount(marginAmount);
+            entity.setOkxOrderId(hasText(okxOrderId) ? okxOrderId : null);
+            entity.setCandidateCount(candidateCount);
+            if (candidate != null) {
+                entity.setEntryPrice(candidate.entryPrice());
+                entity.setScanAction(candidate.action());
+                entity.setCandidateScore(candidate.score());
+                entity.setTrendDirection(candidate.trendDirection() == null ? null : candidate.trendDirection().name());
+                entity.setLastPrice(candidate.lastPrice());
+                entity.setRiskRewardRatio(candidate.riskRewardRatio());
+                entity.setSpreadBps(candidate.spreadBps());
+                entity.setBidDepthUsdt(candidate.bidDepthUsdt());
+                entity.setAskDepthUsdt(candidate.askDepthUsdt());
+                entity.setMarketRiskLevel(candidate.marketRiskLevel() == null ? null : candidate.marketRiskLevel().name());
+                entity.setFinalRankScore(candidate.finalRankScore());
+                entity.setSignalType(candidate.signalType() == null ? null : candidate.signalType().name());
+            }
+            entity.setDecisionSource(hasText(llmModel) ? "AGENT_LLM" : "AGENT_RULE");
+            entity.setSelectionReason(summaryReason);
+            entity.setMessage(summaryReason);
+            entity.setReasonCode(hasText(errorCode) ? errorCode : decision);
+            entity.setReasonMessage(summaryReason);
+            entity.setStage(decision);
+            entity.setFallbackAllowed(false);
+            entity.setCreatedAt(now);
+            entity.setUpdatedAt(now);
+            repository.save(entity);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to persist agent auto trade record agentId={} decision={} error={}",
+                    agent.getId(), decision, ex.getMessage());
+        }
+    }
+
+    private static String mapAgentDecisionToRecordStatus(String decision) {
+        if (decision == null) {
+            return "SKIPPED";
+        }
+        return switch (decision) {
+            case "AUTO_ORDER_EXECUTED" -> "EXECUTED";
+            case "MANUAL_ORDER_CREATED" -> "WAITING_ENTRY";
+            case "BLOCKED" -> "REJECTED";
+            case "ERROR" -> "FAILED";
+            default -> "SKIPPED";
+        };
+    }
+
     @Transactional(readOnly = true)
     public PageResult<AutoTradeRecordView> list(String status, String instId, int page, int size) {
         int safePage = Math.max(0, page);
         int safeSize = Math.max(1, Math.min(size, 200));
         Page<AutoTradeRecordEntity> result = repository.findAll(spec(status, instId),
                 PageRequest.of(safePage, safeSize, Sort.by(Sort.Direction.DESC, "id")));
+        Map<Long, String> agentNames = resolveAgentNames(result.getContent());
         return new PageResult<>(
-                result.getContent().stream().map(AutoTradeRecordView::from).toList(),
+                result.getContent().stream()
+                        .map(entity -> AutoTradeRecordView.from(entity,
+                                entity.getAgentId() == null ? null : agentNames.get(entity.getAgentId())))
+                        .toList(),
                 result.getTotalElements(),
                 safePage,
                 safeSize
         );
+    }
+
+    private Map<Long, String> resolveAgentNames(List<AutoTradeRecordEntity> records) {
+        if (agentRepository == null || records == null || records.isEmpty()) {
+            return Map.of();
+        }
+        Set<Long> ids = records.stream()
+                .map(AutoTradeRecordEntity::getAgentId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, String> names = new HashMap<>();
+        agentRepository.findAllById(ids).forEach(agent -> names.put(agent.getId(), agent.getName()));
+        return names;
     }
 
     private static Specification<AutoTradeRecordEntity> spec(String status, String instId) {
@@ -150,6 +270,14 @@ public class AutoTradeRecordService {
                 predicates.add(builder.equal(root.get("status"), status.trim()));
             }
             predicates.add(builder.equal(root.get("userName"), currentUsername()));
+            predicates.add(builder.or(
+                    builder.isNull(root.get("reasonCode")),
+                    builder.not(root.get("reasonCode").in(LEGACY_NOISE_REASONS))
+            ));
+            predicates.add(builder.or(
+                    builder.isNull(root.get("message")),
+                    builder.not(root.get("message").in(LEGACY_NOISE_REASONS))
+            ));
             if (hasText(instId)) {
                 predicates.add(builder.like(builder.lower(root.get("instId")), "%" + instId.trim().toLowerCase() + "%"));
             }

@@ -22,6 +22,12 @@ public class AutoTradeRecordEntity {
     @Column(name = "user_name", nullable = false, length = 128)
     private String userName;
 
+    @Column(name = "agent_id")
+    private Long agentId;
+
+    public Long getAgentId() { return agentId; }
+    public void setAgentId(Long agentId) { this.agentId = agentId; }
+
     @Column(name = "trigger_type", nullable = false, length = 32)
     private String triggerType;
 

@@ -194,10 +194,10 @@ public class AutoTradeService {
                 ? new LinkedHashMap<>() : new LinkedHashMap<>(decisionClientOrderIds);
         int candidateCount = safeCandidates.size();
         if (!agentProperties.autoTrade().enabled()) {
-            return recordAndReturn(AutoTradeResult.skipped("auto_trade_disabled_by_config"), candidateCount, null);
+            return AutoTradeResult.skipped("auto_trade_disabled_by_config");
         }
         if (!systemControlService.autoTradeEnabled()) {
-            return recordAndReturn(AutoTradeResult.skipped("auto_trade_runtime_switch_off"), candidateCount, null);
+            return AutoTradeResult.skipped("auto_trade_runtime_switch_off");
         }
         boolean executionLockEnabled = agentProperties.concurrency().autoTradeLockEnabled();
         boolean executionLockAcquired = false;
