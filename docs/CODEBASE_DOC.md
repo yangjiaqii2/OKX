@@ -1,5 +1,12 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 解除 Miren 配置中的 OKX 离线桩（127.0.0.1:9）并默认启用 DEMO 与扫盘
+
+- **变更摘要**：将 `src/main/resources/application-miren.yml` 中早期首次部署遗留的离线桩配置（`okx.api.base-url: http://127.0.0.1:9`、`websocket: ws://127.0.0.1:9`、`trading.mode: DISABLED`、`quant.contract.enabled: false`）全部改为环境变量驱动并默认指向真实 OKX 接口、`TRADING_MODE=DEMO` 与开启合约扫盘；同步在 `.miren/app.toml` 中补充 `-Djava.net.preferIPv4Stack=true` 与 `TRADING_MODE=DEMO`。
+- **涉及文件**：`src/main/resources/application-miren.yml`、`.miren/app.toml`
+- **影响范围**：Miren 集群中的 OKX 模拟盘余额/持仓验证、公开合约全市场扫盘及 Agent 私有 WS 恢复正式连通真实 OKX 接口。
+- **验证结果**：推送至 `origin/main` 并部署到 Miren `local`，实测 `GET /api/quant/account/summary` 与 `POST /api/quant/account/verify`。
+
 ### 2026-11-28 - 修复 OkxRestClient 异常脱敏 `OKX request failed: null`、默认 User-Agent 拦截与代理支持
 
 - **变更摘要**：优化 `OkxRestClient` 的底层异常描述（`describeException` 沿 cause 链输出真实异常类名与根因，避免出现 `OKX request failed: null`），显式设置 `User-Agent` 与 `Accept: application/json`（避免 Java 默认 `Java-http-client` 被 OKX/Cloudflare 边缘断连）、使用 `HTTP/1.1`、放宽连接/请求超时（5s/8s），并支持自动读取 `OKX_HTTP_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` 环境变量；同时将 Miren `local` 集群切换为 `TRADING_MODE=DEMO` 以启用模拟盘请求头 `x-simulated-trading: 1`。

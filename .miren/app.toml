@@ -23,11 +23,11 @@ value = "miren,evaluation"
 
 [[env]]
 key = "JAVA_TOOL_OPTIONS"
-value = "-Xms96m -Xmx384m -XX:ActiveProcessorCount=2 -Dfile.encoding=UTF-8"
+value = "-Xms96m -Xmx384m -XX:ActiveProcessorCount=2 -Dfile.encoding=UTF-8 -Djava.net.preferIPv4Stack=true"
 
 [[env]]
 key = "TRADING_MODE"
-value = "DISABLED"
+value = "DEMO"
 
 [[env]]
 key = "QUANT_AGENT_AUTO_TRADE_ENABLED"
