@@ -46,6 +46,7 @@ public class ContractMarketScanTask {
     private ContractProperties contractProperties;
     private ShadowSelectionService shadowSelectionService;
     private TradingProperties tradingProperties;
+    private com.example.quant.agent.platform.TradingAgentOrchestrator agentOrchestrator;
     private final AtomicBoolean scanRunning = new AtomicBoolean(false);
     private volatile String runningScanId;
     private volatile Instant runningScanStartedAt;
@@ -92,6 +93,11 @@ public class ContractMarketScanTask {
                                   TradingProperties tradingProperties) {
         this.shadowSelectionService = shadowSelectionService;
         this.tradingProperties = tradingProperties;
+    }
+
+    @Autowired(required = false)
+    void configureAgentOrchestrator(com.example.quant.agent.platform.TradingAgentOrchestrator agentOrchestrator) {
+        this.agentOrchestrator = agentOrchestrator;
     }
 
     @Scheduled(
@@ -184,6 +190,16 @@ public class ContractMarketScanTask {
                 }
             }
             completeDecisions(decisionBatch.claims(), autoTrade, Instant.now());
+            if (agentOrchestrator != null) {
+                try {
+                    int dispatchedAgents = agentOrchestrator.dispatchScan(scanId, candidates, scanResult.v2Scores());
+                    if (dispatchedAgents > 0) {
+                        log.info("contract-market-scan dispatched scanId={} activeAgents={}", scanId, dispatchedAgents);
+                    }
+                } catch (RuntimeException ex) {
+                    log.warn("contract-market-scan agent dispatch failed scanId={} error={}", scanId, ex.getMessage());
+                }
+            }
             String timingMessage = slowScan
                     ? ", warning=SCAN_SLOW, elapsedSeconds=" + elapsed.toSeconds()
                     : "";

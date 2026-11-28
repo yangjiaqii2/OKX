@@ -20,6 +20,7 @@ const ClosePositionRecordList = lazy(() => import('./pages/ClosePositionRecordLi
 const ContractCandidateList = lazy(() => import('./pages/ContractCandidateList').then((module) => ({ default: module.ContractCandidateList })));
 const CurrentOkxOrderList = lazy(() => import('./pages/CurrentOkxOrderList').then((module) => ({ default: module.CurrentOkxOrderList })));
 const PendingOrderList = lazy(() => import('./pages/PendingOrderList').then((module) => ({ default: module.PendingOrderList })));
+const AgentsPage = lazy(() => import('./pages/AgentsPage').then((module) => ({ default: module.AgentsPage })));
 const LlmSettingsPage = lazy(() => import('./pages/LlmSettingsPage').then((module) => ({ default: module.LlmSettingsPage })));
 const SecurityPage = lazy(() => import('./pages/SecurityPage').then((module) => ({ default: module.SecurityPage })));
 const SystemControlPage = lazy(() => import('./pages/SystemControlPage').then((module) => ({ default: module.SystemControlPage })));
@@ -99,6 +100,7 @@ export default function App() {
         <Resource name="currentOkxOrders" list={CurrentOkxOrderList} icon={appIcons.okxOrders} options={{ label: t('当前委托/保护单') }} />
         <Resource name="closePositionRecords" list={ClosePositionRecordList} icon={appIcons.pending} options={{ label: t('平仓记录') }} />
         <CustomRoutes>
+          <Route path="/agents" element={<AgentsPage />} />
           <Route path="/account-binding" element={<AccountBindingPage />} />
           <Route path="/llm-settings" element={<LlmSettingsPage />} />
           <Route path="/account-risk" element={<AccountRiskPage />} />

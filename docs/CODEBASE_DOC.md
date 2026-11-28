@@ -1,5 +1,21 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - Agent 平台 Phase 2：个人交易 Agent 引擎、共享扫盘分派与「我的 Agent」工作台
+
+- **变更摘要**：完成 Agent 平台第二阶段核心改造，新增按用户隔离的 `quant_trading_agent` / `quant_agent_run` 模型与 Flyway V56 迁移，实现全市场共享扫盘分派、同账户币种排他锁、平台硬风控上限截断、`PAPER`/`MANUAL_CONFIRM` 模式路由，并上线前端「我的 Agent」工作台与决策追踪时间线。
+- **涉及文件**：
+  - 数据库迁移：`src/main/resources/db/migration/V56__trading_agent_platform.sql`
+  - 后端 Agent 平台核心：`src/main/java/com/example/quant/agent/platform/*`（`TradingAgentEntity`、`AgentRunEntity`、`TradingAgentTemplate`、`TradingAgentService`、`TradingAgentOrchestrator` 等）、`src/main/java/com/example/quant/controller/TradingAgentController.java`、`src/main/java/com/example/quant/task/ContractMarketScanTask.java`
+  - 前端工作台：`frontend/src/pages/AgentsPage.tsx`、`frontend/src/api/quantApi.ts`、`frontend/src/App.tsx`、`frontend/src/layout.tsx`、`frontend/src/i18n.en.json`
+  - 测试：`src/test/java/com/example/quant/agent/platform/TradingAgentPlatformTest.java`
+- **影响范围**：
+  - Flyway V56 新增 `quant_trading_agent` 与 `quant_agent_run` 表，并为 `trade_order`、`pending_order_state`、`auto_trade_record`、`budget_reservation` 增加可空 `agent_id` 列（完全向后兼容历史数据）。
+  - `ContractMarketScanTask` 在全市场扫盘完成后自动调用 `TradingAgentOrchestrator.dispatchScan`，按各自用户的 BYOK 大模型 API 与策略参数评估所有 `RUNNING` 状态的 Agent；同账户下强制启用币种排他锁与防 LLM 幻觉标的校验，单用户故障完全隔离。
+  - 新增 `/api/quant/agents` 全套接口（模板、列表、保存/版本递增、启停、立即试跑、决策轨迹、删除）与前端 `/agents`「我的 Agent」管理页。
+- **验证结果**：
+  - 后端：`mvn -B -o test -Dtest=TradingAgentPlatformTest,QuantAssistantApplicationContextTest,StrategyDecisionServiceTest,ContractMarketScanTaskTest,UserLlmProfileServiceTest,AuthUserServiceTest` 共 28 项全部通过（0 失败、0 错误，Flyway 成功迁移至 V56，Spring 完整上下文与共享扫盘分派验证通过）。
+  - 前端：`npm --prefix frontend run build` 通过 `tsc` 类型检查与 Vite 6.4.3 生产构建（4,984 个模块，0 错误）。
+
 ### 2026-11-28 - 首页产品介绍页与全站编辑风视觉语言统一
 
 - **变更摘要**：参考编辑感自然林木与柔和酸橙色设计语言，新增未登录默认展示的产品首页介绍页（右上角提供登录/免费开始入口），并同步统一登录注册页及控制台内部配色、衬线标题排版、胶囊按钮与品牌标识。

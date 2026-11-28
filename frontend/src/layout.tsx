@@ -28,6 +28,7 @@ import { cn } from './lib/cn';
 
 const trade = [
   { to: '/', label: '总览', icon: LayoutDashboard, end: true },
+  { to: '/agents', label: '我的 Agent', icon: Bot },
   { to: '/contractCandidates', label: 'OKX合约', icon: CandlestickChart },
   { to: '/positions', label: '当前持仓', icon: Wallet },
   { to: '/pendingOrders', label: '待确认订单', icon: ListChecks },
@@ -145,7 +146,7 @@ function MobileNav() {
     { label: '持仓', path: '/positions', icon: Wallet },
   ];
   const moreItems = [
-    ['当前委托/保护单', '/currentOkxOrders'], ['交易复盘', '/autoTradeRecords'], ['生命周期', '/autoTradeLifecycle'],
+    ['我的 Agent', '/agents'], ['当前委托/保护单', '/currentOkxOrders'], ['交易复盘', '/autoTradeRecords'], ['生命周期', '/autoTradeLifecycle'],
     ['平仓记录', '/closePositionRecords'], ['账户与风控', '/account-risk'], ['账号绑定', '/account-binding'],
     ['大模型 API', '/llm-settings'], ['账号安全', '/security'], ['系统控制', '/system-control'],
   ] as const;

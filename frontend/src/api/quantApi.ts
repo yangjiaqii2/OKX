@@ -73,6 +73,24 @@ export const quantApi = {
     quantFetch(`/llm/profiles/${encodeURIComponent(String(id))}/test`, { method: 'POST' }),
   deleteLlmProfile: (id: number) =>
     quantFetch(`/llm/profiles/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
+  agentTemplates: () => quantFetch('/agents/templates'),
+  agents: () => quantFetch('/agents'),
+  saveAgent: (payload: Record<string, unknown>) =>
+    quantFetch('/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  startAgent: (id: number) =>
+    quantFetch(`/agents/${encodeURIComponent(String(id))}/start`, { method: 'POST' }),
+  pauseAgent: (id: number) =>
+    quantFetch(`/agents/${encodeURIComponent(String(id))}/pause`, { method: 'POST' }),
+  runAgentOnce: (id: number) =>
+    quantFetch(`/agents/${encodeURIComponent(String(id))}/run-once`, { method: 'POST' }),
+  agentRuns: (id: number, limit = 20) =>
+    quantFetch(`/agents/${encodeURIComponent(String(id))}/runs?limit=${encodeURIComponent(String(limit))}`),
+  deleteAgent: (id: number) =>
+    quantFetch(`/agents/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
   systemStatus: () => quantFetch('/system/status'),
   runtimeStatus: (signal?: AbortSignal) => quantFetch('/system/runtime-status', { signal }),
   fxRate: (base = 'USD', quote = 'CNY') =>
