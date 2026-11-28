@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Admin, CustomRoutes, Resource } from 'react-admin';
-import { Route } from 'react-router-dom';
+import { Navigate, Route } from 'react-router-dom';
 import { getAuthToken, subscribeAuthChange } from './api/auth';
 import { authProvider } from './api/authProvider';
 import { quantDataProvider } from './api/quantDataProvider';
@@ -13,7 +13,6 @@ import { LoginPage } from './pages/LoginPage';
 import { theme } from './theme';
 
 const AccountBindingPage = lazy(() => import('./pages/AccountBindingPage').then((module) => ({ default: module.AccountBindingPage })));
-const AccountRiskPage = lazy(() => import('./pages/AccountRiskPage').then((module) => ({ default: module.AccountRiskPage })));
 const AutoTradeLifecycleList = lazy(() => import('./pages/AutoTradeLifecycleList').then((module) => ({ default: module.AutoTradeLifecycleList })));
 const AutoTradeRecordList = lazy(() => import('./pages/AutoTradeRecordList').then((module) => ({ default: module.AutoTradeRecordList })));
 const ClosePositionRecordList = lazy(() => import('./pages/ClosePositionRecordList').then((module) => ({ default: module.ClosePositionRecordList })));
@@ -103,7 +102,7 @@ export default function App() {
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/account-binding" element={<AccountBindingPage />} />
           <Route path="/llm-settings" element={<LlmSettingsPage />} />
-          <Route path="/account-risk" element={<AccountRiskPage />} />
+          <Route path="/account-risk" element={<Navigate to="/" replace />} />
           <Route path="/security" element={<SecurityPage />} />
           <Route path="/system-control" element={<SystemControlPage />} />
           <Route path="/positions" element={<PositionsPage />} />

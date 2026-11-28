@@ -9,7 +9,6 @@ import {
   LockKeyhole,
   ScrollText,
   Settings2,
-  Shield,
   Timer,
   UserRound,
   Wallet,
@@ -42,7 +41,6 @@ const review = [
 ];
 
 const system = [
-  { to: '/account-risk', label: '账户与风控', icon: Shield },
   { to: '/account-binding', label: '账号绑定', icon: KeyRound },
   { to: '/llm-settings', label: '大模型 API', icon: Bot },
   { to: '/security', label: '账号安全', icon: UserRound },

@@ -1,5 +1,12 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 将「账户与风控」诊断模块并入「总览」并精简侧边栏导航
+
+- **变更摘要**：将 `AccountRiskPage` 中的账户状态标签、`TradingStatusStrip`、结构化「风控解释」面板及持仓表内人工一键平仓（`ClosePositionDialog`）全部合并进 `Dashboard.tsx`（「总览」）；同时从侧边栏 `layout.tsx` 移除独立的「账户与风控」入口，并在 `App.tsx` 中将 `/account-risk` 重定向至 `/` 保持旧书签兼容。
+- **涉及文件**：`frontend/src/pages/Dashboard.tsx`、`frontend/src/layout.tsx`、`frontend/src/App.tsx`
+- **影响范围**：减少导航冗余，用户可在「总览」一屏内完成权益/余额核对、风控诊断与应急平仓。
+- **验证结果**：`npm --prefix frontend run build` 通过（0 错误），同步推送至 `origin/main` 并部署至 Miren `local` 集群。
+
 ### 2026-11-28 - 系统控制页下线旧版全局自动交易配置，全面收口至 Agent 平台
 
 - **变更摘要**：在 `frontend/src/pages/SystemControlPage.tsx` 中移除旧版单账户全局自动交易配置区（固定预算/余额比例/Shadow 观察/最低杠杆/开启按钮），将系统控制页聚焦为「平台总闸（紧急停止 / 恢复运行）」与「Agent 平台总览与全局急停」；同时保留兜底安全提示，仅在检测到旧版 `autoTradeEnabled=true` 时展示一键关闭按钮，防止后台静默重复下单。

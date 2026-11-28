@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNotify } from 'react-admin';
 import { Link } from 'react-router-dom';
 import { quantApi } from '../api/quantApi';
+import { ClosePositionDialog, useClosePosition } from '../components/ClosePositionDialog';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PanelState } from '../components/PanelState';
 import { PositionSnapshotTable } from '../components/PositionSnapshotTable';
+import { StatusChip } from '../components/StatusChip';
+import { TradingStatusStrip } from '../components/TradingStatusStrip';
 import { Alert } from '../components/ui/alert';
 import { hasAccountBalance, openPositions, POLL_INTERVAL_MS } from '../displayData';
 import { formatLeverage, formatNumber, formatPercent, formatPrice, formatStatus, formatUSDT, pnlColor } from '../formatters';
@@ -38,6 +41,7 @@ export function Dashboard() {
 
   const loadRunning = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
+  const closePosition = useClosePosition(() => load('manual'));
 
   async function load(source: 'initial' | 'poll' | 'manual') {
     if (loadRunning.current) return;
@@ -135,6 +139,7 @@ export function Dashboard() {
   }
 
   const accountMode = String(state.account?.mode ?? 'UNKNOWN');
+  const accountMessage = String(state.account?.message ?? '');
   const balanceAvailable = hasAccountBalance(accountMode);
   const availableBalance = state.account?.availableBalance;
   const positionCount = accountMode === 'OKX_UNBOUND' ? null : state.positions?.length;
@@ -150,7 +155,8 @@ export function Dashboard() {
     <PageShell title={t('总览')}>
       <PageHeader
         title={t('总览')}
-        subtitle={t('OKX 合约信号进入待确认后执行。账户与风控优先于下单。')}
+        subtitle={t('OKX 账户权益、风控诊断、实时持仓与交易机会总览。')}
+        status={<StatusChip value={accountMode} />}
         actions={
           <div className="flex rounded-lg bg-[#E7EAF0] p-0.5 dark:bg-sunken">
             {(['USDT', 'RMB'] as const).map((value) => (
@@ -173,7 +179,7 @@ export function Dashboard() {
             ))}
           </div>
         }
-        onRefresh={() => void load('manual')}
+        onRefresh={() => { void load('manual'); void closePosition.refreshMode(); }}
         refreshing={refreshing}
       />
 
@@ -212,8 +218,10 @@ export function Dashboard() {
             </div>
           </div>
         ) : null}
+        {accountMode === 'OKX_UNBOUND' ? <Alert severity="warning">{t('尚未绑定OKX API，余额和持仓不会返回真实数据。')}</Alert> : null}
+        {accountMode === 'OKX_EMPTY' ? <Alert severity="info">{t('OKX已返回成功响应，但账户余额数据为空。')}</Alert> : null}
         {state.coreDataError ? <Alert severity="warning">{t('核心账户或风控数据加载失败，请检查后端服务。')}</Alert> : null}
-        {accountMode === 'OKX_ERROR' ? <Alert severity="error">{t('OKX账户接口异常：')}{String(state.account?.message ?? '')}</Alert> : null}
+        {accountMode === 'OKX_ERROR' ? <Alert severity="error">{t('OKX账户接口异常：')}{accountMessage || t('请检查API权限、IP白名单和Passphrase。')}</Alert> : null}
         {state.contractsError ? <Alert severity="warning">{t('OKX合约机会池暂不可用：')}{state.contractsError}</Alert> : null}
         {state.ordersError ? <Alert severity="warning">{t('待确认订单暂不可用：')}{state.ordersError}</Alert> : null}
         {state.profitError ? <Alert severity="warning">{t('自动交易收益暂不可用：')}{state.profitError}</Alert> : null}
@@ -225,6 +233,7 @@ export function Dashboard() {
           </Alert>
         ) : null}
         {state.profit?.message ? <Alert severity="info">{String(state.profit.message)}</Alert> : null}
+        <TradingStatusStrip risk={risk} account={state.account ?? {}} pendingCount={pendingCount ?? null} />
       </div>
 
       <div className="mt-7">
@@ -265,10 +274,28 @@ export function Dashboard() {
         <Mini label={t('自动交易净 PnL')} value={state.profit?.totalNetPnlUsdt == null ? t('不可用') : formatAsset(state.profit.totalNetPnlUsdt)} color={pnlColor(state.profit?.totalNetPnlUsdt)} />
       </div>
 
-      <section className="mt-8">
-        <h2 className="mb-2.5 text-[13px] font-semibold">{t('持仓与PnL')}</h2>
-        {state.positionsError ? <Alert severity="error">{t('持仓接口调用失败：')}{state.positionsError}</Alert> : null}
-        {state.positions ? <PositionSnapshotTable positions={state.positions} /> : null}
+      <section className="mt-8 grid items-start gap-8 lg:grid-cols-[0.78fr_1.22fr]">
+        <div>
+          <h2 className="mb-2.5 text-[13px] font-semibold">{t('风控解释')}</h2>
+          <RiskRule label={t('账户模式')} value={formatStatus(accountMode)} />
+          <RiskRule label={t('风控状态')} value={<StatusChip value={risk.passed as boolean | undefined} />} />
+          <RiskRule label={t('风险等级')} value={formatStatus(risk.riskLevel)} />
+          <RiskRule label={t('建议杠杆')} value={formatLeverage(risk.adjustedLeverage)} />
+          <RiskRule label={t('最大单笔亏损')} value={formatUSDT(risk.maxLossAmount)} />
+          <RiskRule label={t('拒绝原因')} value={String(risk.rejectReason ?? t('无拦截'))} />
+        </div>
+        <div>
+          <h2 className="mb-2.5 text-[13px] font-semibold">{t('持仓与PnL')}</h2>
+          {state.positionsError ? <Alert severity="error">{t('持仓不可用，不代表账户空仓：')}{state.positionsError}</Alert> : null}
+          {state.positions ? (
+            <PositionSnapshotTable
+              positions={state.positions}
+              closing={closePosition.loading}
+              closeDisabledReason={closePosition.disabledReason}
+              onClosePosition={closePosition.select}
+            />
+          ) : null}
+        </div>
       </section>
 
       <section className="mt-8">
@@ -302,7 +329,17 @@ export function Dashboard() {
           </div>
         )}
       </section>
+      <ClosePositionDialog {...closePosition.dialog} />
     </PageShell>
+  );
+}
+
+function RiskRule({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 border-t border-line py-2 text-[13px]">
+      <span className="text-muted">{label}</span>
+      <b className="text-right font-medium">{value}</b>
+    </div>
   );
 }
 
