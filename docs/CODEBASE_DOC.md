@@ -1,5 +1,12 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 升级内置交易 Agent 策略 Prompt 为四段式字段锚定结构
+
+- **变更摘要**：将 `TradingAgentTemplate` 中 4 个内置策略原型（`TREND_BALANCED`、`BREAKOUT_AGGRESSIVE`、`PULLBACK_CONSERVATIVE`、`CUSTOM`）的默认 Prompt 从单句口号升级为约 280～350 字的四段式结构（定位与周期、优先入场条件、一票否决 SKIP 条件、理由规范），直接锚定 `score`、`rank/v2Rank`、`rr`、`spreadBps`、`5mChg`、`oiChg`、`atr20m`、`slPct`、`riskTags` 及只读查证工具；同步扩充前端 `AgentsPage.tsx` 快捷纪律芯片、改为换行追加并将 Prompt 文本框调整为 8 行。
+- **涉及文件**：`src/main/java/com/example/quant/agent/platform/TradingAgentTemplate.java`、`frontend/src/pages/AgentsPage.tsx`
+- **影响范围**：仅影响新建或切换模板时填充的默认策略 Prompt 与编辑体验，不影响已保存的旧 Agent 配置与后端硬风控门禁。
+- **验证结果**：`mvn -B -o test -Dtest=TradingAgentPlatformTest` 与 `npm --prefix frontend run build` 均通过（0 错误），并同步推送至 `origin/main` 与 Miren `local` 集群。
+
 ### 2026-11-28 - 修复首页锚点按钮在 HashRouter 下误跳登录页
 
 - **变更摘要**：将 `frontend/src/pages/LandingPage.tsx` 中的顶部导航与「了解架构原则 · 3 分钟上手」等锚点链接（`<a href="#philosophy/#workflow/#faq/#top">`）改为基于 `scrollIntoView` 的按钮事件，避免修改 `window.location.hash` 被 React Admin `HashRouter` 识别为受保护路由而触发跳转登录页。

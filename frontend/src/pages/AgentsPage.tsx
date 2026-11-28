@@ -123,6 +123,8 @@ const PROMPT_DISCIPLINE_CHIPS = [
   '优先等待 5M 回踩均线企稳后再入场',
   '仅在高流动性、盘口价差 ≤ 5bps 时出手',
   '震荡市降低出手频率，只做高胜率突破',
+  '资金费率极端拥挤时自动跳过，避免反向挤压',
+  '若同一标的近期刚止损，本轮优先观望',
 ];
 
 function defaultFormFromTemplate(template?: AgentTemplate): AgentFormState {
@@ -967,7 +969,9 @@ export function AgentsPage() {
                           type="button"
                           onClick={() => setForm((c) => ({
                             ...c,
-                            systemPrompt: c.systemPrompt.includes(chip) ? c.systemPrompt : `${c.systemPrompt.trim()}${c.systemPrompt.trim() ? '；' : ''}${chip}`,
+                            systemPrompt: c.systemPrompt.includes(chip)
+                              ? c.systemPrompt
+                              : `${c.systemPrompt.trim()}${c.systemPrompt.trim() ? '\n- ' : '- '}${chip}`,
                           }))}
                           className="rounded-full border border-line-strong bg-canvas px-3 py-1 text-[11px] text-muted transition-colors hover:border-accent hover:text-ink"
                         >
@@ -979,7 +983,7 @@ export function AgentsPage() {
 
                   <Field className="mt-4" label={t('交易风格 Prompt')}>
                     <textarea
-                      rows={4}
+                      rows={8}
                       className="w-full rounded-[16px] border border-line-strong bg-canvas p-3.5 text-[13px] leading-6 text-ink focus:outline focus:outline-2 focus:outline-accent"
                       value={form.systemPrompt}
                       onChange={(event) => setForm((c) => ({ ...c, systemPrompt: event.target.value }))}
