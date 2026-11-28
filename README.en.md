@@ -59,7 +59,7 @@ The V2 ranking score divides the weighted points from available factors by the t
 | Trend signal trigger | Aligned 20m EMA + structure, 24h change ±1.5%–10%, volume ratio ≥ 0.65 (≥ 0.50 with 1h/4h alignment) | Identifies directional trend signals |
 | Trend, volume, and liquidity subscores | Weighted subscores ≥ 15/25, 15/20, and 10/25 (personal Agents use their own score + safety gate) | Trade-plan scoring checks |
 | News safety score | Raw score ≥ 70/100 | Trade-plan check. High news risk is screened separately |
-| Planned R:R, stop-loss, and dynamic leverage | Nominal R:R 2.2–2.4 (Agent 3-leg weighted net R:R after costs ≥ 1.2), stop-loss 0.8%–5%, auto step-down when hitting dynamic leverage cap | Trade-plan and pre-execution risk checks |
+| Planned R:R, stop-loss, and dynamic leverage | Nominal R:R 2.2–2.4 (Agent 3-leg weighted net R:R after costs ≥ 1.2), stop-loss 0.8%–5%, auto step-down when hitting dynamic leverage cap; Agent margin auto-shrinks when notional exceeds 20% of order-book depth | Trade-plan and pre-execution risk checks |
 
 Common settings include `QUANT_AGENT_MIN_TOTAL_SCORE`, `QUANT_AGENT_MIN_FINAL_RANK_SCORE`, `QUANT_AGENT_MIN_NEWS_RISK_RAW_SCORE`, `QUANT_AGENT_MIN_DEPTH_USDT`, and the deep-analysis limit, rotation, and concurrency settings. The table shows repository defaults. Order execution also checks accounts, positions, and execution conditions. [Example settings](.env.example) · [Default configuration](src/main/resources/application.yml) · [Trade-plan checks](src/main/java/com/example/quant/agent/gate/ContractTradeGate.java)
 

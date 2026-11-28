@@ -242,6 +242,10 @@ public class OrderConfirmService {
                 return OrderExecutionResult.rejected(ex.getMessage());
             }
             OrderBookLiquiditySnapshot liquidity = currentLiquidity(order);
+            if (agentManagedAuto) {
+                // 个人 Agent 的保证金来自「预算 / 最大持仓」，按实时盘口深度自动缩量而不是整单拒绝
+                adjustMarginByDepth(order, liquidity);
+            }
             String liquidityDenyReason = hardLiquidityDenyReason(order, liquidity, autoFixedMargin);
             if (!liquidityDenyReason.isBlank()) {
                 String reason = "实时订单簿流动性不足：" + liquidityDenyReason;
