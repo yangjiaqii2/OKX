@@ -986,5 +986,15 @@
   "每 5 分钟": "Every 5 min",
   "每 15 分钟": "Every 15 min",
   "每 30 分钟": "Every 30 min",
-  "每 60 分钟": "Every 60 min"
+  "每 60 分钟": "Every 60 min",
+  "旧版全局自动交易已关闭": "Legacy global auto-trade disabled",
+  "集中管理平台紧急停止总闸与全平台交易 Agent 运行状态。所有自动交易均由「我的 Agent」独立驱动。": "Manage the platform emergency kill-switch and all trading Agents. All automated trading runs through My Agents.",
+  "紧急停止不会删除数据，但会立即阻断所有交易 Agent 与订单执行。实盘环境下请先确认当前 OKX 未留有未处理订单。": "Emergency stop preserves data while immediately halting all trading Agents and order execution. Check open OKX orders before stopping in LIVE mode.",
+  "检测到旧版单账户全局自动交易仍处于开启状态，建议立即关闭以避免与个人交易 Agent 重复下单。": "Legacy single-account global auto-trade is still enabled. Disable it now to avoid duplicate orders alongside your personal trading Agents.",
+  "立即关闭旧版自动交易": "Disable legacy auto-trade",
+  "平台总闸": "Platform kill-switch",
+  "执行入口：Agent 平台": "Execution engine: Agent Platform",
+  "关闭旧版自动交易": "Disable legacy auto-trade",
+  "确认后将关闭旧版单账户全局自动交易，后续全部自动交易统一由「我的 Agent」执行。": "Disables the legacy single-account global auto-trade switch. All future automated trading runs exclusively via My Agents.",
+  "确认关闭": "Confirm disable"
 }
