@@ -1,5 +1,12 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 修复 Miren BuildKit 环境下 Vite 构建 EMFILE 错误并部署 local
+
+- **变更摘要**：在 `frontend/vite.config.ts` 中限制 Rollup `maxParallelFileOps: 5`，解决 Miren BuildKit 低文件描述符上限下构建 `lucide-react` 报 `EMFILE: too many open files` 的问题，并完成 Miren `local` 集群构建部署。
+- **涉及文件**：`frontend/vite.config.ts`
+- **影响范围**：仅限制生产构建时的并发文件读取数，不影响运行时性能或打包产物结构。
+- **验证结果**：Miren `local` 集群构建与发布成功（版本 `okx-quant-vChUxwzrfdQQePZREb4eDs`，构建耗时 13.9s，健康就绪 18.0s，`web: 1 running, 0 dead`，`https://okx-quant.localhost/` 返回 `HTTP 200`）。
+
 ### 2026-11-28 - Agent 平台 Phase 4：受控只读 Tool Calling、长期记忆与 AI 复盘反思
 
 - **变更摘要**：完成 Agent 平台第四阶段智能化进化，新增 `quant_agent_memory` 表（Flyway V57）与 `AgentMemoryService`，在决策引擎中接入最多 2 步的受控只读工具查证（`inspect_candidate_detail` / `inspect_symbol_history`）与历史记忆注入，并在前端「我的 Agent」页面上线长期记忆管理与一键 AI 复盘反思面板。
