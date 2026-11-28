@@ -224,6 +224,8 @@ public class OkxRestClient {
 
     private HttpRequest.Builder requestBuilder(String requestPath, Duration timeout) {
         return HttpRequest.newBuilder(URI.create(okxProperties.api().baseUrl() + requestPath))
+                .header("User-Agent", "Mozilla/5.0 (compatible; QuantDesk/1.0)")
+                .header("Accept", "application/json")
                 .timeout(timeout == null || timeout.isZero() || timeout.isNegative() ? REQUEST_TIMEOUT : timeout);
     }
 
