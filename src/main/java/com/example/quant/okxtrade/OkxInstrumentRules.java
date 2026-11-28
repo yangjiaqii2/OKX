@@ -10,9 +10,21 @@ public record OkxInstrumentRules(
         String contractValueCurrency,
         BigDecimal lotSize,
         BigDecimal minSize,
-        BigDecimal tickSize
+        BigDecimal tickSize,
+        int maxLeverage
 ) {
     private static final BigDecimal DEFAULT_STEP = BigDecimal.ONE;
+
+    public OkxInstrumentRules(
+            String instId,
+            BigDecimal contractValue,
+            String contractValueCurrency,
+            BigDecimal lotSize,
+            BigDecimal minSize,
+            BigDecimal tickSize
+    ) {
+        this(instId, contractValue, contractValueCurrency, lotSize, minSize, tickSize, 0);
+    }
 
     public OkxInstrumentRules {
         contractValue = positiveOrDefault(contractValue, BigDecimal.ONE);
@@ -22,11 +34,23 @@ public record OkxInstrumentRules(
         contractValueCurrency = contractValueCurrency == null || contractValueCurrency.isBlank()
                 ? baseCurrency(instId)
                 : contractValueCurrency;
+        maxLeverage = Math.max(0, maxLeverage);
     }
 
     public static OkxInstrumentRules defaultFor(String instId) {
         return new OkxInstrumentRules(instId, BigDecimal.ONE, baseCurrency(instId),
-                DEFAULT_STEP, DEFAULT_STEP, BigDecimal.ZERO);
+                DEFAULT_STEP, DEFAULT_STEP, BigDecimal.ZERO, 0);
+    }
+
+    /**
+     * Clamps requested leverage to this contract's OKX maximum leverage when known.
+     */
+    public int clampLeverage(int requestedLeverage) {
+        int safeRequested = Math.max(1, requestedLeverage);
+        if (maxLeverage > 0) {
+            return Math.max(1, Math.min(safeRequested, maxLeverage));
+        }
+        return safeRequested;
     }
 
     public BigDecimal contractSizeFromBaseQuantity(BigDecimal baseQuantity, BigDecimal price) {

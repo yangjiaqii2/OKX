@@ -114,7 +114,7 @@ public class OkxTradeAdapter {
             if (positionMode == null) {
                 positionMode = OkxPositionMode.NET;
             }
-            setLeverage(order, positionMode);
+            setLeverage(order, rules, positionMode);
             var checkedPlan = order.canonicalExecutablePlan();
             if ("MARKET".equalsIgnoreCase(order.orderType()) && checkedPlan != null && checkedPlan.risk() != null
                     && checkedPlan.risk().quoteTime() != null
@@ -362,15 +362,51 @@ public class OkxTradeAdapter {
         return AuthUserContext.currentUsername().orElse(OkxCredentialStore.SYSTEM_USER);
     }
 
-    private void setLeverage(PendingOrder order, OkxPositionMode positionMode) {
-        Map<String, String> payload = new LinkedHashMap<>();
-        payload.put("instId", order.instId());
-        payload.put("lever", String.valueOf(order.leverage()));
-        payload.put("mgnMode", order.tdMode());
-        if (positionMode == OkxPositionMode.LONG_SHORT) {
-            payload.put("posSide", order.posSide());
+    private static final int[] LEVERAGE_FALLBACK_TIERS = {100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2, 1};
+
+    private void setLeverage(PendingOrder order, OkxInstrumentRules rules, OkxPositionMode positionMode) {
+        int requested = Math.max(1, order.leverage());
+        int target = rules != null ? rules.clampLeverage(requested) : requested;
+        if (target < requested) {
+            log.info("Clamped leverage to OKX contract max instId={} requested={}x contractMax={}x",
+                    order.instId(), requested, target);
         }
-        okxOrderGateway.setLeverage(payload);
+        List<Integer> candidates = buildLeverageFallbackSequence(target);
+        OkxApiRejectedException lastRejected = null;
+        for (int candidate : candidates) {
+            Map<String, String> payload = new LinkedHashMap<>();
+            payload.put("instId", order.instId());
+            payload.put("lever", String.valueOf(candidate));
+            payload.put("mgnMode", order.tdMode());
+            if (positionMode == OkxPositionMode.LONG_SHORT) {
+                payload.put("posSide", order.posSide());
+            }
+            try {
+                okxOrderGateway.setLeverage(payload);
+                if (candidate < target) {
+                    log.warn("OKX set-leverage stepped down instId={} target={}x applied={}x",
+                            order.instId(), target, candidate);
+                }
+                return;
+            } catch (OkxApiRejectedException ex) {
+                lastRejected = ex;
+                log.warn("OKX set-leverage rejected at {}x for instId={}, trying lower tier: {}",
+                        candidate, order.instId(), compact(ex.getMessage()));
+            }
+        }
+        throw lastRejected != null ? lastRejected : new IllegalStateException("OKX set-leverage failed for " + order.instId());
+    }
+
+    static List<Integer> buildLeverageFallbackSequence(int startLeverage) {
+        int start = Math.max(1, startLeverage);
+        List<Integer> sequence = new java.util.ArrayList<>();
+        sequence.add(start);
+        for (int tier : LEVERAGE_FALLBACK_TIERS) {
+            if (tier < start) {
+                sequence.add(tier);
+            }
+        }
+        return sequence;
     }
 
     static Map<String, Object> orderPayload(PendingOrder order, OkxInstrumentRules rules, OkxPositionMode positionMode) {

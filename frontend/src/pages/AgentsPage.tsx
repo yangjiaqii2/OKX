@@ -928,14 +928,14 @@ export function AgentsPage() {
                     <Field label={t('分配预算 (USDT)')}>
                       <Input type="number" min="10" step="10" required value={form.allocatedBudgetUsdt} onChange={(e) => setForm((c) => ({ ...c, allocatedBudgetUsdt: e.target.value }))} />
                     </Field>
-                    <Field label={t('杠杆上限 (≤10x)')}>
-                      <Input type="number" min="1" max="10" required value={form.maxLeverage} onChange={(e) => setForm((c) => ({ ...c, maxLeverage: e.target.value }))} />
+                    <Field label={t('杠杆上限 (≤100x)')} hint={t('若合约不足目标倍数则自动向下取最大可用倍数')}>
+                      <Input type="number" min="1" max="100" required value={form.maxLeverage} onChange={(e) => setForm((c) => ({ ...c, maxLeverage: e.target.value }))} />
                     </Field>
                     <Field label={t('最大持仓 (≤3)')}>
                       <Input type="number" min="1" max="3" required value={form.maxOpenPositions} onChange={(e) => setForm((c) => ({ ...c, maxOpenPositions: e.target.value }))} />
                     </Field>
-                    <Field label={t('单笔止损 % (≤2%)')}>
-                      <Input type="number" min="0.2" max="2" step="0.1" required value={form.maxSingleLossPct} onChange={(e) => setForm((c) => ({ ...c, maxSingleLossPct: e.target.value }))} />
+                    <Field label={t('单笔止损 % (≤5%)')}>
+                      <Input type="number" min="0.2" max="5" step="0.1" required value={form.maxSingleLossPct} onChange={(e) => setForm((c) => ({ ...c, maxSingleLossPct: e.target.value }))} />
                     </Field>
                     <Field label={t('综合分门槛')}>
                       <Input type="number" min="40" max="95" required value={form.minTotalScore} onChange={(e) => setForm((c) => ({ ...c, minTotalScore: e.target.value }))} />

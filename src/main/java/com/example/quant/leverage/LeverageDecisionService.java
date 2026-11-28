@@ -8,7 +8,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class LeverageDecisionService {
-    private static final int SYSTEM_MAX_LEVERAGE = 10;
+    private static final int SYSTEM_MAX_LEVERAGE = 100;
 
     public LeverageDecisionResult decide(LeverageDecisionRequest request) {
         List<String> reasons = new ArrayList<>();

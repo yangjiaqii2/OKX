@@ -169,6 +169,7 @@ public class OkxInstrumentRulesService implements OkxInstrumentRulesProvider {
         BigDecimal lotSize = decimal(instrument, "lotSz");
         BigDecimal minSize = decimal(instrument, "minSz");
         BigDecimal tickSize = decimal(instrument, "tickSz");
+        int maxLeverage = parseMaxLeverage(instrument.path("lever").asText("0"));
         if (contractValue.signum() <= 0 || contractValueCurrency.isBlank()
                 || lotSize.signum() <= 0 || minSize.signum() <= 0 || tickSize.signum() <= 0) {
             return null;
@@ -179,8 +180,21 @@ public class OkxInstrumentRulesService implements OkxInstrumentRulesProvider {
                 contractValueCurrency,
                 lotSize,
                 minSize,
-                tickSize
+                tickSize,
+                maxLeverage
         );
+    }
+
+    private static int parseMaxLeverage(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return 0;
+        }
+        try {
+            int parsed = new BigDecimal(raw.trim()).intValue();
+            return Math.max(0, parsed);
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
     }
 
     private static BigDecimal decimal(JsonNode node, String field) {

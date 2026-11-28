@@ -16,9 +16,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class TradingAgentService {
     public static final int MAX_AGENTS_PER_USER = 5;
-    public static final int PLATFORM_HARD_MAX_LEVERAGE = 10;
+    public static final int PLATFORM_HARD_MAX_LEVERAGE = 100;
     public static final int PLATFORM_HARD_MAX_POSITIONS = 3;
-    public static final BigDecimal PLATFORM_HARD_MAX_SINGLE_LOSS_PCT = new BigDecimal("2.0");
+    public static final BigDecimal PLATFORM_HARD_MAX_SINGLE_LOSS_PCT = new BigDecimal("5.0");
     public static final BigDecimal PLATFORM_HARD_MAX_DAILY_LOSS_PCT = new BigDecimal("5.0");
     public static final BigDecimal PLATFORM_MIN_BUDGET_USDT = new BigDecimal("10");
 

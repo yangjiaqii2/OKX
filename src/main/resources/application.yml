@@ -64,7 +64,7 @@ quant:
     change-5m-threshold: 1.5
     volume-spike-ratio: 1.8
     max-abs-funding-rate: 0.001
-    max-leverage: ${QUANT_CONTRACT_MAX_LEVERAGE:10}
+    max-leverage: ${QUANT_CONTRACT_MAX_LEVERAGE:100}
     default-td-mode: cross
     max-single-margin-rate: 0.05
     max-single-loss-rate: 0.01
@@ -298,7 +298,7 @@ quant:
       max-daily-trades: 5
       max-consecutive-losses: 3
       cooldown-minutes-after-loss: 30
-      max-leverage: ${QUANT_AGENT_MAX_LEVERAGE:10}
+      max-leverage: ${QUANT_AGENT_MAX_LEVERAGE:100}
     monitor:
       interval-seconds: 10
       max-hold-minutes: 120

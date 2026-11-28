@@ -1,5 +1,17 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 放宽杠杆上限至 100x（自动降档至合约最大倍数）与单笔止损上限至 5%
+
+- **变更摘要**：将交易 Agent 与杠杆决策系统的最大杠杆上限从 `10x` 放宽至 `100x`，单笔止损上限从 `2%` 放宽至 `5%`；同时在 OKX 合约规则解析与下单网关中新增合约最大杠杆自动适配与逐档降级机制（当目标合约不支持 100x 或仓位档位受限时，自动向下取该合约支持的最大可用倍数）。
+- **涉及文件**：
+  - OKX 合约杠杆自动降档：`src/main/java/com/example/quant/okxtrade/OkxInstrumentRules.java`、`src/main/java/com/example/quant/okxtrade/OkxInstrumentRulesService.java`、`src/main/java/com/example/quant/okxtrade/OkxTradeAdapter.java`
+  - 杠杆与止损上限配置：`src/main/java/com/example/quant/agent/platform/TradingAgentService.java`、`src/main/java/com/example/quant/leverage/LeverageDecisionService.java`、`src/main/java/com/example/quant/config/AgentProperties.java`、`src/main/resources/application.yml`、`.env.example`
+  - 前端与测试：`frontend/src/pages/AgentsPage.tsx`、`frontend/src/i18n.en.json`、`src/test/java/com/example/quant/leverage/LeverageDecisionServiceTest.java`、`src/test/java/com/example/quant/agent/platform/TradingAgentPlatformTest.java`
+- **影响范围**：
+  - `OkxInstrumentRulesService` 解析 OKX `/api/v5/public/instruments` 的 `lever` 字段为 `maxLeverage`；`OkxTradeAdapter.setLeverage` 下单前先按合约 `maxLeverage` 截断，若 OKX 仍因仓位档位拒绝则按 `100 → 75 → 50 → 30 → 25 → 20 → 15 → 10 → 5 → 3 → 2 → 1` 逐档向下尝试直至成功。
+  - 前端「创建 / 编辑交易 Agent」表单同步支持自定义杠杆 `1..100x` 与单笔止损 `0.2%..5%`。
+- **验证结果**：后端杠杆/Agent/OKX 适配器/交易计划相关单测与前端 `npm --prefix frontend run build` 均通过（0 错误），并同步推送至 `origin/main` 与 Miren `local` 集群。
+
 ### 2026-11-28 - 升级内置交易 Agent 策略 Prompt 为四段式字段锚定结构
 
 - **变更摘要**：将 `TradingAgentTemplate` 中 4 个内置策略原型（`TREND_BALANCED`、`BREAKOUT_AGGRESSIVE`、`PULLBACK_CONSERVATIVE`、`CUSTOM`）的默认 Prompt 从单句口号升级为约 280～350 字的四段式结构（定位与周期、优先入场条件、一票否决 SKIP 条件、理由规范），直接锚定 `score`、`rank/v2Rank`、`rr`、`spreadBps`、`5mChg`、`oiChg`、`atr20m`、`slPct`、`riskTags` 及只读查证工具；同步扩充前端 `AgentsPage.tsx` 快捷纪律芯片、改为换行追加并将 Prompt 文本框调整为 8 行。

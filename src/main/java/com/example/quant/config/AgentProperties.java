@@ -1515,7 +1515,7 @@ public class AgentProperties {
         private int maxDailyTrades = 5;
         private int maxConsecutiveLosses = 3;
         private int cooldownMinutesAfterLoss = 30;
-        private int maxLeverage = 10;
+        private int maxLeverage = 100;
 
         public BigDecimal singleTradeRiskPercent() {
             return singleTradeRiskPercent;

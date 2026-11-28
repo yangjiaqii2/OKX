@@ -118,7 +118,7 @@ class TradingAgentPlatformTest {
     void enforcesPlatformHardRiskCapsAndByokRequirementBeforeStart() {
         TradingAgentView created = agentService.saveForUser("alice", new SaveTradingAgentRequest(
                 null, "HighRiskAttempt", "CUSTOM", "PAPER", null,
-                new BigDecimal("200"), 10, 50, 60, 60,
+                new BigDecimal("200"), 10, 150, 60, 60,
                 new BigDecimal("10.0"), new BigDecimal("25.0"),
                 "BOTH", "", "", "test prompt"
         ));
