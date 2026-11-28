@@ -282,6 +282,34 @@ public class ContractTradePlanBuilder {
                 overrides);
         RiskCheckResult risk = riskService.check(executionRisk == null
                 ? riskRequest : riskRequest.withSuggestedMargin(BigDecimal.ZERO));
+        if (!risk.passed() && "LEVERAGE_ABOVE_DYNAMIC_CAP".equals(risk.rejectCode())
+                && risk.adjustedLeverage() != null && risk.adjustedLeverage() >= 1
+                && risk.adjustedLeverage() < tradePlan.suggestedLeverage()) {
+            int cappedLeverage = risk.adjustedLeverage();
+            PositionSizingResult cappedSizing = sizing(candidate, draft, account, cappedLeverage, leverageDecision.riskLevel());
+            if (cappedSizing.accepted()) {
+                tradePlan = new TradePlan(
+                        tradePlan.id(), tradePlan.instId(), tradePlan.action(), tradePlan.orderType(),
+                        tradePlan.directionBias(), tradePlan.confidence(), tradePlan.entryPrice(),
+                        tradePlan.stopLossPrice(), tradePlan.takeProfitPrice(),
+                        cappedLeverage, cappedSizing.suggestedSize(), cappedSizing.suggestedMargin(),
+                        cappedSizing.maxLossAmount(),
+                        cappedSizing.riskRewardRatio().signum() > 0
+                                ? cappedSizing.riskRewardRatio().setScale(2, RoundingMode.HALF_UP)
+                                : draft.riskRewardRatio(),
+                        tradePlan.signalScore(), tradePlan.fundingRate(), tradePlan.volatility(),
+                        tradePlan.volume24h(), tradePlan.tdMode(), tradePlan.reasonList(),
+                        Stream.concat(tradePlan.riskList().stream(),
+                                Stream.of("动态风控已自动将杠杆降档至 " + cappedLeverage + "x")).distinct().toList(),
+                        tradePlan.invalidCondition(), tradePlan.needUserConfirm(), tradePlan.expireTime()
+                );
+                riskRequest = riskRequestFor(tradePlan, account, leverageDecision.riskLevel(),
+                        candidate.createdAt(), aiPrimary || (executionRisk != null && "MARKET".equalsIgnoreCase(draft.orderType())),
+                        overrides);
+                risk = riskService.check(executionRisk == null
+                        ? riskRequest : riskRequest.withSuggestedMargin(BigDecimal.ZERO));
+            }
+        }
         if (!risk.passed()) {
             return rejectPlan(candidate, gateWarnings, draft, risk.rejectCode() + ": " + risk.rejectReason());
         }

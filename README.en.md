@@ -2,16 +2,17 @@
 
 [简体中文](README.md)
 
-Quant Assistant is an OKX USDT perpetual futures terminal for finding trade opportunities, managing orders, and reviewing strategy decisions.
+Quant Assistant is a multi-user AI personal trading Agent platform and OKX USDT perpetual futures terminal for market scanning, concurrent AI decision-making, BYOK LLM configuration, automated/manual execution, position risk management, and strategy review.
 
 ## Features
 
-- **Contract scanning and ranking.** Review ranked candidates, scores, trade direction, and execution eligibility.
-- **AI entry decisions.** The model evaluates eligible candidates and selects an entry method or waits for better conditions.
-- **Order confirmation and automated trading.** Review a trade plan, enter margin, and confirm it manually. Automated orders must also pass risk checks.
-- **Account and position management.** Link an OKX account per user, view balances, orders, fills, and positions, and close positions.
-- **Trade review.** Review AI entry and wait decisions, rejection reasons, and subsequent market performance.
-- **Chinese and English interface.** Switch languages on the sign-in page or in the console header. The browser remembers your choice.
+- **Multi-user personal trading Agent platform ("My Agents").** Create and independently run multiple AI trading Agents from built-in templates (Trend Balanced, Breakout Aggressive, Reversal Sniper, Custom) or custom prompts, each with its own budget, max leverage (up to 100x, auto-stepped down to each contract's OKX max leverage), max open positions, single-trade stop-loss (up to 5%), composite/rank score thresholds, evaluation cooldown, and symbol allow/deny lists.
+- **Concurrent Agent execution with per-account symbol lock.** After each shared market scan, all due Agents evaluate concurrently with read-only market tool calls while an atomic per-account symbol lock prevents duplicate orders on the same contract. Supports `PAPER`, `MANUAL_CONFIRM`, and `AUTO` execution modes.
+- **Personal LLM configuration (BYOK).** Includes 11 built-in domestic and global presets (DeepSeek, Qwen, Zhipu GLM, Kimi, Doubao, MiniMax, OpenAI, Claude, Gemini, OpenRouter) plus custom OpenAI-compatible endpoints, encrypted per user with AES-GCM.
+- **Contract scanning and ranking.** Shared scanner screens OKX USDT perpetual futures and surfaces composite scores, V2 ranking scores, 20m/1h/4h structure, and execution eligibility.
+- **Dashboard & account/position risk.** Link a live or demo OKX API key per user, view account equity, real-time risk diagnostics, open positions, one-click close position, and platform-wide emergency Kill Switch.
+- **Decision timeline & auto-trade review.** Every Agent run records step-by-step decisions (Filter → LLM → Tool Calls → Risk Gate → Execution), and auto-trade records are attributed per Agent.
+- **Email verification & bilingual UI.** Supports email-verified registration/password reset and instant Chinese/English switching.
 
 ## Contract selection and scoring
 
@@ -53,11 +54,12 @@ The V2 ranking score divides the weighted points from available factors by the t
 | --- | --- | --- |
 | Market cap and 24-hour price range | Market cap ≥ USD 20 million and range ≤ 40% | Initial screening. Market cap data must be valid |
 | Bid–ask spread and depth | Spread ≤ 8 bps (0.08%) and depth on the thinner side ≥ 5,000 USDT | Order-book screening before deep analysis |
-| Deep analysis and published candidates | Up to 30 contracts per scan, up to 20 rotation slots, 4 concurrent analyses, and up to 10 published candidates | Controls analysis workload and coverage |
-| Composite score and final rank score | Both ≥ 60 | Determines the scanner's action |
-| Trend, volume, and liquidity subscores | Weighted subscores ≥ 15/25, 15/20, and 10/25, respectively | Trade-plan scoring checks |
+| Deep analysis and published candidates | Up to 30 contracts per scan (12 on Miren), 3–4 concurrent analyses, 75s scan timeout, up to 10 published candidates | Controls analysis workload and proxy stability |
+| Composite score and final rank score | Global default ≥ 60; each Agent can set its own custom score threshold (e.g. ≥ 50) | Scanner action and per-Agent candidate filtering |
+| Trend signal trigger | Aligned 20m EMA + structure, 24h change ±1.5%–10%, volume ratio ≥ 0.65 (≥ 0.50 with 1h/4h alignment) | Identifies directional trend signals |
+| Trend, volume, and liquidity subscores | Weighted subscores ≥ 15/25, 15/20, and 10/25 (personal Agents use their own score + safety gate) | Trade-plan scoring checks |
 | News safety score | Raw score ≥ 70/100 | Trade-plan check. High news risk is screened separately |
-| Planned reward-to-risk and stop-loss distance | Reward-to-risk ≥ 1.5 and stop-loss distance ≤ 5% | Trade-plan eligibility checks |
+| Planned R:R, stop-loss, and dynamic leverage | Nominal R:R 2.2–2.4 (net R:R after costs ≥ 1.5), stop-loss 0.8%–5%, auto step-down when hitting dynamic leverage cap | Trade-plan and pre-execution risk checks |
 
 Common settings include `QUANT_AGENT_MIN_TOTAL_SCORE`, `QUANT_AGENT_MIN_FINAL_RANK_SCORE`, `QUANT_AGENT_MIN_NEWS_RISK_RAW_SCORE`, `QUANT_AGENT_MIN_DEPTH_USDT`, and the deep-analysis limit, rotation, and concurrency settings. The table shows repository defaults. Order execution also checks accounts, positions, and execution conditions. [Example settings](.env.example) · [Default configuration](src/main/resources/application.yml) · [Trade-plan checks](src/main/java/com/example/quant/agent/gate/ContractTradeGate.java)
 
