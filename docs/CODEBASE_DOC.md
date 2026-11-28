@@ -1,5 +1,12 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 修复 OkxRestClient 异常脱敏 `OKX request failed: null` 并支持代理与 HTTP/1.1
+
+- **变更摘要**：优化 `OkxRestClient` 的底层异常描述（`describeException` 沿 cause 链输出真实异常类名与根因，避免出现 `OKX request failed: null`），显式使用 `HTTP/1.1`、放宽连接/请求超时（5s/8s），并支持自动读取 `OKX_HTTP_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` 环境变量；同时将 Miren `local` 集群切换为 `TRADING_MODE=DEMO` 以启用模拟盘请求头 `x-simulated-trading: 1`。
+- **涉及文件**：`src/main/java/com/example/quant/crypto/OkxRestClient.java`
+- **影响范围**：改善 OKX 网络连接稳定性与错误可读性，支持模拟盘 API Key 连通性测试与模拟盘交易。
+- **验证结果**：`mvn -B -o test -Dtest=OkxRestClientTest,OkxAccountBindingServiceTest` 通过（0 错误），并同步推送至 `origin/main` 与 Miren `local` 集群。
+
 ### 2026-11-28 - 将「账户与风控」诊断模块并入「总览」并精简侧边栏导航
 
 - **变更摘要**：将 `AccountRiskPage` 中的账户状态标签、`TradingStatusStrip`、结构化「风控解释」面板及持仓表内人工一键平仓（`ClosePositionDialog`）全部合并进 `Dashboard.tsx`（「总览」）；同时从侧边栏 `layout.tsx` 移除独立的「账户与风控」入口，并在 `App.tsx` 中将 `/account-risk` 重定向至 `/` 保持旧书签兼容。

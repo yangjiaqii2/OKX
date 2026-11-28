@@ -8,6 +8,8 @@ import com.example.quant.config.TradingProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -26,8 +28,8 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class OkxRestClient {
-    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(3);
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(6);
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(8);
 
     private final OkxProperties okxProperties;
     private final OkxAccountBindingService bindingService;
@@ -42,8 +44,51 @@ public class OkxRestClient {
     public OkxRestClient(OkxProperties okxProperties, OkxAccountBindingService bindingService,
                          OkxSigner signer, ObjectMapper objectMapper) {
         this(okxProperties, bindingService, signer, objectMapper,
-                HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build(),
+                buildHttpClient(),
                 TradingMode.DISABLED);
+    }
+
+    private static HttpClient buildHttpClient() {
+        HttpClient.Builder builder = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(CONNECT_TIMEOUT);
+        ProxySelector proxySelector = resolveEnvProxySelector();
+        if (proxySelector != null) {
+            builder.proxy(proxySelector);
+        }
+        return builder.build();
+    }
+
+    private static ProxySelector resolveEnvProxySelector() {
+        String raw = firstNonBlank(
+                System.getenv("OKX_HTTP_PROXY"),
+                System.getenv("HTTPS_PROXY"),
+                System.getenv("https_proxy"),
+                System.getenv("HTTP_PROXY"),
+                System.getenv("http_proxy")
+        );
+        if (raw == null) {
+            return null;
+        }
+        try {
+            String normalized = raw.contains("://") ? raw : "http://" + raw;
+            URI uri = URI.create(normalized);
+            if (uri.getHost() != null && uri.getPort() > 0) {
+                return ProxySelector.of(new InetSocketAddress(uri.getHost(), uri.getPort()));
+            }
+        } catch (IllegalArgumentException ignored) {
+            // Fall back to default system proxy selector.
+        }
+        return null;
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     @Autowired
@@ -237,8 +282,24 @@ public class OkxRestClient {
         } catch (IllegalStateException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw new IllegalStateException("OKX request failed: " + ex.getMessage(), ex);
+            throw new IllegalStateException("OKX request failed: " + describeException(ex), ex);
         }
+    }
+
+    private static String describeException(Throwable ex) {
+        if (ex == null) {
+            return "unknown error";
+        }
+        Throwable root = ex;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String type = root.getClass().getSimpleName();
+        String msg = root.getMessage();
+        if (msg == null || msg.isBlank()) {
+            msg = ex.getMessage();
+        }
+        return (msg == null || msg.isBlank()) ? type : (type + ": " + msg);
     }
 
     private static boolean hasText(String value) {
