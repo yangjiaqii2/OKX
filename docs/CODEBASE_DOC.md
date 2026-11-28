@@ -1,5 +1,17 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 放宽顺势信号过严门槛、打通个人 Agent 建计划硬闸门并提升净盈亏比缓冲
+
+- **变更摘要**：
+  1. 优化 `ContractSignalAnalyzer` 顺势信号识别：
+     - `trendDirection()` 在 EMA20/EMA60 多空排列且 20m 结构明确（`HIGHER_HIGH_HIGHER_LOW` / `LOWER_HIGH_LOWER_LOW`）时即可确认 `UP` / `DOWN`，不再因最新一根 20m K 线 MACD 柱小幅收窄而误判为 `NEUTRAL`。
+     - 调整 `TREND_SHORT` / `STRONG_LONG` 24h 涨跌幅起步阈值至 `±1.5%`、20m 量比门槛下调至 `0.65`（1h/4h 大周期同向共振时 `0.50`）、RSI 区间放宽至 `18~60`（空）/ `40~82`（多），避免正常单边阴跌/慢涨行情全员落入 `NO_TRADE`。
+     - 将最小止损距离从 `0.6%` 提高至 `0.8%`、默认目标名义盈亏比从 `1.80 / 2.20` 提升至 `2.20 / 2.40`，避免计划在 `PlanExecutionRisk` 扣除往返手续费/滑点/资金费率缓冲后跌破 `1.50` 触发 `NET_RISK_REWARD_AFTER_COSTS_TOO_LOW` 自杀式拦截。
+  2. 新增 `ContractTradeGate.agentPlanDenyReasons(candidate, properties, agentMinTotalScore)`，并在 `ContractTradePlanBuilder.buildAgentPlan()` 中改为调用 `agentRulePlan()`（强制 `MARKET` 市价入场、忽略旧版全局 `watchOnlyCandidate` 60 分+`AUTO_TRADE_ALLOWED` 二次拦截），仅保留新闻风控、极端价差、高市场风险、止损 ≤5%、盈亏比 ≥1.5 与 Agent 自身 `minTotalScore` 底线。
+- **涉及文件**：`src/main/java/com/example/quant/crypto/ContractSignalAnalyzer.java`、`src/main/java/com/example/quant/agent/gate/ContractTradeGate.java`、`src/main/java/com/example/quant/tradeplan/ContractTradePlanBuilder.java`
+- **影响范围**：解决单边趋势行情下候选合约全员 `NO_TRADE` 导致所有 Agent 长期 `SKIP`、以及低门槛 Agent（如 50 分）被旧版全局门禁和 1.80 扣费盈亏比误拦的问题；原有账户资金、单笔止损、合约最大杠杆自动降档与急停保护全部保留。
+- **验证结果**：`mvn -B -o test -Dtest=ContractSignalAnalyzerTest,ContractSignalAnalyzerScenarioTest,ContractTradePlanBuilderTest,PlanExecutionRiskTest,TradingAgentPlatformTest` 全部通过（40/40，0 错误），同步推送至 `origin/main` 并部署至 Miren `local` 集群验证实时出信号与 Agent 执行。
+
 ### 2026-11-28 - 贯通个人 Agent 自定义参数至交易计划与下单风控，解除 85 分与 1.5% 全局写死覆盖
 
 - **变更摘要**：

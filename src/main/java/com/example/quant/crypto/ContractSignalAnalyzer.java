@@ -22,7 +22,7 @@ public class ContractSignalAnalyzer {
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
     private static final BigDecimal FUNDING_CROWDED = new BigDecimal("0.0015");
     private static final BigDecimal FUNDING_EXTREME = new BigDecimal("0.0030");
-    private static final BigDecimal MIN_STOP_DISTANCE_RATE = new BigDecimal("0.006");
+    private static final BigDecimal MIN_STOP_DISTANCE_RATE = new BigDecimal("0.008");
     private static final BigDecimal MAX_STOP_LOSS_PCT = new BigDecimal("5");
     private static final BigDecimal MIN_RISK_REWARD = new BigDecimal("1.50");
     private static final int MIN_20M_CANDLES = 50;
@@ -288,21 +288,25 @@ public class ContractSignalAnalyzer {
                 || "DOWN".equals(trendDirection(fast, structure)))) {
             return ContractSignalType.REVERSAL_SHORT;
         }
-        if (todayChangePct.compareTo(new BigDecimal("-3")) <= 0
+        boolean higherTfBearish = "DOWN".equals(trend1h) || "DOWN".equals(trend4h);
+        BigDecimal shortMinVol = higherTfBearish ? new BigDecimal("0.50") : new BigDecimal("0.65");
+        if (todayChangePct.compareTo(new BigDecimal("-1.5")) <= 0
                 && todayChangePct.compareTo(new BigDecimal("-10")) >= 0
                 && "DOWN".equals(trend20m)
                 && structure.lowerStructure()
-                && main.volumeRatio().compareTo(new BigDecimal("1.2")) >= 0
-                && main.rsi().compareTo(BigDecimal.valueOf(20)) >= 0
-                && main.rsi().compareTo(BigDecimal.valueOf(55)) <= 0) {
+                && main.volumeRatio().compareTo(shortMinVol) >= 0
+                && main.rsi().compareTo(BigDecimal.valueOf(18)) >= 0
+                && main.rsi().compareTo(BigDecimal.valueOf(60)) <= 0) {
             return ContractSignalType.TREND_SHORT;
         }
-        if (todayChangePct.compareTo(new BigDecimal("2")) >= 0
+        boolean higherTfBullish = "UP".equals(trend1h) || "UP".equals(trend4h);
+        BigDecimal longMinVol = higherTfBullish ? new BigDecimal("0.50") : new BigDecimal("0.65");
+        if (todayChangePct.compareTo(new BigDecimal("1.5")) >= 0
                 && todayChangePct.compareTo(new BigDecimal("10")) <= 0
                 && "UP".equals(trend20m)
                 && structure.higherStructure()
-                && main.volumeRatio().compareTo(new BigDecimal("1.2")) >= 0
-                && main.rsi().compareTo(BigDecimal.valueOf(45)) >= 0
+                && main.volumeRatio().compareTo(longMinVol) >= 0
+                && main.rsi().compareTo(BigDecimal.valueOf(40)) >= 0
                 && main.rsi().compareTo(BigDecimal.valueOf(82)) <= 0) {
             return ContractSignalType.STRONG_LONG;
         }
@@ -314,8 +318,8 @@ public class ContractSignalAnalyzer {
                 && !"DOWN".equals(trend4h)) {
             return ContractSignalType.PULLBACK_LONG;
         }
-        if (todayChangePct.compareTo(new BigDecimal("-2")) >= 0
-                && todayChangePct.compareTo(new BigDecimal("2")) <= 0
+        if (todayChangePct.compareTo(new BigDecimal("-1.5")) >= 0
+                && todayChangePct.compareTo(new BigDecimal("1.5")) <= 0
                 && ("NEUTRAL".equals(trend20m) || main.adx().compareTo(BigDecimal.valueOf(18)) < 0)) {
             return ContractSignalType.NEUTRAL;
         }
@@ -446,7 +450,7 @@ public class ContractSignalAnalyzer {
             stopLoss = safeEntry.subtract(distance);
         }
         BigDecimal risk = safeEntry.subtract(stopLoss).abs().max(minDistance);
-        BigDecimal rr = score >= 80 ? new BigDecimal("2.20") : new BigDecimal("1.80");
+        BigDecimal rr = score >= 80 ? new BigDecimal("2.40") : new BigDecimal("2.20");
         BigDecimal takeProfit = direction == DirectionBias.BEARISH
                 ? safeEntry.subtract(risk.multiply(rr))
                 : safeEntry.add(risk.multiply(rr));
@@ -727,13 +731,15 @@ public class ContractSignalAnalyzer {
     private static String trendDirection(IndicatorSnapshot indicators, StructureSnapshot structure) {
         if (indicators.close().compareTo(indicators.ema20()) > 0
                 && indicators.ema20().compareTo(indicators.ema60()) > 0
-                && indicators.macdHistogram().compareTo(indicators.previousMacdHistogram()) >= 0
+                && (indicators.macdHistogram().compareTo(indicators.previousMacdHistogram()) >= 0
+                || structure.higherStructure())
                 && !structure.lowerStructure()) {
             return "UP";
         }
         if (indicators.close().compareTo(indicators.ema20()) < 0
                 && indicators.ema20().compareTo(indicators.ema60()) < 0
-                && indicators.macdHistogram().compareTo(indicators.previousMacdHistogram()) <= 0
+                && (indicators.macdHistogram().compareTo(indicators.previousMacdHistogram()) <= 0
+                || structure.lowerStructure())
                 && !structure.higherStructure()) {
             return "DOWN";
         }

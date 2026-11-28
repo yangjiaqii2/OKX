@@ -137,7 +137,7 @@ public class ContractTradePlanBuilder {
     }
 
     public TradePlan buildAgentPlan(ContractCandidate candidate, AgentPlanOverrides overrides) {
-        PlanDraft agentDraft = rulePlan(candidate, "个人交易 Agent 已完成 AI 决策，由确定性引擎构建交易计划", false);
+        PlanDraft agentDraft = agentRulePlan(candidate, "个人交易 Agent 已完成 AI 决策，由确定性引擎构建交易计划");
         return buildPlan(candidate, false, agentDraft, true, true, overrides);
     }
 
@@ -198,7 +198,7 @@ public class ContractTradePlanBuilder {
         BigDecimal stopDistanceRate = draft.entryPrice().subtract(draft.stopLossPrice()).abs()
                 .divide(draft.entryPrice(), 8, RoundingMode.HALF_UP);
         List<String> finalHardDenyReasons = finalJavaHardDenyReasons(candidate, draft, stopDistanceRate,
-                agentProperties);
+                agentProperties, overrides);
         if (!finalHardDenyReasons.isEmpty()) {
             TradePlan watchPlan = watchTradePlan(candidate, gateWarnings,
                     "FINAL_JAVA_HARD_GUARD: " + String.join(",", finalHardDenyReasons), draft);
@@ -361,6 +361,24 @@ public class ContractTradePlanBuilder {
         }
     }
 
+    private PlanDraft agentRulePlan(ContractCandidate candidate, String fallbackReason) {
+        if (candidate == null
+                || (candidate.trendDirection() != DirectionBias.BULLISH && candidate.trendDirection() != DirectionBias.BEARISH)) {
+            return watchDraft(candidate);
+        }
+        PlanDraft base = rulePlan(candidate, fallbackReason, true);
+        if (base.action() == TradePlanType.WATCH) {
+            return base;
+        }
+        return new PlanDraft(
+                base.action(), "MARKET", base.direction(), base.confidence(),
+                base.entryPrice(), base.stopLossPrice(), base.takeProfitPrice(),
+                base.riskRewardRatio(), base.suggestedLeverage(),
+                base.reasonList(), base.riskList(), base.invalidCondition(),
+                "AGENT_AI_DETERMINISTIC_PLAN"
+        );
+    }
+
     private PlanDraft rulePlan(ContractCandidate candidate, String fallbackReason) {
         return rulePlan(candidate, fallbackReason, false);
     }
@@ -454,10 +472,13 @@ public class ContractTradePlanBuilder {
 
     private static List<String> finalJavaHardDenyReasons(ContractCandidate candidate, PlanDraft draft,
                                                           BigDecimal stopDistanceRate,
-                                                          AgentProperties agentProperties) {
+                                                          AgentProperties agentProperties,
+                                                          AgentPlanOverrides overrides) {
         List<String> reasons = candidate == null
                 ? new ArrayList<>(List.of("candidate_invalid"))
-                : new ArrayList<>(ContractTradeGate.planDenyReasons(candidate, agentProperties));
+                : new ArrayList<>(overrides != null
+                ? ContractTradeGate.agentPlanDenyReasons(candidate, agentProperties, overrides.minTotalScore())
+                : ContractTradeGate.planDenyReasons(candidate, agentProperties));
         if (candidate == null || candidate.instId() == null || !candidate.instId().endsWith("-USDT-SWAP")) {
             reasons.add("candidate_invalid");
         }

@@ -23,6 +23,33 @@ public final class ContractTradeGate {
         return reasons;
     }
 
+    /**
+     * 个人交易 Agent 专用硬安全闸门：尊重 Agent 自身评分门槛与 AI 决策，仅保留新闻/流动性/价差/市场极端风险与止损盈亏比底线。
+     */
+    public static List<String> agentPlanDenyReasons(ContractCandidate candidate, AgentProperties agentProperties,
+                                                    int agentMinTotalScore) {
+        List<String> reasons = new ArrayList<>();
+        int effectiveMinScore = agentMinTotalScore > 0 ? agentMinTotalScore : agentProperties.score().minTotalScore();
+        if (candidate.score() < effectiveMinScore) {
+            reasons.add("total_score_below_" + effectiveMinScore);
+        }
+        addNewsDenyReasons(reasons, candidate, agentProperties.score().minNewsRiskRawScore());
+        if (candidate.riskRewardRatio() == null || candidate.riskRewardRatio().compareTo(MIN_PLAN_RISK_REWARD) < 0) {
+            reasons.add("risk_reward_below_" + MIN_PLAN_RISK_REWARD);
+        }
+        if (candidate.stopLossPct() != null && candidate.stopLossPct().compareTo(BigDecimal.valueOf(5)) > 0) {
+            reasons.add("stop_loss_pct_above_5");
+        }
+        BigDecimal maxSpread = agentProperties.market().maxSpreadBps().multiply(BigDecimal.valueOf(3));
+        if (candidate.spreadBps() != null && candidate.spreadBps().compareTo(maxSpread) > 0) {
+            reasons.add("spread_bps_above_" + maxSpread);
+        }
+        if (candidate.marketRiskLevel() != null && candidate.marketRiskLevel().ordinal() >= RiskLevel.HIGH.ordinal()) {
+            reasons.add("market_environment_high_risk");
+        }
+        return reasons;
+    }
+
     public static List<String> autoDenyReasons(ContractCandidate candidate, AgentProperties agentProperties) {
         List<String> reasons = new ArrayList<>();
         AgentProperties.AutoTrade autoTrade = agentProperties.autoTrade();
