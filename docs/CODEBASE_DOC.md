@@ -1,5 +1,15 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 贯通个人 Agent 自定义参数至交易计划与下单风控，解除 85 分与 1.5% 全局写死覆盖
+
+- **变更摘要**：
+  1. 在 `ContractTradePlanBuilder` 与 `TradePlanService` 中新增个人 Agent 专用入口 `buildAgentPlan` / `createAgentContractPlan(candidate, AgentPlanOverrides)`，直接采用该 Agent 前端配置的 `maxLeverage`、`minTotalScore`、`maxSingleLossPct` 参与计划杠杆、评分与单笔风险校验，不再被全局写死配置覆盖；同时跳过冗余的旧版全局 `AI_API_KEY` 二次复核与 85 分 `SmartEntryModeResolver` 重复拦截。
+  2. 将 `application.yml` 中 `quant.agent.entry.market-min-score` 从 `85` 下调为 `${QUANT_AGENT_MARKET_MIN_SCORE:60}`，让手动与自动建计划均不再被 85 分卡死。
+  3. 更新 `TradingAgentOrchestrator` 在 `AUTO` 与 `MANUAL_CONFIRM` 执行分支统一调用 `createAgentContractPlan`。
+- **涉及文件**：`src/main/java/com/example/quant/tradeplan/ContractTradePlanBuilder.java`、`src/main/java/com/example/quant/tradeplan/TradePlanService.java`、`src/main/java/com/example/quant/agent/platform/TradingAgentOrchestrator.java`、`src/main/resources/application.yml`
+- **影响范围**：前端为每个 Agent 独立设置的评分门槛、杠杆上限与单笔止损 % 完整生效到底层交易计划；原有账户余额、盘口流动性/价差、净盈亏比、合约最大杠杆自动降档与急停保护全部保留。
+- **验证结果**：`mvn -B -o test -Dtest=ContractTradePlanBuilderTest,TradingAgentPlatformTest,SmartEntryModeResolverTest` 全部通过（0 错误），同步推送至 `origin/main` 并部署至 Miren `local` 集群。
+
 ### 2026-11-28 - 解决 6 项平台体验与并发问题（复盘归属 Agent、清理旧版空记录、实时风控诊断与多 Agent 并发）
 
 - **变更摘要**：

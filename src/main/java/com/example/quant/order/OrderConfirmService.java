@@ -137,15 +137,24 @@ public class OrderConfirmService {
     }
 
     public OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount) {
-        return confirm(orderId, marginAmount, null, false);
+        return confirm(orderId, marginAmount, null, false, false, null, null);
     }
 
     public OrderExecutionResult confirmAuto(UUID orderId, BigDecimal marginAmount) {
-        return confirm(orderId, marginAmount, null, true);
+        return confirm(orderId, marginAmount, null, true, false, null, null);
+    }
+
+    public OrderExecutionResult confirmAgentAuto(
+            UUID orderId,
+            BigDecimal marginAmount,
+            Integer maxLeverageOverride,
+            BigDecimal maxSingleLossPctOverride
+    ) {
+        return confirm(orderId, marginAmount, null, true, true, maxLeverageOverride, maxSingleLossPctOverride);
     }
 
     public OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount, ContractRiskRequest riskRequest) {
-        return confirm(orderId, marginAmount, riskRequest, false);
+        return confirm(orderId, marginAmount, riskRequest, false, false, null, null);
     }
 
     public OrderExecutionResult resolveUnknownSubmit(UUID orderId) {
@@ -177,7 +186,8 @@ public class OrderConfirmService {
     }
 
     private OrderExecutionResult confirm(UUID orderId, BigDecimal marginAmount, ContractRiskRequest providedRiskRequest,
-                                         boolean autoFixedMargin) {
+                                         boolean autoFixedMargin, boolean agentManagedAuto,
+                                         Integer maxLeverageOverride, BigDecimal maxSingleLossPctOverride) {
         PendingOrder order = pendingOrderService.get(orderId);
         synchronized (order) {
             Instant now = clock.instant();
@@ -195,11 +205,11 @@ public class OrderConfirmService {
                 releaseBudget(order, "ORDER_EXPIRED");
                 return OrderExecutionResult.rejected("待确认订单已过期");
             }
-            OrderExecutionResult stopped = rejectStoppedAutoTrade(order, autoFixedMargin);
+            OrderExecutionResult stopped = rejectStoppedAutoTrade(order, autoFixedMargin, agentManagedAuto);
             if (stopped != null) {
                 return stopped;
             }
-            if (noRiskAutoMode(autoFixedMargin)) {
+            if (!agentManagedAuto && noRiskAutoMode(autoFixedMargin)) {
                 String reason = "Shadow 模式禁止创建或提交自动订单";
                 order.markRejected(reason);
                 releaseBudget(order, "SHADOW_MODE");
@@ -257,7 +267,8 @@ public class OrderConfirmService {
                 }
             }
             ContractRiskRequest riskRequest = providedRiskRequest == null
-                    ? riskRequestFor(order, order.marginAmount(), liquidity, autoFixedMargin, account)
+                    ? riskRequestFor(order, order.marginAmount(), liquidity, autoFixedMargin, account,
+                            maxLeverageOverride, maxSingleLossPctOverride)
                     : providedRiskRequest.withSuggestedMargin(order.marginAmount());
             RiskCheckResult risk = riskService.check(riskRequest);
             if (!risk.passed() && autoFixedMargin && canRetryWithLowerLeverage(order, risk)) {
@@ -271,7 +282,8 @@ public class OrderConfirmService {
                 }
                 log.warn("Auto confirm lowered leverage by dynamic risk cap id={} instId={} adjustedLeverage={} marginAmount={} size={}",
                         order.id(), order.instId(), adjustedLeverage, order.marginAmount(), order.size());
-                riskRequest = riskRequestFor(order, order.marginAmount(), liquidity, true, account);
+                riskRequest = riskRequestFor(order, order.marginAmount(), liquidity, true, account,
+                        maxLeverageOverride, maxSingleLossPctOverride);
                 risk = riskService.check(riskRequest);
             }
             if (executionRisk != null && "MAX_LOSS_EXCEEDED".equals(risk.rejectCode())) {
@@ -298,7 +310,7 @@ public class OrderConfirmService {
                     return canonicalResult;
                 }
             }
-            stopped = rejectStoppedAutoTrade(order, autoFixedMargin);
+            stopped = rejectStoppedAutoTrade(order, autoFixedMargin, agentManagedAuto);
             if (stopped != null) {
                 return stopped;
             }
@@ -538,8 +550,22 @@ public class OrderConfirmService {
                 && systemControlService.autoTradeRiskMode().noRisk();
     }
 
-    private OrderExecutionResult rejectStoppedAutoTrade(PendingOrder order, boolean autoFixedMargin) {
-        if (!autoFixedMargin || systemControlService == null || systemControlService.autoTradeEnabled()) {
+    private OrderExecutionResult rejectStoppedAutoTrade(PendingOrder order, boolean autoFixedMargin, boolean agentManagedAuto) {
+        if (!autoFixedMargin || systemControlService == null) {
+            return null;
+        }
+        if (agentManagedAuto) {
+            if (!systemControlService.emergencyStopEnabled()) {
+                return null;
+            }
+            String reason = "紧急停止已开启，Agent 自动订单未提交";
+            order.markRejected(reason);
+            releaseBudget(order, "EMERGENCY_STOP");
+            log.warn("Confirm order rejected id={} instId={} reason=emergency_stop_enabled",
+                    order.id(), order.instId());
+            return OrderExecutionResult.rejected(reason);
+        }
+        if (systemControlService.autoTradeEnabled()) {
             return null;
         }
         String reason = systemControlService.emergencyStopEnabled()
@@ -575,7 +601,8 @@ public class OrderConfirmService {
 
     private ContractRiskRequest riskRequestFor(PendingOrder order, BigDecimal marginAmount,
                                                OrderBookLiquiditySnapshot liquidity, boolean autoPipelineValidated,
-                                               AccountSummary account) {
+                                               AccountSummary account, Integer maxLeverageOverride,
+                                               BigDecimal maxSingleLossPctOverride) {
         ContractRiskRequest defaults = ContractRiskRequest.safeDefaults();
         boolean measuredMarketData = orderBookLiquidityService == null
                 ? defaults.websocketConnected()
@@ -593,10 +620,14 @@ public class OrderConfirmService {
         BigDecimal maxSingleMarginRate = agentProperties == null
                 ? defaults.maxSingleMarginRate()
                 : percentRate(agentProperties.risk().maxSingleMarginPercent());
-        BigDecimal maxSingleLossRate = agentProperties == null
+        BigDecimal maxSingleLossRate = maxSingleLossPctOverride != null && maxSingleLossPctOverride.signum() > 0
+                ? percentRate(maxSingleLossPctOverride)
+                : agentProperties == null
                 ? defaults.maxSingleLossRate()
                 : percentRate(agentProperties.risk().singleTradeRiskPercent());
-        int maxLeverage = agentProperties == null ? defaults.maxLeverage() : agentProperties.risk().maxLeverage();
+        int maxLeverage = maxLeverageOverride != null && maxLeverageOverride > 0
+                ? maxLeverageOverride
+                : agentProperties == null ? defaults.maxLeverage() : agentProperties.risk().maxLeverage();
         BigDecimal maxFunding = agentProperties == null
                 ? defaults.maxAbsFundingRate()
                 : agentProperties.market().maxFundingAbs();

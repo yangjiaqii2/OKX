@@ -160,7 +160,7 @@ quant:
       stale-data-seconds: 20
     entry:
       smart-entry-enabled: true
-      market-min-score: 85
+      market-min-score: ${QUANT_AGENT_MARKET_MIN_SCORE:60}
       market-min-risk-reward: 1.8
       max-market-spread-pct: 0.03
       max-market-slippage-pct: 0.12

@@ -24,6 +24,13 @@ public class TradePlanService {
         return builder.buildAutomaticPlan(candidate);
     }
 
+    public TradePlan createAgentContractPlan(
+            ContractCandidate candidate,
+            ContractTradePlanBuilder.AgentPlanOverrides overrides
+    ) {
+        return builder.buildAgentPlan(candidate, overrides);
+    }
+
     public TradePlan createNoRiskContractPlan(ContractCandidate candidate) {
         return builder.buildNoRiskPlan(candidate);
     }

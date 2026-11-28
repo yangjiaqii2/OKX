@@ -121,16 +121,28 @@ public class ContractTradePlanBuilder {
                         "requested_inst_id_not_in_candidates:" + instId));
     }
 
+    public record AgentPlanOverrides(
+            int maxLeverage,
+            int minTotalScore,
+            BigDecimal maxSingleLossPct
+    ) {
+    }
+
     public TradePlan buildPlan(ContractCandidate candidate) {
-        return buildPlan(candidate, false, null, false, false);
+        return buildPlan(candidate, false, null, false, false, null);
     }
 
     public TradePlan buildAutomaticPlan(ContractCandidate candidate) {
-        return buildPlan(candidate, false, null, false, true);
+        return buildPlan(candidate, false, null, false, true, null);
+    }
+
+    public TradePlan buildAgentPlan(ContractCandidate candidate, AgentPlanOverrides overrides) {
+        PlanDraft agentDraft = rulePlan(candidate, "个人交易 Agent 已完成 AI 决策，由确定性引擎构建交易计划", false);
+        return buildPlan(candidate, false, agentDraft, true, true, overrides);
     }
 
     public TradePlan buildNoRiskPlan(ContractCandidate candidate) {
-        return buildPlan(candidate, true, null, false, false);
+        return buildPlan(candidate, true, null, false, false, null);
     }
 
     public TradePlan buildSelectedPlan(ContractCandidate candidate, ContractSelectionDecision selection) {
@@ -138,15 +150,15 @@ public class ContractTradePlanBuilder {
                 || !candidate.instId().equals(selection.selectedInstId())) {
             throw new IllegalArgumentException("AI selection does not match candidate");
         }
-        return buildPlan(candidate, false, selectedDraft(candidate, selection), true, true);
+        return buildPlan(candidate, false, selectedDraft(candidate, selection), true, true, null);
     }
 
     public TradePlan buildRuleFallbackPlan(ContractCandidate candidate) {
-        return buildPlan(candidate, false, rulePlan(candidate, "AI选币不可用，使用确定性规则保底"), false, true);
+        return buildPlan(candidate, false, rulePlan(candidate, "AI选币不可用，使用确定性规则保底"), false, true, null);
     }
 
     private TradePlan buildPlan(ContractCandidate candidate, boolean noRiskMode, PlanDraft selectedDraft,
-                                boolean aiPrimary, boolean automatic) {
+                                boolean aiPrimary, boolean automatic, AgentPlanOverrides overrides) {
         List<String> gateWarnings = ContractTradeGate.planDenyReasons(candidate, agentProperties);
         if (noRiskMode) {
             PlanDraft draft = noRiskPlanOrFallback(candidate);
@@ -202,6 +214,9 @@ public class ContractTradePlanBuilder {
                     auditPayload(candidate, gateWarnings, draft));
             return watchPlan;
         }
+        int effectiveMaxLeverage = overrides != null && overrides.maxLeverage() > 0
+                ? overrides.maxLeverage()
+                : agentProperties.risk().maxLeverage();
         LeverageDecisionResult leverageDecision = leverageDecisionService.decide(new LeverageDecisionRequest(
                 candidate.instId(),
                 candidate.factorScore().trendScore(),
@@ -210,11 +225,13 @@ public class ContractTradePlanBuilder {
                 candidate.openInterestChange(),
                 stopDistanceRate,
                 usableEquity(account),
-                agentProperties.risk().maxLeverage(),
+                effectiveMaxLeverage,
                 safeRiskLevel(candidate.marketRiskLevel()),
                 draft.confidence()
         ));
-        int leverage = analyzedLeverage(candidate, draft.suggestedLeverage(), leverageDecision);
+        int leverage = overrides != null
+                ? Math.max(1, Math.min(effectiveMaxLeverage, leverageDecision.suggestedLeverage()))
+                : analyzedLeverage(candidate, draft.suggestedLeverage(), leverageDecision);
         PositionSizingResult sizing = sizing(candidate, draft, account, leverage, leverageDecision.riskLevel());
         if (!sizing.accepted()) {
             TradePlan watchPlan = watchTradePlan(candidate, gateWarnings,
@@ -261,7 +278,8 @@ public class ContractTradePlanBuilder {
         );
 
         ContractRiskRequest riskRequest = riskRequestFor(tradePlan, account, leverageDecision.riskLevel(),
-                candidate.createdAt(), aiPrimary || (executionRisk != null && "MARKET".equalsIgnoreCase(draft.orderType())));
+                candidate.createdAt(), aiPrimary || (executionRisk != null && "MARKET".equalsIgnoreCase(draft.orderType())),
+                overrides);
         RiskCheckResult risk = riskService.check(executionRisk == null
                 ? riskRequest : riskRequest.withSuggestedMargin(BigDecimal.ZERO));
         if (!risk.passed()) {
@@ -526,13 +544,24 @@ public class ContractTradePlanBuilder {
     }
 
     private ContractRiskRequest riskRequestFor(TradePlan plan, AccountSummary account, RiskLevel riskLevel,
-                                               Instant marketDataAt, boolean deferMarketFreshnessToSubmit) {
+                                               Instant marketDataAt, boolean deferMarketFreshnessToSubmit,
+                                               AgentPlanOverrides overrides) {
         ContractRiskRequest defaults = ContractRiskRequest.safeDefaults();
         long marketDelayMs = deferMarketFreshnessToSubmit
                 ? 0
                 : marketDataAt == null
                 ? Long.MAX_VALUE
                 : Math.max(0, Duration.between(marketDataAt, Instant.now()).toMillis());
+        int effectiveMaxLeverage = overrides != null && overrides.maxLeverage() > 0
+                ? overrides.maxLeverage()
+                : agentProperties.risk().maxLeverage();
+        int effectiveMinTotalScore = overrides != null && overrides.minTotalScore() > 0
+                ? overrides.minTotalScore()
+                : agentProperties.score().minTotalScore();
+        BigDecimal effectiveSingleRiskPct = overrides != null && overrides.maxSingleLossPct() != null
+                && overrides.maxSingleLossPct().signum() > 0
+                ? overrides.maxSingleLossPct()
+                : agentProperties.risk().singleTradeRiskPercent();
         return new ContractRiskRequest(
                 defaults.emergencyStop(),
                 marketDataAt != null,
@@ -542,7 +571,7 @@ public class ContractTradePlanBuilder {
                 plan.suggestedMargin(),
                 percentRate(agentProperties.risk().maxSingleMarginPercent()),
                 plan.suggestedLeverage(),
-                agentProperties.risk().maxLeverage(),
+                effectiveMaxLeverage,
                 plan.entryPrice(),
                 plan.stopLossPrice(),
                 plan.riskRewardRatio(),
@@ -555,8 +584,8 @@ public class ContractTradePlanBuilder {
                 plan.volatility(),
                 defaults.maxStopLossDistanceRate(),
                 plan.signalScore(),
-                agentProperties.score().minTotalScore(),
-                percentRate(agentProperties.risk().singleTradeRiskPercent())
+                effectiveMinTotalScore,
+                percentRate(effectiveSingleRiskPct)
         );
     }
 

@@ -340,16 +340,11 @@ public class TradingAgentOrchestrator {
                         + truncate(llmReason, 220);
                 steps.add(new AgentRunStep(stepNo++, "EXECUTION", "PASSED", summaryReason, elapsedMs(execStart)));
             } else if (agent.getRunMode() == TradingAgentRunMode.MANUAL_CONFIRM) {
-                String instToCreate = selectedInstId;
                 ContractCandidate candidateForPlan = chosen;
-                TradePlan plan = AuthUserContext.callAs(agent.getUserName(), () -> {
-                    TradePlan p = tradePlanService.createContractPlan(instToCreate);
-                    if (p != null && p.action() == com.example.quant.tradeplan.TradePlanType.WATCH
-                            && containsCandleChangedReason(p)) {
-                        return tradePlanService.createContractPlan(candidateForPlan);
-                    }
-                    return p;
-                });
+                var planOverrides = new com.example.quant.tradeplan.ContractTradePlanBuilder.AgentPlanOverrides(
+                        agent.getMaxLeverage(), agent.getMinTotalScore(), agent.getMaxSingleLossPct());
+                TradePlan plan = AuthUserContext.callAs(agent.getUserName(),
+                        () -> tradePlanService.createAgentContractPlan(candidateForPlan, planOverrides));
                 if (plan == null || plan.action() == com.example.quant.tradeplan.TradePlanType.WATCH) {
                     decision = "BLOCKED";
                     errorCode = "PLAN_DOWNGRADED_TO_WATCH";
@@ -380,11 +375,13 @@ public class TradingAgentOrchestrator {
                     steps.add(new AgentRunStep(stepNo++, "EXECUTION", "BLOCKED", summaryReason, elapsedMs(execStart)));
                 } else {
                     ContractCandidate candidateForPlan = chosen;
+                    var planOverrides = new com.example.quant.tradeplan.ContractTradePlanBuilder.AgentPlanOverrides(
+                            agent.getMaxLeverage(), agent.getMinTotalScore(), agent.getMaxSingleLossPct());
                     BigDecimal perTradeMargin = agent.getAllocatedBudgetUsdt()
                             .divide(BigDecimal.valueOf(Math.max(1, agent.getMaxOpenPositions())), 2, RoundingMode.DOWN)
                             .max(BigDecimal.ONE);
                     TradePlan plan = AuthUserContext.callAs(agent.getUserName(),
-                            () -> tradePlanService.createContractPlan(candidateForPlan));
+                            () -> tradePlanService.createAgentContractPlan(candidateForPlan, planOverrides));
                     if (plan == null || plan.action() == com.example.quant.tradeplan.TradePlanType.WATCH) {
                         decision = "BLOCKED";
                         errorCode = "PLAN_DOWNGRADED_TO_WATCH";
@@ -393,7 +390,8 @@ public class TradingAgentOrchestrator {
                     } else {
                         OrderExecutionResult execResult = AuthUserContext.callAs(agent.getUserName(), () -> {
                             PendingOrder pending = pendingOrderService.createPendingOrder(MarketType.OKX_SWAP, plan);
-                            return orderConfirmService.confirmAuto(pending.id(), perTradeMargin);
+                            return orderConfirmService.confirmAgentAuto(
+                                    pending.id(), perTradeMargin, agent.getMaxLeverage(), agent.getMaxSingleLossPct());
                         });
                         recordedMargin = perTradeMargin;
                         recordedLeverage = plan.suggestedLeverage();
