@@ -38,10 +38,28 @@ type TestResult = {
   message?: string;
 };
 
-const PRESETS = [
-  { label: 'DeepSeek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', modelName: 'deepseek-chat' },
-  { label: 'OpenAI', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', modelName: 'gpt-4o-mini' },
-  { label: 'Moonshot / Kimi', name: 'Moonshot', baseUrl: 'https://api.moonshot.cn/v1', modelName: 'moonshot-v1-8k' },
+const PRESET_GROUPS = [
+  {
+    group: '国内主流',
+    items: [
+      { label: 'DeepSeek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', modelName: 'deepseek-chat' },
+      { label: '通义千问 Qwen', name: '通义千问 (百炼)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', modelName: 'qwen-plus' },
+      { label: 'Kimi / Moonshot', name: 'Kimi / Moonshot', baseUrl: 'https://api.moonshot.cn/v1', modelName: 'kimi-k2-0905-preview' },
+      { label: '智谱 GLM', name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', modelName: 'glm-4-plus' },
+      { label: '豆包 (火山方舟)', name: '豆包 Ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', modelName: 'doubao-1-5-pro-32k-250115' },
+      { label: 'MiniMax', name: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', modelName: 'MiniMax-Text-01' },
+      { label: '硅基流动', name: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', modelName: 'deepseek-ai/DeepSeek-V3' },
+    ],
+  },
+  {
+    group: '海外主流 & 聚合',
+    items: [
+      { label: 'OpenAI / ChatGPT', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', modelName: 'gpt-4o-mini' },
+      { label: 'Google Gemini', name: 'Gemini (OpenAI 兼容)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', modelName: 'gemini-2.5-flash' },
+      { label: 'xAI Grok', name: 'xAI Grok', baseUrl: 'https://api.x.ai/v1', modelName: 'grok-3-mini' },
+      { label: 'OpenRouter (Claude 等)', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', modelName: 'anthropic/claude-3.7-sonnet' },
+    ],
+  },
 ];
 
 const emptyForm = {
@@ -212,21 +230,28 @@ export function LlmSettingsPage() {
             ) : null}
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            {PRESETS.map((preset) => (
-              <button
-                key={preset.label}
-                type="button"
-                className="rounded-lg border border-line bg-field px-2.5 py-1 text-[12px] text-muted hover:border-line-strong hover:text-ink"
-                onClick={() => setForm((current) => ({
-                  ...current,
-                  name: current.name || preset.name,
-                  baseUrl: preset.baseUrl,
-                  modelName: preset.modelName,
-                }))}
-              >
-                {preset.label}
-              </button>
+          <div className="space-y-3 rounded-[18px] border border-line bg-canvas p-3.5">
+            {PRESET_GROUPS.map((group) => (
+              <div key={group.group}>
+                <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-muted">{t(group.group)}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {group.items.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      className="rounded-full border border-line-strong bg-raised px-3 py-1 text-[12px] font-medium text-ink/85 transition-colors hover:border-accent hover:bg-accent-soft hover:text-accent-ink"
+                      onClick={() => setForm((current) => ({
+                        ...current,
+                        name: preset.name,
+                        baseUrl: preset.baseUrl,
+                        modelName: preset.modelName,
+                      }))}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
 

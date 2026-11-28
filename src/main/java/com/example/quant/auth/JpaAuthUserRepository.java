@@ -23,6 +23,16 @@ public class JpaAuthUserRepository implements AuthUserRepository {
     }
 
     @Override
+    public Optional<AuthUserEntity> findByEmail(String email) {
+        return delegate.findByEmail(email);
+    }
+
+    @Override
+    public boolean existsByEmail(String email) {
+        return delegate.existsByEmail(email);
+    }
+
+    @Override
     public long count() {
         return delegate.count();
     }

@@ -51,8 +51,65 @@ export async function fetchRegistrationConfig(): Promise<RegistrationConfig> {
   }
 }
 
+export type SendEmailCodeResponse = {
+  sent: boolean;
+  provider: string;
+  cooldownSeconds: number;
+  devCode?: string | null;
+  message: string;
+};
+
+async function publicAuthPost<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text || `HTTP ${response.status}`;
+    try {
+      const payload = JSON.parse(text);
+      if (payload && typeof payload === 'object' && 'message' in payload) {
+        message = String(payload.message);
+      }
+    } catch {
+      // Keep original text.
+    }
+    throw Object.assign(new Error(message), { status: response.status });
+  }
+  return (await response.json()) as T;
+}
+
+export async function sendEmailVerificationCode(
+  email: string,
+  purpose: 'REGISTER' | 'RESET_PASSWORD',
+): Promise<SendEmailCodeResponse> {
+  return publicAuthPost<SendEmailCodeResponse>('/auth/email/send-code', {
+    email,
+    purpose,
+  });
+}
+
+export async function resetPasswordByEmail(params: {
+  email: string;
+  emailCode: string;
+  newPassword: string;
+}): Promise<{ ok: boolean; message: string }> {
+  return publicAuthPost<{ ok: boolean; message: string }>('/auth/password/forgot-reset', {
+    email: params.email,
+    emailCode: params.emailCode,
+    newPassword: params.newPassword,
+  });
+}
+
 export async function registerAccount(params: {
   username: string;
+  email: string;
+  emailCode: string;
   password: string;
   inviteCode?: string;
 }): Promise<AuthSession> {
@@ -60,6 +117,8 @@ export async function registerAccount(params: {
     method: 'POST',
     body: JSON.stringify({
       username: params.username,
+      email: params.email,
+      emailCode: params.emailCode,
       password: params.password,
       inviteCode: params.inviteCode ?? '',
     }),

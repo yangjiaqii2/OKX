@@ -109,8 +109,12 @@ public class TradingAgentOrchestrator {
             return 0;
         }
         Map<String, Set<String>> claimedSymbolsByUser = new HashMap<>();
+        Instant now = Instant.now();
         int executed = 0;
         for (TradingAgentEntity agent : runningAgents) {
+            if (isWithinEvalCooldown(agent, now)) {
+                continue;
+            }
             Set<String> userClaimed = claimedSymbolsByUser.computeIfAbsent(agent.getUserName(), k -> new HashSet<>());
             try {
                 executeAgentRound(agent, scanId, candidates == null ? List.of() : candidates,
@@ -122,6 +126,15 @@ public class TradingAgentOrchestrator {
             }
         }
         return executed;
+    }
+
+    private static boolean isWithinEvalCooldown(TradingAgentEntity agent, Instant now) {
+        int intervalMinutes = Math.max(1, agent.getEvalIntervalMinutes());
+        Instant lastRun = agent.getLastRunAt();
+        if (lastRun == null) {
+            return false;
+        }
+        return Duration.between(lastRun, now).toSeconds() < intervalMinutes * 60L;
     }
 
     public AgentRunView runSingleAgentNow(Long agentId) {

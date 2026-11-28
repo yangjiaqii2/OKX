@@ -6,7 +6,9 @@ import com.example.quant.auth.AuthSessionService;
 import com.example.quant.auth.AuthUserService;
 import com.example.quant.auth.ChangePasswordRequest;
 import com.example.quant.auth.CreateUserRequest;
+import com.example.quant.auth.ForgotPasswordResetRequest;
 import com.example.quant.auth.ResetPasswordRequest;
+import com.example.quant.auth.SendEmailCodeRequest;
 import com.example.quant.auth.SetUserEnabledRequest;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
@@ -43,6 +45,17 @@ public class AuthController {
     @PostMapping("/register")
     public Object register(@RequestBody AuthRegisterRequest request) {
         return authSessionService.register(request);
+    }
+
+    @PostMapping("/email/send-code")
+    public Object sendEmailCode(@RequestBody SendEmailCodeRequest request) {
+        return authUserService.sendEmailCode(request);
+    }
+
+    @PostMapping("/password/forgot-reset")
+    public Object forgotPasswordReset(@RequestBody ForgotPasswordResetRequest request) {
+        authUserService.resetPasswordByEmail(request);
+        return java.util.Map.of("ok", true, "message", "密码已重置，请使用新密码登录");
     }
 
     @PostMapping("/logout")

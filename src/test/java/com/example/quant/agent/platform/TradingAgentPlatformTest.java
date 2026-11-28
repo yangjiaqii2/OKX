@@ -179,7 +179,11 @@ class TradingAgentPlatformTest {
         // Second agent under same user must not duplicate SOL-USDT-SWAP
         assertThat(runs.get(1).getDecision()).isEqualTo("SKIP");
 
-        // Anti-hallucination check: LLM returns a symbol not in candidate list
+        // Cooldown check: immediate second dispatch within evalIntervalMinutes is skipped
+        assertThat(orchestrator.dispatchScan("scan-cooldown", List.of(sol), Map.of())).isEqualTo(0);
+
+        // Reset lastRunAt to simulate cooldown elapsed, then verify anti-hallucination guard
+        agents.forEach(a -> a.setLastRunAt(Instant.now().minusSeconds(600)));
         when(aiAnalysisService.completeJson(eq(aliceLlm), anyString(), anyString()))
                 .thenReturn(objectMapper.readTree("{\"action\":\"TRADE\",\"instId\":\"FAKE-USDT-SWAP\",\"reason\":\"hallucinated\"}"));
         orchestrator.dispatchScan("scan-2", List.of(sol), Map.of());

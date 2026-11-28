@@ -9,5 +9,9 @@ public interface AuthUserJpaRepository extends JpaRepository<AuthUserEntity, Lon
 
     boolean existsByUsername(String username);
 
+    Optional<AuthUserEntity> findByEmail(String email);
+
+    boolean existsByEmail(String email);
+
     List<AuthUserEntity> findAllByOrderByCreatedAtAsc();
 }

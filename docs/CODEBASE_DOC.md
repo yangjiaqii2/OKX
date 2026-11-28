@@ -1,5 +1,25 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 主流大模型预设、编辑风 Agent 创建工作室、评估冷却间隔（V58）与邮箱验证注册/忘记密码（V59）
+
+- **变更摘要**：
+  1. 扩充个人大模型 API（BYOK）预设目录，按「国内主流」与「海外主流 & 聚合」分组覆盖 DeepSeek、通义千问 Qwen、Kimi/Moonshot、智谱 GLM、豆包 Ark、MiniMax、硅基流动、OpenAI/ChatGPT、Google Gemini、xAI Grok、OpenRouter 等 11 个主流服务商。
+  2. 重构前端「创建 / 编辑交易 Agent」弹窗为双栏编辑风工作室（Editorial Creation Studio）：策略原型 2×2 卡片、分段胶囊选择器（运行模式、评估冷却、方向偏好、BYOK 模型）、一键纪律芯片、只读工具查证开关以及右侧深森绿颗粒感实时预览卡与日均 Token 估算。
+  3. 新增 Agent 评估冷却间隔（Flyway V58 `eval_interval_minutes`，支持 5m / 15m / 30m / 60m），定时共享扫盘自动跳过处于冷却期内的 Agent 以显著降低大模型 Token 消耗；手动「立即试跑」不受冷却限制。
+  4. 新增注册邮箱验证与忘记密码找回闭环（Flyway V59 `quant_auth_user.email` 与 `quant_email_verification_code`）：支持 `DEV_LOG` / `SMTP` / `RESEND` 三种发信驱动，6 位数字验证码 60 秒冷却、10 分钟单次有效；登录页升级为登录 / 注册（需邮箱+验证码）/ 忘记密码（邮箱验证码重置密码）三态流程。
+- **涉及文件**：
+  - 数据库迁移：`src/main/resources/db/migration/V58__agent_eval_interval.sql`、`src/main/resources/db/migration/V59__user_email_verification.sql`
+  - 后端 Agent 冷却：`src/main/java/com/example/quant/agent/platform/TradingAgentEntity.java`、`SaveTradingAgentRequest.java`、`TradingAgentView.java`、`TradingAgentService.java`、`TradingAgentOrchestrator.java`
+  - 后端邮箱验证与忘记密码：`src/main/java/com/example/quant/config/MailProperties.java`、`src/main/java/com/example/quant/QuantAssistantApplication.java`、`src/main/java/com/example/quant/auth/EmailVerificationCodeEntity.java`、`EmailVerificationCodeRepository.java`、`EmailVerificationService.java`、`SendEmailCodeRequest.java`、`ForgotPasswordResetRequest.java`、`AuthUserEntity.java`、`AuthUserRepository.java`、`AuthUserJpaRepository.java`、`JpaAuthUserRepository.java`、`AuthRegisterRequest.java`、`AuthUserService.java`、`AuthInterceptor.java`、`src/main/java/com/example/quant/controller/AuthController.java`
+  - 配置与前端：`src/main/resources/application.yml`、`.env.example`、`frontend/src/api/authProvider.ts`、`frontend/src/pages/LoginPage.tsx`、`frontend/src/pages/LlmSettingsPage.tsx`、`frontend/src/pages/AgentsPage.tsx`、`frontend/src/i18n.en.json`
+  - 测试：`src/test/java/com/example/quant/agent/platform/TradingAgentPlatformTest.java`、`src/test/java/com/example/quant/auth/AuthUserServiceTest.java`、`src/test/java/com/example/quant/auth/AuthInterceptorTest.java`
+- **影响范围**：
+  - 历史无邮箱的已有账号仍可正常登录；新注册账号必须填写有效邮箱并通过 6 位验证码校验，后续可通过「忘记密码」自助重置密码。
+  - 默认 `QUANT_MAIL_PROVIDER=DEV_LOG`（本地开发日志模式并在开启 `QUANT_MAIL_EXPOSE_DEV_CODE=true` 时于界面回显验证码便于测试）；生产环境可无缝切换至 `SMTP` 或 `RESEND`。
+- **验证结果**：
+  - 后端：`mvn -B -o test -Dtest=TradingAgentPlatformTest,AuthUserServiceTest,AuthInterceptorTest,QuantAssistantApplicationContextTest,StrategyDecisionServiceTest,UserLlmProfileServiceTest` 共 24 项全部通过（0 失败、0 错误，Flyway 成功迁移至 V59，Agent 冷却跳过与邮箱验证注册/重置密码链路均通过）。
+  - 前端：`npm --prefix frontend run build` 通过 `tsc` 类型检查与 Vite 6.4.3 生产构建（4,984 个模块，0 错误）。
+
 ### 2026-11-28 - 修复 Miren BuildKit 环境下 Vite 构建 EMFILE 错误并部署 local
 
 - **变更摘要**：在 `frontend/vite.config.ts` 中限制 Rollup `maxParallelFileOps: 5`，解决 Miren BuildKit 低文件描述符上限下构建 `lucide-react` 报 `EMFILE: too many open files` 的问题，并完成 Miren `local` 集群构建部署。

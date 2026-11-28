@@ -17,6 +17,12 @@ public class AuthUserService {
     private final AuthUserRepository repository;
     private final PasswordHasher passwordHasher;
     private final AuthProperties authProperties;
+    private EmailVerificationService emailVerificationService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void configureEmailVerification(EmailVerificationService emailVerificationService) {
+        this.emailVerificationService = emailVerificationService;
+    }
 
     public AuthUserService(
             AuthUserRepository repository,
@@ -91,6 +97,36 @@ public class AuthUserService {
     }
 
     @Transactional
+    public EmailVerificationService.SendCodeResult sendEmailCode(SendEmailCodeRequest request) {
+        if (emailVerificationService == null) {
+            throw new IllegalStateException("邮箱验证服务未启用");
+        }
+        if (request == null) {
+            throw new IllegalArgumentException("请求不能为空");
+        }
+        String email = emailVerificationService.normalizeAndValidateEmail(request.email());
+        String purpose = request.purpose() == null ? "" : request.purpose().trim().toUpperCase();
+        if (EmailVerificationService.PURPOSE_REGISTER.equals(purpose)) {
+            if (!authProperties.effectiveRegistrationEnabled()) {
+                throw new IllegalArgumentException("当前未开放自助注册");
+            }
+            if (repository.existsByEmail(email)) {
+                throw new IllegalArgumentException("该邮箱已被注册");
+            }
+        } else if (EmailVerificationService.PURPOSE_RESET_PASSWORD.equals(purpose)) {
+            AuthUserEntity user = repository.findByEmail(email)
+                    .filter(AuthUserEntity::isEnabled)
+                    .orElseThrow(() -> new IllegalArgumentException("未找到绑定该邮箱的可用账号"));
+            if (user.getUsername().isBlank()) {
+                throw new IllegalArgumentException("账号状态异常");
+            }
+        } else {
+            throw new IllegalArgumentException("不支持的验证码用途");
+        }
+        return emailVerificationService.sendCode(email, purpose);
+    }
+
+    @Transactional
     public AuthUserEntity registerUser(AuthRegisterRequest request) {
         if (!authProperties.effectiveRegistrationEnabled()) {
             throw new IllegalArgumentException("当前未开放自助注册，请联系管理员创建账号");
@@ -108,9 +144,40 @@ public class AuthUserService {
                 throw new IllegalArgumentException("邀请码无效");
             }
         }
+        String normalizedEmail = null;
+        if (emailVerificationService != null) {
+            normalizedEmail = emailVerificationService.normalizeAndValidateEmail(request.email());
+            if (repository.existsByEmail(normalizedEmail)) {
+                throw new IllegalArgumentException("该邮箱已被注册");
+            }
+            emailVerificationService.verifyAndConsume(
+                    normalizedEmail, EmailVerificationService.PURPOSE_REGISTER, request.emailCode());
+        } else if (request.email() != null && !request.email().isBlank()) {
+            normalizedEmail = request.email().trim().toLowerCase();
+        }
         AuthUserEntity created = createUserEntity(new CreateUserRequest(username, request.password(), AuthRole.USER, true));
+        created.setEmail(normalizedEmail);
         created.setLastLoginAt(Instant.now());
         return repository.save(created);
+    }
+
+    @Transactional
+    public void resetPasswordByEmail(ForgotPasswordResetRequest request) {
+        if (emailVerificationService == null) {
+            throw new IllegalStateException("邮箱验证服务未启用");
+        }
+        if (request == null) {
+            throw new IllegalArgumentException("重置密码信息不能为空");
+        }
+        String email = emailVerificationService.normalizeAndValidateEmail(request.email());
+        AuthUserEntity user = repository.findByEmail(email)
+                .filter(AuthUserEntity::isEnabled)
+                .orElseThrow(() -> new IllegalArgumentException("未找到绑定该邮箱的可用账号"));
+        String validPwd = validPassword(request.newPassword());
+        emailVerificationService.verifyAndConsume(
+                email, EmailVerificationService.PURPOSE_RESET_PASSWORD, request.emailCode());
+        user.setPasswordHash(passwordHasher.hash(validPwd));
+        repository.save(user);
     }
 
     @Transactional

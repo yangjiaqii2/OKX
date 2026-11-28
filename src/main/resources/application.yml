@@ -32,6 +32,16 @@ quant:
     session-ttl-minutes: ${QUANT_AUTH_SESSION_TTL_MINUTES:480}
     registration-enabled: ${QUANT_AUTH_REGISTRATION_ENABLED:true}
     invite-code: ${QUANT_AUTH_INVITE_CODE:}
+  mail:
+    provider: ${QUANT_MAIL_PROVIDER:DEV_LOG}
+    from-address: ${QUANT_MAIL_FROM:noreply@quantdesk.local}
+    smtp-host: ${QUANT_MAIL_SMTP_HOST:}
+    smtp-port: ${QUANT_MAIL_SMTP_PORT:465}
+    smtp-username: ${QUANT_MAIL_SMTP_USERNAME:}
+    smtp-password: ${QUANT_MAIL_SMTP_PASSWORD:}
+    smtp-ssl: ${QUANT_MAIL_SMTP_SSL:true}
+    resend-api-key: ${QUANT_MAIL_RESEND_API_KEY:}
+    expose-dev-code: ${QUANT_MAIL_EXPOSE_DEV_CODE:true}
   security:
     credential-master-key: ${QUANT_CREDENTIAL_MASTER_KEY:}
   stock:

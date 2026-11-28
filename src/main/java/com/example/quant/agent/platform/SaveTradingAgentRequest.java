@@ -19,7 +19,8 @@ public record SaveTradingAgentRequest(
         String symbolWhitelist,
         String symbolBlacklist,
         String systemPrompt,
-        Boolean toolCallingEnabled
+        Boolean toolCallingEnabled,
+        Integer evalIntervalMinutes
 ) {
     public SaveTradingAgentRequest(
             Long id, String name, String templateCode, String runMode, Long llmProfileId,
@@ -30,6 +31,18 @@ public record SaveTradingAgentRequest(
     ) {
         this(id, name, templateCode, runMode, llmProfileId, allocatedBudgetUsdt, maxOpenPositions,
                 maxLeverage, minTotalScore, minFinalRankScore, maxSingleLossPct, maxDailyLossPct,
-                directionPreference, symbolWhitelist, symbolBlacklist, systemPrompt, true);
+                directionPreference, symbolWhitelist, symbolBlacklist, systemPrompt, true, 5);
+    }
+
+    public SaveTradingAgentRequest(
+            Long id, String name, String templateCode, String runMode, Long llmProfileId,
+            BigDecimal allocatedBudgetUsdt, Integer maxOpenPositions, Integer maxLeverage,
+            Integer minTotalScore, Integer minFinalRankScore, BigDecimal maxSingleLossPct,
+            BigDecimal maxDailyLossPct, String directionPreference, String symbolWhitelist,
+            String symbolBlacklist, String systemPrompt, Boolean toolCallingEnabled
+    ) {
+        this(id, name, templateCode, runMode, llmProfileId, allocatedBudgetUsdt, maxOpenPositions,
+                maxLeverage, minTotalScore, minFinalRankScore, maxSingleLossPct, maxDailyLossPct,
+                directionPreference, symbolWhitelist, symbolBlacklist, systemPrompt, toolCallingEnabled, 5);
     }
 }

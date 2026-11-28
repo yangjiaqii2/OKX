@@ -1,8 +1,12 @@
 package com.example.quant.auth;
 
 import com.example.quant.config.AuthProperties;
+import com.example.quant.config.MailProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.Proxy;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -116,6 +120,92 @@ class AuthUserServiceTest {
                 .hasMessageContaining("已存在");
     }
 
+    @Test
+    void enforcesEmailVerificationForRegistrationAndForgotPasswordReset() {
+        InMemoryAuthUserRepository repository = new InMemoryAuthUserRepository();
+        AuthUserService service = seededService(repository);
+        List<EmailVerificationCodeEntity> codes = new ArrayList<>();
+        EmailVerificationCodeRepository codeRepository = inMemoryCodeRepository(codes);
+        EmailVerificationService emailService = new EmailVerificationService(
+                codeRepository,
+                MailProperties.defaults(),
+                new ObjectMapper()
+        );
+        service.configureEmailVerification(emailService);
+
+        // Missing or invalid code must be rejected
+        assertThatThrownBy(() -> service.registerUser(new AuthRegisterRequest(
+                "trader_mail", "pass12345", "", "trader@example.com", "000000"
+        ))).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("验证码");
+
+        // Send register code & check cooldown
+        EmailVerificationService.SendCodeResult regCode = service.sendEmailCode(
+                new SendEmailCodeRequest("trader@example.com", EmailVerificationService.PURPOSE_REGISTER));
+        assertThat(regCode.sent()).isTrue();
+        assertThat(regCode.devCode()).hasSize(6);
+        assertThatThrownBy(() -> service.sendEmailCode(
+                new SendEmailCodeRequest("trader@example.com", EmailVerificationService.PURPOSE_REGISTER)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("频繁");
+
+        // Register succeeds with valid code
+        AuthUserEntity created = service.registerUser(new AuthRegisterRequest(
+                "trader_mail", "pass12345", "", "trader@example.com", regCode.devCode()
+        ));
+        assertThat(created.getEmail()).isEqualTo("trader@example.com");
+        assertThat(service.authenticate("trader_mail", "pass12345")).isPresent();
+
+        // Duplicate email registration rejected
+        assertThatThrownBy(() -> service.sendEmailCode(
+                new SendEmailCodeRequest("trader@example.com", EmailVerificationService.PURPOSE_REGISTER)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("已被注册");
+
+        // Forgot password flow via email verification code
+        EmailVerificationService.SendCodeResult resetCode = service.sendEmailCode(
+                new SendEmailCodeRequest("trader@example.com", EmailVerificationService.PURPOSE_RESET_PASSWORD));
+        assertThat(resetCode.devCode()).hasSize(6);
+
+        service.resetPasswordByEmail(new ForgotPasswordResetRequest(
+                "trader@example.com", resetCode.devCode(), "newPass999"
+        ));
+        assertThat(service.authenticate("trader_mail", "pass12345")).isEmpty();
+        assertThat(service.authenticate("trader_mail", "newPass999")).isPresent();
+    }
+
+    private static EmailVerificationCodeRepository inMemoryCodeRepository(List<EmailVerificationCodeEntity> store) {
+        return (EmailVerificationCodeRepository) Proxy.newProxyInstance(
+                EmailVerificationCodeRepository.class.getClassLoader(),
+                new Class<?>[]{EmailVerificationCodeRepository.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "save" -> {
+                        EmailVerificationCodeEntity entity = (EmailVerificationCodeEntity) args[0];
+                        if (entity.getId() == null) {
+                            entity.setId((long) (store.size() + 1));
+                            store.add(entity);
+                        }
+                        yield entity;
+                    }
+                    case "findFirstByEmailAndPurposeOrderByCreatedAtDesc" -> {
+                        String email = (String) args[0];
+                        String purpose = (String) args[1];
+                        yield store.stream()
+                                .filter(c -> email.equals(c.getEmail()) && purpose.equals(c.getPurpose()))
+                                .max(Comparator.comparing(EmailVerificationCodeEntity::getCreatedAt));
+                    }
+                    case "findFirstByEmailAndPurposeAndUsedFalseOrderByCreatedAtDesc" -> {
+                        String email = (String) args[0];
+                        String purpose = (String) args[1];
+                        yield store.stream()
+                                .filter(c -> !c.isUsed() && email.equals(c.getEmail()) && purpose.equals(c.getPurpose()))
+                                .max(Comparator.comparing(EmailVerificationCodeEntity::getCreatedAt));
+                    }
+                    default -> throw new UnsupportedOperationException(method.getName());
+                }
+        );
+    }
+
     private static AuthUserService seededService(InMemoryAuthUserRepository repository) {
         AuthUserService service = new AuthUserService(
                 repository,
@@ -140,6 +230,21 @@ class AuthUserServiceTest {
         @Override
         public boolean existsByUsername(String username) {
             return findByUsername(username).isPresent();
+        }
+
+        @Override
+        public Optional<AuthUserEntity> findByEmail(String email) {
+            if (email == null) {
+                return Optional.empty();
+            }
+            return rows.stream()
+                    .filter(row -> email.equalsIgnoreCase(row.getEmail()))
+                    .findFirst();
+        }
+
+        @Override
+        public boolean existsByEmail(String email) {
+            return findByEmail(email).isPresent();
         }
 
         @Override

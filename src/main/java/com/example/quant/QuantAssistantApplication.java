@@ -5,6 +5,7 @@ import com.example.quant.config.AgentProperties;
 import com.example.quant.config.AkShareProperties;
 import com.example.quant.config.AuthProperties;
 import com.example.quant.config.ContractProperties;
+import com.example.quant.config.MailProperties;
 import com.example.quant.config.NewsProperties;
 import com.example.quant.config.OkxProperties;
 import com.example.quant.config.StockProperties;
@@ -28,6 +29,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         AkShareProperties.class,
         TradingProperties.class,
         AuthProperties.class,
+        MailProperties.class,
         SystemFxRateProperties.class,
         NotificationProperties.class
 })

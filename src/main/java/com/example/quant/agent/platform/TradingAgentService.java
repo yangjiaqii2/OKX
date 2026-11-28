@@ -151,6 +151,9 @@ public class TradingAgentService {
                 : request.systemPrompt().trim();
         entity.setSystemPrompt(prompt);
         entity.setToolCallingEnabled(request.toolCallingEnabled() == null || request.toolCallingEnabled());
+        entity.setEvalIntervalMinutes(clamp(
+                request.evalIntervalMinutes() != null ? request.evalIntervalMinutes() : 5, 1, 1440
+        ));
         entity.setUpdatedAt(now);
 
         return TradingAgentView.from(agentRepository.save(entity));

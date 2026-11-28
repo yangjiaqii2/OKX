@@ -1,8 +1,9 @@
-import { BookOpen, Bot, Pause, Pin, Play, Plus, Sparkles, Terminal, Trash2, Zap } from 'lucide-react';
+import { BookOpen, Bot, Check, Clock, Pause, Pin, Play, Plus, ShieldCheck, Sliders, Sparkles, Terminal, Trash2, X, Zap } from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 import { useNotify } from 'react-admin';
 import { Link } from 'react-router-dom';
 import { quantApi } from '../api/quantApi';
+import { BrandMark } from '../components/BrandMark';
 import { PageHeader, PageShell } from '../components/PageShell';
 import { PanelState } from '../components/PanelState';
 import { Alert } from '../components/ui/alert';
@@ -46,6 +47,7 @@ type TradingAgent = {
   symbolBlacklist: string;
   systemPrompt: string;
   toolCallingEnabled?: boolean;
+  evalIntervalMinutes?: number;
   versionNo: number;
   lastDecision?: string | null;
   lastSummary?: string | null;
@@ -113,7 +115,15 @@ type AgentFormState = {
   symbolBlacklist: string;
   systemPrompt: string;
   toolCallingEnabled: boolean;
+  evalIntervalMinutes: number;
 };
+
+const PROMPT_DISCIPLINE_CHIPS = [
+  '拒绝长上影线追高，宁可观望',
+  '优先等待 5M 回踩均线企稳后再入场',
+  '仅在高流动性、盘口价差 ≤ 5bps 时出手',
+  '震荡市降低出手频率，只做高胜率突破',
+];
 
 function defaultFormFromTemplate(template?: AgentTemplate): AgentFormState {
   return {
@@ -134,6 +144,7 @@ function defaultFormFromTemplate(template?: AgentTemplate): AgentFormState {
     symbolBlacklist: '',
     systemPrompt: template?.defaultSystemPrompt ?? '',
     toolCallingEnabled: true,
+    evalIntervalMinutes: 5,
   };
 }
 
@@ -288,6 +299,7 @@ export function AgentsPage() {
       symbolBlacklist: agent.symbolBlacklist ?? '',
       systemPrompt: agent.systemPrompt ?? '',
       toolCallingEnabled: agent.toolCallingEnabled !== false,
+      evalIntervalMinutes: agent.evalIntervalMinutes ?? 5,
     });
     setEditorOpen(true);
   }
@@ -324,6 +336,7 @@ export function AgentsPage() {
         symbolBlacklist: form.symbolBlacklist,
         systemPrompt: form.systemPrompt,
         toolCallingEnabled: form.toolCallingEnabled,
+        evalIntervalMinutes: form.evalIntervalMinutes,
       });
       notify(form.id ? t('交易 Agent 配置已更新') : t('交易 Agent 已创建'), { type: 'success' });
       setEditorOpen(false);
@@ -685,206 +698,400 @@ export function AgentsPage() {
         </div>
       ) : null}
 
-      {/* Create / Edit Agent Modal */}
+      {/* High-Craft Editorial Agent Creation / Edit Studio */}
       {editorOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay)] p-4">
-          <div className="max-h-[90dvh] w-full max-w-[680px] overflow-y-auto rounded-[28px] border border-line bg-raised p-6 shadow-[0_24px_64px_rgba(0,0,0,0.22)] sm:p-8">
-            <div className="flex items-center justify-between">
-              <h2 className="font-serif text-[26px] font-medium text-ink">
-                {form.id ? t('编辑交易 Agent') : t('创建交易 Agent')}
-              </h2>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B140F]/60 p-3 backdrop-blur-sm sm:p-6">
+          <form
+            onSubmit={(event) => void submitForm(event)}
+            className="flex max-h-[92dvh] w-full max-w-[1040px] flex-col overflow-hidden rounded-[30px] border border-line bg-canvas shadow-[0_32px_90px_rgba(8,18,12,0.34)]"
+          >
+            {/* Studio Header */}
+            <div className="flex items-center justify-between border-b border-line bg-raised px-6 py-4 sm:px-8">
+              <div className="flex items-center gap-3">
+                <BrandMark tone="forest" size={28} />
+                <div>
+                  <h2 className="font-serif text-[24px] font-normal leading-7 tracking-[-0.02em] text-ink">
+                    {form.id ? t('编辑交易 Agent') : t('打造你的交易 Agent')}
+                  </h2>
+                  <p className="text-[12px] text-muted">
+                    {t('确定性量化风控打底，绑定个人大模型 API 独立推理。')}
+                  </p>
+                </div>
+              </div>
               <button
                 type="button"
-                className="text-[13px] font-medium text-muted hover:text-ink"
+                aria-label={t('关闭')}
+                className="grid size-9 place-items-center rounded-full border border-line-strong bg-canvas text-muted transition-colors hover:bg-sunken hover:text-ink"
                 onClick={() => setEditorOpen(false)}
               >
-                {t('关闭')}
+                <X size={16} />
               </button>
             </div>
 
-            {templates.length > 0 ? (
-              <div className="mt-4">
-                <div className="mb-2 text-[12px] font-medium text-muted">{t('策略模板（点击一键填充）')}</div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {templates.map((tpl) => (
+            {/* Studio Body: 2-Column Editorial Layout */}
+            <div className="grid flex-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_330px]">
+              {/* Left Scrollable Configuration Canvas */}
+              <div className="space-y-7 p-6 sm:p-8">
+                {/* 01 Strategy Archetype */}
+                {templates.length > 0 ? (
+                  <section>
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+                        01 · {t('选择策略原型')}
+                      </span>
+                      <span className="text-[12px] text-faint">{t('点击卡片一键填充参数')}</span>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {templates.map((tpl) => {
+                        const selected = form.templateCode === tpl.code;
+                        return (
+                          <button
+                            key={tpl.code}
+                            type="button"
+                            onClick={() => applyTemplate(tpl)}
+                            className={cn(
+                              'group relative rounded-[22px] border p-4 text-left transition-all',
+                              selected
+                                ? 'border-[#16382B] bg-raised shadow-[0_10px_28px_rgba(19,38,27,0.08)] dark:border-[#D6EE8A]'
+                                : 'border-line bg-raised/70 hover:border-line-strong hover:bg-raised',
+                            )}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="text-[14px] font-semibold text-ink">{tpl.title}</div>
+                              <span
+                                className={cn(
+                                  'grid size-5 shrink-0 place-items-center rounded-full transition-colors',
+                                  selected ? 'bg-[#13261B] text-[#D6EE8A] dark:bg-[#D6EE8A] dark:text-[#13261B]' : 'border border-line-strong',
+                                )}
+                              >
+                                {selected ? <Check size={11} strokeWidth={2.8} /> : null}
+                              </span>
+                            </div>
+                            <p className="mt-1.5 text-[12px] leading-5 text-muted">{tpl.description}</p>
+                            <div className="mt-3 flex flex-wrap gap-1.5 text-[11px]">
+                              <span className={cn('rounded-full px-2 py-0.5 font-semibold', selected ? 'bg-[#D6EE8A] text-[#13261B]' : 'bg-sunken text-muted')}>
+                                ≤{tpl.defaultMaxLeverage}x
+                              </span>
+                              <span className="rounded-full bg-sunken px-2 py-0.5 text-muted">
+                                SL {tpl.defaultMaxSingleLossPct}%
+                              </span>
+                              <span className="rounded-full bg-sunken px-2 py-0.5 text-muted">
+                                {t('评分')} ≥{tpl.defaultMinTotalScore}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ) : null}
+
+                {/* 02 Identity, Run Mode, Cadence & Model */}
+                <section className="rounded-[24px] border border-line bg-raised p-5 sm:p-6">
+                  <div className="mb-4 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+                    02 · {t('身份、运行模式与评估节奏')}
+                  </div>
+
+                  <Field label={t('Agent 名称')}>
+                    <Input
+                      required
+                      placeholder={t('例如：SOL 趋势先锋')}
+                      value={form.name}
+                      onChange={(event) => setForm((c) => ({ ...c, name: event.target.value }))}
+                    />
+                  </Field>
+
+                  <div className="mt-5">
+                    <div className="mb-2 text-[12px] font-medium text-muted">{t('运行模式')}</div>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      {([
+                        ['PAPER', t('PAPER · 模拟'), t('零资金风险验证')],
+                        ['MANUAL_CONFIRM', t('MANUAL · 审批'), t('生成待确认订单')],
+                        ['AUTO', t('AUTO · 自动'), t('DEMO / LIVE 下单')],
+                      ] as const).map(([val, title, desc]) => (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => setForm((c) => ({ ...c, runMode: val }))}
+                          className={cn(
+                            'rounded-[16px] border px-3.5 py-2.5 text-left transition-all',
+                            form.runMode === val
+                              ? 'border-[#16382B] bg-[#16382B] text-white dark:border-[#D6EE8A] dark:bg-[#D6EE8A] dark:text-[#13261B]'
+                              : 'border-line bg-canvas text-ink hover:border-line-strong',
+                          )}
+                        >
+                          <div className="text-[13px] font-semibold">{title}</div>
+                          <div className={cn('mt-0.5 text-[11px]', form.runMode === val ? 'opacity-80' : 'text-muted')}>{desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-5 sm:grid-cols-2">
+                    <div>
+                      <div className="mb-2 flex items-center justify-between text-[12px] font-medium text-muted">
+                        <span className="inline-flex items-center gap-1"><Clock size={12} /> {t('评估冷却间隔')}</span>
+                        <span className="rounded-full bg-[#D6EE8A] px-2 py-0.5 text-[10px] font-semibold text-[#13261B]">
+                          {t('省 80%+ 额度')}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-1.5 rounded-full bg-sunken p-1">
+                        {[5, 15, 30, 60].map((mins) => (
+                          <button
+                            key={mins}
+                            type="button"
+                            onClick={() => setForm((c) => ({ ...c, evalIntervalMinutes: mins }))}
+                            className={cn(
+                              'h-8 rounded-full text-[12px] font-semibold transition-colors',
+                              form.evalIntervalMinutes === mins
+                                ? 'bg-raised text-ink shadow-[0_1px_3px_rgba(19,38,27,0.1)]'
+                                : 'text-muted hover:text-ink',
+                            )}
+                          >
+                            {mins}m
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-2 text-[12px] font-medium text-muted">{t('方向偏好')}</div>
+                      <div className="grid grid-cols-3 gap-1.5 rounded-full bg-sunken p-1">
+                        {([
+                          ['BOTH', t('双向')],
+                          ['LONG_ONLY', t('仅做多')],
+                          ['SHORT_ONLY', t('仅做空')],
+                        ] as const).map(([val, label]) => (
+                          <button
+                            key={val}
+                            type="button"
+                            onClick={() => setForm((c) => ({ ...c, directionPreference: val }))}
+                            className={cn(
+                              'h-8 rounded-full text-[12px] font-semibold transition-colors',
+                              form.directionPreference === val
+                                ? 'bg-raised text-ink shadow-[0_1px_3px_rgba(19,38,27,0.1)]'
+                                : 'text-muted hover:text-ink',
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5">
+                    <div className="mb-2 text-[12px] font-medium text-muted">{t('绑定大模型 API（BYOK）')}</div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setForm((c) => ({ ...c, llmProfileId: '' }))}
+                        className={cn(
+                          'rounded-full border px-3.5 py-1.5 text-[12px] font-medium transition-colors',
+                          form.llmProfileId === ''
+                            ? 'border-accent bg-accent-soft text-accent-ink'
+                            : 'border-line-strong bg-canvas text-muted hover:text-ink',
+                        )}
+                      >
+                        {t('跟随默认启用模型')}
+                      </button>
+                      {llmProfiles.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => setForm((c) => ({ ...c, llmProfileId: String(p.id) }))}
+                          className={cn(
+                            'rounded-full border px-3.5 py-1.5 text-[12px] font-medium transition-colors',
+                            form.llmProfileId === String(p.id)
+                              ? 'border-accent bg-accent-soft text-accent-ink'
+                              : 'border-line-strong bg-canvas text-muted hover:text-ink',
+                          )}
+                        >
+                          {p.name} · {p.modelName}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+
+                {/* 03 Capital & Hard Risk Guardrails */}
+                <section className="rounded-[24px] border border-line bg-raised p-5 sm:p-6">
+                  <div className="mb-4 flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+                      <Sliders size={12} /> 03 · {t('资金与硬风控边界')}
+                    </span>
+                    <span className="text-[11px] text-faint">{t('受平台安全上限保护，AI 无法绕过')}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3">
+                    <Field label={t('分配预算 (USDT)')}>
+                      <Input type="number" min="10" step="10" required value={form.allocatedBudgetUsdt} onChange={(e) => setForm((c) => ({ ...c, allocatedBudgetUsdt: e.target.value }))} />
+                    </Field>
+                    <Field label={t('杠杆上限 (≤10x)')}>
+                      <Input type="number" min="1" max="10" required value={form.maxLeverage} onChange={(e) => setForm((c) => ({ ...c, maxLeverage: e.target.value }))} />
+                    </Field>
+                    <Field label={t('最大持仓 (≤3)')}>
+                      <Input type="number" min="1" max="3" required value={form.maxOpenPositions} onChange={(e) => setForm((c) => ({ ...c, maxOpenPositions: e.target.value }))} />
+                    </Field>
+                    <Field label={t('单笔止损 % (≤2%)')}>
+                      <Input type="number" min="0.2" max="2" step="0.1" required value={form.maxSingleLossPct} onChange={(e) => setForm((c) => ({ ...c, maxSingleLossPct: e.target.value }))} />
+                    </Field>
+                    <Field label={t('综合分门槛')}>
+                      <Input type="number" min="40" max="95" required value={form.minTotalScore} onChange={(e) => setForm((c) => ({ ...c, minTotalScore: e.target.value }))} />
+                    </Field>
+                    <Field label={t('最终排名分门槛')}>
+                      <Input type="number" min="40" max="95" required value={form.minFinalRankScore} onChange={(e) => setForm((c) => ({ ...c, minFinalRankScore: e.target.value }))} />
+                    </Field>
+                  </div>
+                </section>
+
+                {/* 04 Symbols & Strategy Prompt */}
+                <section className="rounded-[24px] border border-line bg-raised p-5 sm:p-6">
+                  <div className="mb-4 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+                    04 · {t('标的偏好与交易风格 Prompt')}
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field label={t('币种白名单（留空扫描全市场）')}>
+                      <Input placeholder="BTC, ETH, SOL" value={form.symbolWhitelist} onChange={(e) => setForm((c) => ({ ...c, symbolWhitelist: e.target.value }))} />
+                    </Field>
+                    <Field label={t('币种黑名单（可选）')}>
+                      <Input placeholder="DOGE, PEPE" value={form.symbolBlacklist} onChange={(e) => setForm((c) => ({ ...c, symbolBlacklist: e.target.value }))} />
+                    </Field>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="mb-2 text-[12px] font-medium text-muted">{t('快捷纪律标签（点击追加到 Prompt）')}</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {PROMPT_DISCIPLINE_CHIPS.map((chip) => (
+                        <button
+                          key={chip}
+                          type="button"
+                          onClick={() => setForm((c) => ({
+                            ...c,
+                            systemPrompt: c.systemPrompt.includes(chip) ? c.systemPrompt : `${c.systemPrompt.trim()}${c.systemPrompt.trim() ? '；' : ''}${chip}`,
+                          }))}
+                          className="rounded-full border border-line-strong bg-canvas px-3 py-1 text-[11px] text-muted transition-colors hover:border-accent hover:text-ink"
+                        >
+                          + {t(chip)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <Field className="mt-4" label={t('交易风格 Prompt')}>
+                    <textarea
+                      rows={4}
+                      className="w-full rounded-[16px] border border-line-strong bg-canvas p-3.5 text-[13px] leading-6 text-ink focus:outline focus:outline-2 focus:outline-accent"
+                      value={form.systemPrompt}
+                      onChange={(event) => setForm((c) => ({ ...c, systemPrompt: event.target.value }))}
+                    />
+                  </Field>
+
+                  <div className="mt-4 flex items-center justify-between gap-4 rounded-[16px] bg-canvas px-4 py-3">
+                    <div>
+                      <div className="text-[13px] font-semibold text-ink">{t('受控只读工具查证')}</div>
+                      <div className="text-[11px] text-muted">{t('决策前最多 2 步查盘口深度与历史记录，严禁暴露下单工具')}</div>
+                    </div>
                     <button
-                      key={tpl.code}
                       type="button"
-                      onClick={() => applyTemplate(tpl)}
+                      role="switch"
+                      aria-checked={form.toolCallingEnabled}
+                      onClick={() => setForm((c) => ({ ...c, toolCallingEnabled: !c.toolCallingEnabled }))}
                       className={cn(
-                        'rounded-[16px] border p-3 text-left transition-colors',
-                        form.templateCode === tpl.code
-                          ? 'border-accent bg-accent-soft/60 text-ink'
-                          : 'border-line bg-canvas hover:border-line-strong',
+                        'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
+                        form.toolCallingEnabled ? 'bg-[#16382B] dark:bg-[#D6EE8A]' : 'bg-line-strong',
                       )}
                     >
-                      <div className="text-[13px] font-semibold">{tpl.title}</div>
-                      <div className="mt-0.5 text-[11px] leading-4 text-muted">{tpl.description}</div>
+                      <span
+                        className={cn(
+                          'inline-block size-4 rounded-full bg-white transition-transform dark:bg-[#102016]',
+                          form.toolCallingEnabled ? 'translate-x-6' : 'translate-x-1',
+                        )}
+                      />
                     </button>
-                  ))}
+                  </div>
+                </section>
+              </div>
+
+              {/* Right Sticky Atmospheric Preview Card */}
+              <div className="relative flex flex-col justify-between overflow-hidden border-t border-line bg-[#143528] p-6 text-white lg:border-l lg:border-t-0">
+                <div
+                  className="pointer-events-none absolute inset-0"
+                  style={{
+                    background:
+                      'radial-gradient(80% 70% at 80% 15%, rgba(92, 148, 114, 0.45) 0%, rgba(20, 53, 40, 0.92) 58%, rgba(10, 26, 19, 0.99) 100%)',
+                  }}
+                />
+                <div className="grain-overlay pointer-events-none absolute inset-0 opacity-35 mix-blend-overlay" />
+
+                <div className="relative z-10">
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#D6EE8A] px-2.5 py-0.5 text-[11px] font-semibold text-[#13261B]">
+                      <ShieldCheck size={12} />
+                      {form.runMode}
+                    </span>
+                    <span className="text-[11px] text-white/60">{form.templateCode}</span>
+                  </div>
+
+                  <h3 className="mt-4 font-serif text-[26px] font-normal leading-8 text-white">
+                    {form.name.trim() || t('未命名 Agent')}
+                  </h3>
+                  <p className="mt-1 text-[12px] text-white/65">
+                    {form.symbolWhitelist.trim()
+                      ? `${t('专注标的')} · ${form.symbolWhitelist.toUpperCase()}`
+                      : t('全市场共享扫盘 · 精选 Top 3')}
+                  </p>
+
+                  <div className="mt-6 space-y-3 rounded-[20px] border border-white/12 bg-white/[0.07] p-4 text-[12px] backdrop-blur-sm">
+                    <div className="flex justify-between">
+                      <span className="text-white/60">{t('分配预算')}</span>
+                      <span className="font-semibold text-white">{form.allocatedBudgetUsdt || 0} USDT</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/60">{t('杠杆 / 持仓上限')}</span>
+                      <span className="font-semibold text-white">≤{form.maxLeverage}x · {form.maxOpenPositions}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/60">{t('单笔止损 / 评分')}</span>
+                      <span className="font-semibold text-white">{form.maxSingleLossPct}% · ≥{form.minTotalScore}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/60">{t('评估冷却间隔')}</span>
+                      <span className="font-semibold text-[#D6EE8A]">{form.evalIntervalMinutes}m</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/60">{t('预估日均 Token')}</span>
+                      <span className="font-semibold text-white">
+                        {form.symbolWhitelist.trim()
+                          ? '~0.02–0.06M'
+                          : form.evalIntervalMinutes >= 30
+                            ? '~0.02–0.05M'
+                            : form.evalIntervalMinutes >= 15
+                              ? '~0.04–0.09M'
+                              : '~0.10–0.25M'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="relative z-10 mt-6 space-y-2.5">
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="h-11 w-full rounded-full bg-[#D6EE8A] text-[14px] font-semibold text-[#13261B] shadow-[0_6px_20px_rgba(0,0,0,0.22)] transition-all hover:brightness-105 disabled:opacity-50"
+                  >
+                    {submitting ? t('提交中') : form.id ? t('保存新版本') : t('创建交易 Agent')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditorOpen(false)}
+                    className="h-10 w-full rounded-full border border-white/15 bg-white/5 text-[13px] font-medium text-white/80 transition-colors hover:bg-white/12"
+                  >
+                    {t('取消')}
+                  </button>
                 </div>
               </div>
-            ) : null}
-
-            <form className="mt-5 space-y-4" onSubmit={(event) => void submitForm(event)}>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label={t('Agent 名称')}>
-                  <Input
-                    required
-                    value={form.name}
-                    onChange={(event) => setForm((c) => ({ ...c, name: event.target.value }))}
-                  />
-                </Field>
-                <Field label={t('运行模式')}>
-                  <select
-                    className="h-11 w-full rounded-[10px] border border-line-strong bg-field px-3 text-[14px] text-ink"
-                    value={form.runMode}
-                    onChange={(event) => setForm((c) => ({ ...c, runMode: event.target.value as AgentFormState['runMode'] }))}
-                  >
-                    <option value="PAPER">{t('PAPER · 纯模拟观察（推荐首用）')}</option>
-                    <option value="MANUAL_CONFIRM">{t('MANUAL · 生成待确认订单')}</option>
-                    <option value="AUTO">{t('AUTO · 自动执行（需 DEMO / LIVE 环境）')}</option>
-                  </select>
-                </Field>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label={t('绑定大模型 API（BYOK）')}>
-                  <select
-                    className="h-11 w-full rounded-[10px] border border-line-strong bg-field px-3 text-[14px] text-ink"
-                    value={form.llmProfileId}
-                    onChange={(event) => setForm((c) => ({ ...c, llmProfileId: event.target.value }))}
-                  >
-                    <option value="">{t('跟随当前默认启用的大模型配置')}</option>
-                    {llmProfiles.map((p) => (
-                      <option key={p.id} value={String(p.id)}>
-                        {p.name} ({p.modelName})
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label={t('方向偏好')}>
-                  <select
-                    className="h-11 w-full rounded-[10px] border border-line-strong bg-field px-3 text-[14px] text-ink"
-                    value={form.directionPreference}
-                    onChange={(event) => setForm((c) => ({ ...c, directionPreference: event.target.value as AgentFormState['directionPreference'] }))}
-                  >
-                    <option value="BOTH">{t('双向（做多 / 做空）')}</option>
-                    <option value="LONG_ONLY">{t('仅做多')}</option>
-                    <option value="SHORT_ONLY">{t('仅做空')}</option>
-                  </select>
-                </Field>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-                <Field label={t('分配预算 (USDT)')}>
-                  <Input
-                    type="number"
-                    min="10"
-                    step="10"
-                    required
-                    value={form.allocatedBudgetUsdt}
-                    onChange={(event) => setForm((c) => ({ ...c, allocatedBudgetUsdt: event.target.value }))}
-                  />
-                </Field>
-                <Field label={t('杠杆上限 (≤10x)')}>
-                  <Input
-                    type="number"
-                    min="1"
-                    max="10"
-                    required
-                    value={form.maxLeverage}
-                    onChange={(event) => setForm((c) => ({ ...c, maxLeverage: event.target.value }))}
-                  />
-                </Field>
-                <Field label={t('最大持仓 (≤3)')}>
-                  <Input
-                    type="number"
-                    min="1"
-                    max="3"
-                    required
-                    value={form.maxOpenPositions}
-                    onChange={(event) => setForm((c) => ({ ...c, maxOpenPositions: event.target.value }))}
-                  />
-                </Field>
-                <Field label={t('单笔止损 % (≤2%)')}>
-                  <Input
-                    type="number"
-                    min="0.2"
-                    max="2"
-                    step="0.1"
-                    required
-                    value={form.maxSingleLossPct}
-                    onChange={(event) => setForm((c) => ({ ...c, maxSingleLossPct: event.target.value }))}
-                  />
-                </Field>
-                <Field label={t('综合分门槛')}>
-                  <Input
-                    type="number"
-                    min="40"
-                    max="95"
-                    required
-                    value={form.minTotalScore}
-                    onChange={(event) => setForm((c) => ({ ...c, minTotalScore: event.target.value }))}
-                  />
-                </Field>
-                <Field label={t('最终排名分门槛')}>
-                  <Input
-                    type="number"
-                    min="40"
-                    max="95"
-                    required
-                    value={form.minFinalRankScore}
-                    onChange={(event) => setForm((c) => ({ ...c, minFinalRankScore: event.target.value }))}
-                  />
-                </Field>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label={t('币种白名单（可选，逗号分隔）')}>
-                  <Input
-                    placeholder="BTC, ETH, SOL"
-                    value={form.symbolWhitelist}
-                    onChange={(event) => setForm((c) => ({ ...c, symbolWhitelist: event.target.value }))}
-                  />
-                </Field>
-                <Field label={t('币种黑名单（可选，逗号分隔）')}>
-                  <Input
-                    placeholder="DOGE, PEPE"
-                    value={form.symbolBlacklist}
-                    onChange={(event) => setForm((c) => ({ ...c, symbolBlacklist: event.target.value }))}
-                  />
-                </Field>
-              </div>
-
-              <Field label={t('交易风格 Prompt（硬风控始终不可绕过）')}>
-                <textarea
-                  rows={4}
-                  className="w-full rounded-[12px] border border-line-strong bg-field p-3 text-[13px] leading-6 text-ink focus:outline focus:outline-2 focus:outline-accent"
-                  value={form.systemPrompt}
-                  onChange={(event) => setForm((c) => ({ ...c, systemPrompt: event.target.value }))}
-                />
-              </Field>
-
-              <label className="flex items-center gap-2 text-[13px] text-ink">
-                <input
-                  type="checkbox"
-                  checked={form.toolCallingEnabled}
-                  onChange={(event) => setForm((c) => ({ ...c, toolCallingEnabled: event.target.checked }))}
-                />
-                {t('启用受控只读工具查证（决策前最多 2 步查盘口/历史，严禁下单工具）')}
-              </label>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <Button variant="ghost" type="button" onClick={() => setEditorOpen(false)}>
-                  {t('取消')}
-                </Button>
-                <Button variant="primary" type="submit" disabled={submitting}>
-                  {submitting ? t('提交中') : form.id ? t('保存新版本') : t('创建 Agent')}
-                </Button>
-              </div>
-            </form>
-          </div>
+            </div>
+          </form>
         </div>
       ) : null}
 

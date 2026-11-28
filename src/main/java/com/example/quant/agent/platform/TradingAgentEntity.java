@@ -75,6 +75,9 @@ public class TradingAgentEntity {
     @Column(name = "tool_calling_enabled", nullable = false)
     private boolean toolCallingEnabled = true;
 
+    @Column(name = "eval_interval_minutes", nullable = false)
+    private int evalIntervalMinutes = 5;
+
     @Column(name = "version_no", nullable = false)
     private int versionNo = 1;
 
@@ -134,6 +137,8 @@ public class TradingAgentEntity {
     public void setSystemPrompt(String systemPrompt) { this.systemPrompt = systemPrompt; }
     public boolean isToolCallingEnabled() { return toolCallingEnabled; }
     public void setToolCallingEnabled(boolean toolCallingEnabled) { this.toolCallingEnabled = toolCallingEnabled; }
+    public int getEvalIntervalMinutes() { return evalIntervalMinutes; }
+    public void setEvalIntervalMinutes(int evalIntervalMinutes) { this.evalIntervalMinutes = evalIntervalMinutes; }
     public int getVersionNo() { return versionNo; }
     public void setVersionNo(int versionNo) { this.versionNo = versionNo; }
     public String getLastDecision() { return lastDecision; }
