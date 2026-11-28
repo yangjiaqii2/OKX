@@ -1,5 +1,12 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 修复首页锚点按钮在 HashRouter 下误跳登录页
+
+- **变更摘要**：将 `frontend/src/pages/LandingPage.tsx` 中的顶部导航与「了解架构原则 · 3 分钟上手」等锚点链接（`<a href="#philosophy/#workflow/#faq/#top">`）改为基于 `scrollIntoView` 的按钮事件，避免修改 `window.location.hash` 被 React Admin `HashRouter` 识别为受保护路由而触发跳转登录页。
+- **涉及文件**：`frontend/src/pages/LandingPage.tsx`
+- **影响范围**：仅影响未登录首页的页内平滑滚动定位，不改变页面路由与鉴权逻辑。
+- **验证结果**：`npm --prefix frontend run build` 通过（0 错误），并同步推送至 `origin/main` 与 Miren `local` 集群。
+
 ### 2026-11-28 - 主流大模型预设、编辑风 Agent 创建工作室、评估冷却间隔（V58）与邮箱验证注册/忘记密码（V59）
 
 - **变更摘要**：

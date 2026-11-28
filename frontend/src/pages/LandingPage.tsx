@@ -55,8 +55,19 @@ export function LandingPage({ onOpenAuth }: LandingPageProps) {
   const reduce = useReducedMotion();
   const [activeScenario, setActiveScenario] = useState(1);
 
+  function scrollToSection(id: string) {
+    if (id === 'top') {
+      window.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
+      return;
+    }
+    const target = document.getElementById(id);
+    if (target) {
+      target.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    }
+  }
+
   return (
-    <div className="min-h-dvh bg-[#FFFFFF] text-[#17211B] selection:bg-[#D6EE8A] selection:text-[#13261B]">
+    <div id="top" className="min-h-dvh bg-[#FFFFFF] text-[#17211B] selection:bg-[#D6EE8A] selection:text-[#13261B]">
       {/* 1. Hero Section — Deep Forest Grainy Canvas */}
       <section className="relative flex min-h-dvh flex-col overflow-hidden bg-[#143528] text-white">
         <div
@@ -70,23 +81,29 @@ export function LandingPage({ onOpenAuth }: LandingPageProps) {
 
         {/* Minimal Transparent Navbar */}
         <header className="relative z-20 mx-auto flex w-full max-w-[1320px] items-center justify-between px-6 py-6 sm:px-10">
-          <a href="#top" className="flex items-center gap-2.5 text-white no-underline">
+          <button
+            type="button"
+            onClick={() => scrollToSection('top')}
+            className="flex items-center gap-2.5 text-white no-underline"
+          >
             <BrandMark tone="light" size={30} />
             <span className="font-serif text-[19px] font-medium tracking-[-0.02em]">Quant Desk</span>
-          </a>
+          </button>
           <div className="flex items-center gap-2.5 sm:gap-4">
-            <a
-              href="#workflow"
+            <button
+              type="button"
+              onClick={() => scrollToSection('workflow')}
               className="hidden text-[14px] font-medium text-white/75 transition-colors hover:text-white sm:inline"
             >
               {t('工作流')}
-            </a>
-            <a
-              href="#faq"
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollToSection('faq')}
               className="hidden text-[14px] font-medium text-white/75 transition-colors hover:text-white sm:inline"
             >
               {t('常见问题')}
-            </a>
+            </button>
             <div className="text-white/85 [&_button]:text-white/85 [&_button:hover]:bg-white/10">
               <LanguageSwitch />
             </div>
@@ -145,15 +162,16 @@ export function LandingPage({ onOpenAuth }: LandingPageProps) {
           </motion.div>
 
           {/* Bottom Frosted Capsule Cue (echoing reference pill bar) */}
-          <a
-            href="#philosophy"
+          <button
+            type="button"
+            onClick={() => scrollToSection('philosophy')}
             className="mt-16 inline-flex items-center gap-3 rounded-full border border-white/15 bg-[#0C1D15]/60 py-2 pl-5 pr-2 text-[13px] font-medium text-white/85 backdrop-blur-md transition-colors hover:bg-[#0C1D15]/80 sm:mt-20"
           >
             <span>{t('了解架构原则')} · {t('3 分钟上手')}</span>
             <span className="grid size-7 place-items-center rounded-full bg-white text-[#13261B]">
               <ArrowDown size={14} />
             </span>
-          </a>
+          </button>
         </div>
       </section>
 
