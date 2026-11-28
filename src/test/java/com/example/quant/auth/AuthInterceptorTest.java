@@ -26,7 +26,10 @@ class AuthInterceptorTest {
         AuthInterceptor interceptor = new AuthInterceptor(sessionService());
 
         assertThat(preHandle(interceptor, "POST", "/api/quant/auth/login", "")).isTrue();
+        assertThat(preHandle(interceptor, "POST", "/api/quant/auth/register", "")).isTrue();
+        assertThat(preHandle(interceptor, "GET", "/api/quant/auth/registration-config", "")).isTrue();
         assertThat(preHandle(interceptor, "GET", "/api/quant/auth/session", "")).isTrue();
+        assertThat(preHandle(interceptor, "GET", "/api/quant/llm/profiles", "")).isFalse();
     }
 
     @Test

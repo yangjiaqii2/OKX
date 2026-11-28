@@ -52,10 +52,15 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     private static boolean isPublicAuthEndpoint(HttpServletRequest request) {
         String uri = request.getRequestURI();
+        if ("POST".equalsIgnoreCase(request.getMethod())
+                && ("/api/quant/auth/login".equals(uri) || "/api/quant/auth/register".equals(uri))) {
+            return true;
+        }
         if ("/api/quant/auth/login".equals(uri)) {
             return true;
         }
-        return "GET".equalsIgnoreCase(request.getMethod()) && "/api/quant/auth/session".equals(uri);
+        return "GET".equalsIgnoreCase(request.getMethod())
+                && ("/api/quant/auth/session".equals(uri) || "/api/quant/auth/registration-config".equals(uri));
     }
 
     private static String bearerToken(String header) {

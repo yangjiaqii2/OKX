@@ -56,12 +56,20 @@ public class AiAnalysisService {
         if (!hasText(aiProperties.baseUrl())) {
             throw new IllegalStateException("AI_BASE_URL 未配置");
         }
+        String model = hasText(aiProperties.model()) ? aiProperties.model() : "moonshot-v1-8k";
+        return completeJson(new LlmRuntimeConfig(aiProperties.baseUrl(), aiProperties.apiKey(), model), systemPrompt, userPrompt);
+    }
+
+    public JsonNode completeJson(LlmRuntimeConfig config, String systemPrompt, String userPrompt) {
+        if (config == null || !hasText(config.apiKey()) || !hasText(config.baseUrl()) || !hasText(config.modelName())) {
+            throw new IllegalStateException("大模型 API 配置不完整，请先配置 Base URL、模型名称与 API Key");
+        }
         String requestId = UUID.randomUUID().toString();
-        URI endpoint = URI.create(chatCompletionsUrl(aiProperties.baseUrl()));
+        URI endpoint = URI.create(chatCompletionsUrl(config.baseUrl()));
         long startedAt = System.nanoTime();
         try {
             Map<String, Object> payload = Map.of(
-                    "model", hasText(aiProperties.model()) ? aiProperties.model() : "moonshot-v1-8k",
+                    "model", config.modelName().trim(),
                     "temperature", 0.1,
                     "response_format", Map.of("type", "json_object"),
                     "messages", List.of(
@@ -71,9 +79,8 @@ public class AiAnalysisService {
             );
             String body = objectMapper.writeValueAsString(payload);
             log.info("AI request started requestId={} endpoint={} model={} payloadChars={}",
-                    requestId, endpoint, hasText(aiProperties.model()) ? aiProperties.model() : "moonshot-v1-8k",
-                    body.length());
-            HttpResponse<String> response = sendWithRetry(body, endpoint, aiProperties.apiKey());
+                    requestId, endpoint, config.modelName().trim(), body.length());
+            HttpResponse<String> response = sendWithRetry(body, endpoint, config.apiKey().trim());
             log.info("AI response received requestId={} httpStatus={} responseChars={} elapsedMs={}",
                     requestId, response.statusCode(), response.body() == null ? 0 : response.body().length(),
                     elapsedMs(startedAt));
@@ -94,6 +101,48 @@ public class AiAnalysisService {
             log.warn("AI request failed requestId={} stage=SERIALIZE_OR_HTTP reason={} elapsedMs={}",
                     requestId, compact(ex.getMessage()), elapsedMs(startedAt));
             throw new IllegalStateException("AI request failed: " + ex.getMessage(), ex);
+        }
+    }
+
+    public LlmConnectionTestResult testConnection(LlmRuntimeConfig config) {
+        if (config == null || !hasText(config.apiKey()) || !hasText(config.baseUrl()) || !hasText(config.modelName())) {
+            return new LlmConnectionTestResult(false, "", 0L, "大模型 API 配置不完整");
+        }
+        long startedAt = System.nanoTime();
+        String model = config.modelName().trim();
+        try {
+            URI endpoint = URI.create(chatCompletionsUrl(config.baseUrl()));
+            Map<String, Object> payload = Map.of(
+                    "model", model,
+                    "temperature", 0,
+                    "max_tokens", 32,
+                    "messages", List.of(
+                            Map.of("role", "system", "content", "Return only valid JSON: {\"ok\":true}"),
+                            Map.of("role", "user", "content", "ping")
+                    )
+            );
+            String body = objectMapper.writeValueAsString(payload);
+            HttpResponse<String> response = sendWithRetry(body, endpoint, config.apiKey().trim());
+            long elapsed = elapsedMs(startedAt);
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                return new LlmConnectionTestResult(
+                        false,
+                        model,
+                        elapsed,
+                        "接口返回 HTTP " + response.statusCode() + ": " + compact(response.body())
+                );
+            }
+            JsonNode root = objectMapper.readTree(response.body());
+            String content = root.path("choices").path(0).path("message").path("content").asText("");
+            if (!hasText(content)) {
+                return new LlmConnectionTestResult(false, model, elapsed, "模型返回空响应");
+            }
+            return new LlmConnectionTestResult(true, model, elapsed, "连通性验证通过");
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return new LlmConnectionTestResult(false, model, elapsedMs(startedAt), "连通性测试被中断");
+        } catch (Exception ex) {
+            return new LlmConnectionTestResult(false, model, elapsedMs(startedAt), compact(ex.getMessage()));
         }
     }
 

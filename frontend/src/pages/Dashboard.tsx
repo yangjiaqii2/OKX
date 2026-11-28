@@ -25,6 +25,8 @@ type DashboardState = {
   profitError?: string;
   fxRate?: Record<string, unknown>;
   fxRateError?: string;
+  okxBound?: boolean;
+  llmConfigured?: boolean;
 };
 
 export function Dashboard() {
@@ -42,7 +44,7 @@ export function Dashboard() {
     loadRunning.current = true;
     if (source === 'manual') setRefreshing(true);
     try {
-      const [riskResult, accountResult, profitResult, contractResult, orderResult, fxRateResult, positionResult] = await Promise.allSettled([
+      const [riskResult, accountResult, profitResult, contractResult, orderResult, fxRateResult, positionResult, bindingResult, llmStatusResult] = await Promise.allSettled([
         quantApi.riskStatus(),
         quantApi.accountSummary(),
         quantApi.autoTradeProfitSummary(),
@@ -50,6 +52,8 @@ export function Dashboard() {
         quantApi.pendingOrders(),
         quantApi.fxRate('USD', 'CNY'),
         quantApi.positions(),
+        quantApi.accountBindingStatus(),
+        quantApi.llmProfileStatus(),
       ]);
       const positionData = positionResult.status === 'fulfilled' ? positionResult.value : undefined;
       const positions = Array.isArray(positionData) ? openPositions(positionData) : undefined;
@@ -84,6 +88,12 @@ export function Dashboard() {
         ordersError,
         profitError,
         fxRateError,
+        okxBound: bindingResult.status === 'fulfilled'
+          ? Boolean((bindingResult.value as { bound?: boolean } | null)?.bound)
+          : previous.okxBound,
+        llmConfigured: llmStatusResult.status === 'fulfilled'
+          ? Boolean((llmStatusResult.value as { configured?: boolean } | null)?.configured)
+          : previous.llmConfigured,
       }));
     } catch (error) {
       if (source !== 'poll') notify(error instanceof Error ? error.message : t('加载总览失败'), { type: 'error' });
@@ -168,6 +178,40 @@ export function Dashboard() {
       />
 
       <div className="mt-4 space-y-2">
+        {state.okxBound === false || state.llmConfigured === false ? (
+          <div className="rounded-xl border border-line bg-field p-4">
+            <div className="text-[14px] font-semibold text-ink">{t('完成初始化配置即可开启个人交易 Agent')}</div>
+            <p className="mt-1 text-[13px] text-muted">
+              {t('平台按账号严格隔离密钥与交易记录。请先完成以下两项个人配置：')}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-3">
+              <Link
+                to="/account-binding"
+                className={cn(
+                  'inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors',
+                  state.okxBound
+                    ? 'border-line bg-sunken text-muted'
+                    : 'border-accent/40 bg-accent-soft text-accent-ink hover:border-accent',
+                )}
+              >
+                <span>{state.okxBound ? '✓' : '1.'}</span>
+                <span>{state.okxBound ? t('OKX 密钥已绑定') : t('去绑定 OKX API 密钥')}</span>
+              </Link>
+              <Link
+                to="/llm-settings"
+                className={cn(
+                  'inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors',
+                  state.llmConfigured
+                    ? 'border-line bg-sunken text-muted'
+                    : 'border-accent/40 bg-accent-soft text-accent-ink hover:border-accent',
+                )}
+              >
+                <span>{state.llmConfigured ? '✓' : '2.'}</span>
+                <span>{state.llmConfigured ? t('大模型 API 已配置') : t('去配置个人大模型 API')}</span>
+              </Link>
+            </div>
+          </div>
+        ) : null}
         {state.coreDataError ? <Alert severity="warning">{t('核心账户或风控数据加载失败，请检查后端服务。')}</Alert> : null}
         {accountMode === 'OKX_ERROR' ? <Alert severity="error">{t('OKX账户接口异常：')}{String(state.account?.message ?? '')}</Alert> : null}
         {state.contractsError ? <Alert severity="warning">{t('OKX合约机会池暂不可用：')}{state.contractsError}</Alert> : null}

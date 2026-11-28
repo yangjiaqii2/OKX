@@ -52,6 +52,27 @@ export const quantApi = {
       body: JSON.stringify(payload),
     }),
   unbindOkxAccount: () => quantFetch('/account/unbind', { method: 'POST' }),
+  llmProfileStatus: () => quantFetch('/llm/profiles/status'),
+  llmProfiles: () => quantFetch('/llm/profiles'),
+  saveLlmProfile: (payload: {
+    id?: number | null;
+    name: string;
+    baseUrl: string;
+    modelName: string;
+    apiKey?: string;
+    active?: boolean;
+  }) =>
+    quantFetch('/llm/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  activateLlmProfile: (id: number) =>
+    quantFetch(`/llm/profiles/${encodeURIComponent(String(id))}/activate`, { method: 'POST' }),
+  testLlmProfile: (id: number) =>
+    quantFetch(`/llm/profiles/${encodeURIComponent(String(id))}/test`, { method: 'POST' }),
+  deleteLlmProfile: (id: number) =>
+    quantFetch(`/llm/profiles/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
   systemStatus: () => quantFetch('/system/status'),
   runtimeStatus: (signal?: AbortSignal) => quantFetch('/system/runtime-status', { signal }),
   fxRate: (base = 'USD', quote = 'CNY') =>

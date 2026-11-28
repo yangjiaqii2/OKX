@@ -31,6 +31,47 @@ async function authFetch(path: string, options: RequestInit = {}) {
   return (await response.json()) as AuthSession;
 }
 
+export type RegistrationConfig = {
+  registrationEnabled: boolean;
+  inviteCodeRequired: boolean;
+};
+
+export async function fetchRegistrationConfig(): Promise<RegistrationConfig> {
+  try {
+    const response = await fetch(`${apiBaseUrl}/auth/registration-config`, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      return { registrationEnabled: true, inviteCodeRequired: false };
+    }
+    return (await response.json()) as RegistrationConfig;
+  } catch {
+    return { registrationEnabled: true, inviteCodeRequired: false };
+  }
+}
+
+export async function registerAccount(params: {
+  username: string;
+  password: string;
+  inviteCode?: string;
+}): Promise<AuthSession> {
+  const session = await authFetch('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: params.username,
+      password: params.password,
+      inviteCode: params.inviteCode ?? '',
+    }),
+  });
+  if (!session.authenticated || !session.token) {
+    throw new Error(t('注册失败'));
+  }
+  setAuthSession(session);
+  validatedSession = { token: session.token, expiresAt: session.expiresAtEpochMillis ?? Infinity };
+  return session;
+}
+
 let validatedSession: { token: string; expiresAt: number } | undefined;
 let sessionRequest: { token: string; promise: Promise<void> } | undefined;
 

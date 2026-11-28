@@ -1,6 +1,7 @@
 import {
   Activity,
   Bookmark,
+  Bot,
   CandlestickChart,
   KeyRound,
   LayoutDashboard,
@@ -18,6 +19,7 @@ import { useState, type ReactNode } from 'react';
 import { useGetIdentity, useLogout } from 'react-admin';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { getAuthRole } from './api/auth';
+import { BrandMark } from './components/BrandMark';
 import { LanguageSwitch } from './components/LanguageSwitch';
 import { RuntimeStatusBar } from './components/RuntimeStatusBar';
 import { ThemeToggle } from './components/ThemeToggle';
@@ -41,15 +43,18 @@ const review = [
 const system = [
   { to: '/account-risk', label: '账户与风控', icon: Shield },
   { to: '/account-binding', label: '账号绑定', icon: KeyRound },
+  { to: '/llm-settings', label: '大模型 API', icon: Bot },
   { to: '/security', label: '账号安全', icon: UserRound },
   { to: '/system-control', label: '系统控制', icon: Settings2 },
 ];
 
 function Brand() {
   return (
-    <div className="mb-5 flex h-8 items-center gap-2.5 px-2">
-      <i className="size-2.5 shrink-0 rounded-[3px] bg-accent" />
-      <b className="font-sans text-[14px] font-semibold tracking-[-0.022em]">Quant Desk</b>
+    <div className="mb-6 flex h-9 items-center gap-2.5 px-2">
+      <BrandMark tone="forest" size={26} />
+      <div className="min-w-0 leading-none">
+        <b className="block font-serif text-[17px] font-medium tracking-[-0.02em] text-ink">Quant Desk</b>
+      </div>
     </div>
   );
 }
@@ -61,13 +66,13 @@ function NavItem({ to, label, icon: Icon, end = false, onClick }: { to: string; 
       end={end}
       onClick={onClick}
       className={({ isActive }) => cn(
-        'flex h-8 items-center gap-2 whitespace-nowrap rounded-lg px-2 text-[13px] leading-[18px]',
-        isActive ? 'bg-accent-soft font-semibold text-accent-ink' : 'text-[#2A303A] hover:bg-sunken dark:text-ink',
+        'flex h-9 items-center gap-2.5 whitespace-nowrap rounded-full px-3 text-[13px] leading-[18px] transition-colors',
+        isActive ? 'bg-accent-soft font-semibold text-accent-ink' : 'text-ink/80 hover:bg-sunken',
       )}
     >
       {({ isActive }) => (
         <>
-          <Icon size={16} strokeWidth={1.6} className={isActive ? 'text-accent-ink' : 'text-[#66717E] dark:text-muted'} />
+          <Icon size={15} strokeWidth={1.7} className={isActive ? 'text-accent-ink' : 'text-muted'} />
           {t(label)}
         </>
       )}
@@ -142,7 +147,7 @@ function MobileNav() {
   const moreItems = [
     ['当前委托/保护单', '/currentOkxOrders'], ['交易复盘', '/autoTradeRecords'], ['生命周期', '/autoTradeLifecycle'],
     ['平仓记录', '/closePositionRecords'], ['账户与风控', '/account-risk'], ['账号绑定', '/account-binding'],
-    ['账号安全', '/security'], ['系统控制', '/system-control'],
+    ['大模型 API', '/llm-settings'], ['账号安全', '/security'], ['系统控制', '/system-control'],
   ] as const;
   return (
     <>

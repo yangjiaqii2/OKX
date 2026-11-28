@@ -11,6 +11,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AuthUserService {
     private static final int MIN_PASSWORD_LENGTH = 6;
+    private static final java.util.regex.Pattern REGISTER_USERNAME_PATTERN =
+            java.util.regex.Pattern.compile("^[a-zA-Z0-9._-]{3,32}$");
 
     private final AuthUserRepository repository;
     private final PasswordHasher passwordHasher;
@@ -79,6 +81,36 @@ public class AuthUserService {
     public AuthUserView createUserAs(String actorUsername, CreateUserRequest request) {
         requireAdmin(actorUsername);
         return createUser(request);
+    }
+
+    public AuthRegistrationConfigResponse registrationConfig() {
+        return new AuthRegistrationConfigResponse(
+                authProperties.effectiveRegistrationEnabled(),
+                authProperties.isInviteCodeRequired()
+        );
+    }
+
+    @Transactional
+    public AuthUserEntity registerUser(AuthRegisterRequest request) {
+        if (!authProperties.effectiveRegistrationEnabled()) {
+            throw new IllegalArgumentException("当前未开放自助注册，请联系管理员创建账号");
+        }
+        if (request == null) {
+            throw new IllegalArgumentException("注册信息不能为空");
+        }
+        String username = normalizeUsername(request.username());
+        if (!REGISTER_USERNAME_PATTERN.matcher(username).matches()) {
+            throw new IllegalArgumentException("用户名需为 3-32 位字母、数字、点、下划线或短横线");
+        }
+        if (authProperties.isInviteCodeRequired()) {
+            String provided = request.inviteCode() == null ? "" : request.inviteCode().trim();
+            if (!authProperties.effectiveInviteCode().equals(provided)) {
+                throw new IllegalArgumentException("邀请码无效");
+            }
+        }
+        AuthUserEntity created = createUserEntity(new CreateUserRequest(username, request.password(), AuthRole.USER, true));
+        created.setLastLoginAt(Instant.now());
+        return repository.save(created);
     }
 
     @Transactional

@@ -63,6 +63,59 @@ class AuthUserServiceTest {
                 .hasMessageContaining("管理员");
     }
 
+    @Test
+    void registersStandardUserWhenRegistrationIsOpen() {
+        InMemoryAuthUserRepository repository = new InMemoryAuthUserRepository();
+        AuthUserService service = seededService(repository);
+
+        AuthUserEntity created = service.registerUser(new AuthRegisterRequest("trader_01", "pass12345", ""));
+
+        assertThat(created.getUsername()).isEqualTo("trader_01");
+        assertThat(created.getRole()).isEqualTo(AuthRole.USER);
+        assertThat(created.isEnabled()).isTrue();
+        assertThat(service.authenticate("trader_01", "pass12345")).isPresent();
+    }
+
+    @Test
+    void rejectsRegistrationWhenInviteCodeDoesNotMatchOrRegistrationDisabled() {
+        InMemoryAuthUserRepository repository = new InMemoryAuthUserRepository();
+        AuthUserService inviteOnly = new AuthUserService(
+                repository,
+                new Pbkdf2PasswordHasher(),
+                new AuthProperties("admin", "test-auth-fixture-password", 480, true, "BETA-2026")
+        );
+        inviteOnly.initializeDefaultAdmin();
+
+        assertThat(inviteOnly.registrationConfig()).isEqualTo(new AuthRegistrationConfigResponse(true, true));
+        assertThatThrownBy(() -> inviteOnly.registerUser(new AuthRegisterRequest("alice", "pass12345", "wrong")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("邀请码");
+        assertThat(inviteOnly.registerUser(new AuthRegisterRequest("alice", "pass12345", "BETA-2026")).getRole())
+                .isEqualTo(AuthRole.USER);
+
+        AuthUserService closed = new AuthUserService(
+                repository,
+                new Pbkdf2PasswordHasher(),
+                new AuthProperties("admin", "test-auth-fixture-password", 480, false, "")
+        );
+        assertThatThrownBy(() -> closed.registerUser(new AuthRegisterRequest("bob", "pass12345", "")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("未开放自助注册");
+    }
+
+    @Test
+    void rejectsInvalidUsernameOrDuplicateDuringRegistration() {
+        InMemoryAuthUserRepository repository = new InMemoryAuthUserRepository();
+        AuthUserService service = seededService(repository);
+
+        assertThatThrownBy(() -> service.registerUser(new AuthRegisterRequest("ab", "pass12345", "")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("3-32");
+        assertThatThrownBy(() -> service.registerUser(new AuthRegisterRequest("admin", "pass12345", "")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("已存在");
+    }
+
     private static AuthUserService seededService(InMemoryAuthUserRepository repository) {
         AuthUserService service = new AuthUserService(
                 repository,

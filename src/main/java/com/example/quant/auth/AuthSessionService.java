@@ -37,6 +37,15 @@ public class AuthSessionService {
         }
         AuthUserEntity user = authUserService.authenticate(request.username(), request.password())
                 .orElseThrow(() -> new IllegalArgumentException("用户名或密码错误"));
+        return issueSession(user);
+    }
+
+    public AuthSessionResponse register(AuthRegisterRequest request) {
+        AuthUserEntity user = authUserService.registerUser(request);
+        return issueSession(user);
+    }
+
+    private AuthSessionResponse issueSession(AuthUserEntity user) {
         cleanupExpired();
         String token = newToken();
         Instant expiresAt = clock.instant().plusSeconds(authProperties.effectiveSessionTtlMinutes() * 60L);

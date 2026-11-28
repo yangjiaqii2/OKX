@@ -37,8 +37,8 @@ export function PageHeader({ title, subtitle, status, onRefresh, refreshing = fa
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-[28px] font-semibold leading-[34px] tracking-[-0.03em]">{title}</h1>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h1 className="font-serif text-[30px] font-medium leading-[36px] tracking-[-0.02em] text-ink">{title}</h1>
             {status}
           </div>
           {subtitle ? <p className="mt-1 max-w-[68ch] text-[14px] leading-[22px] text-muted">{subtitle}</p> : null}

@@ -1,6 +1,7 @@
 package com.example.quant.controller;
 
 import com.example.quant.auth.AuthLoginRequest;
+import com.example.quant.auth.AuthRegisterRequest;
 import com.example.quant.auth.AuthSessionService;
 import com.example.quant.auth.AuthUserService;
 import com.example.quant.auth.ChangePasswordRequest;
@@ -32,6 +33,16 @@ public class AuthController {
     @PostMapping("/login")
     public Object login(@RequestBody AuthLoginRequest request) {
         return authSessionService.login(request);
+    }
+
+    @GetMapping("/registration-config")
+    public Object registrationConfig() {
+        return authUserService.registrationConfig();
+    }
+
+    @PostMapping("/register")
+    public Object register(@RequestBody AuthRegisterRequest request) {
+        return authSessionService.register(request);
     }
 
     @PostMapping("/logout")

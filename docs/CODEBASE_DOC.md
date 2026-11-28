@@ -1,5 +1,32 @@
 # OKX 量化交易系统代码库说明
 
+### 2026-11-28 - 首页产品介绍页与全站编辑风视觉语言统一
+
+- **变更摘要**：参考编辑感自然林木与柔和酸橙色设计语言，新增未登录默认展示的产品首页介绍页（右上角提供登录/免费开始入口），并同步统一登录注册页及控制台内部配色、衬线标题排版、胶囊按钮与品牌标识。
+- **涉及文件**：
+  - 全站视觉系统与品牌 Logo：`frontend/public/favicon.svg`、`frontend/src/components/BrandMark.tsx`、`frontend/src/styles/globals.css`、`frontend/src/theme.ts`、`frontend/index.html`、`frontend/src/components/PageShell.tsx`、`frontend/src/components/ui/button.tsx`、`frontend/src/layout.tsx`、`.dockerignore`
+  - 首页与登录认证路由：`frontend/src/pages/LandingPage.tsx`、`frontend/src/pages/LoginPage.tsx`、`frontend/src/api/auth.ts`、`frontend/src/App.tsx`、`frontend/src/i18n.en.json`
+- **影响范围**：
+  - 未登录访问 `/` 或 `#/` 直接渲染 `LandingPage`（深林颗粒感 Hero、暖色调哲学浮卡、两栏功能叙事与双密钥对比卡、可交互决策场景栈、荧光绿高亮引语、开放式 FAQ 与深色收尾 CTA）；点击「登录」或「免费开始 / 创建个人账号」分别直达登录态或注册态（通过 `preferredAuthMode` 状态与 `#/login?mode=register` 双向保持，避免未启动后端或 React Admin 重定向时丢失注册 Tab），登录或注册成功后自动切入控制台。
+  - 控制台内页与登录页统一为暖石白画布（`#F7F6F2`）/ 深林暗黑画布（`#0B100D`）、深森绿主色（`#16382B`）、酸橙亮色点缀（`#D6EE8A`）、衬线主标题与胶囊式导航/按钮。
+- **验证结果**：`npm --prefix frontend run build` 通过 `tsc` 类型检查与 Vite 6.4.3 生产构建（4,983 个模块，0 错误）。
+
+### 2026-11-28 - Agent 平台 Phase 1：开放自助注册与个人大模型 API（BYOK）配置
+
+- **变更摘要**：完成 Agent 平台第一阶段接入底座，支持登录页开放自助注册、按用户加密保存与测试个人 OpenAI 兼容大模型 API（BYOK），并在总览页提供 OKX 密钥与大模型 API 两步初始化引导。
+- **涉及文件**：
+  - 后端注册：`src/main/java/com/example/quant/config/AuthProperties.java`、`src/main/java/com/example/quant/auth/AuthRegisterRequest.java`、`src/main/java/com/example/quant/auth/AuthRegistrationConfigResponse.java`、`src/main/java/com/example/quant/auth/AuthUserService.java`、`src/main/java/com/example/quant/auth/AuthSessionService.java`、`src/main/java/com/example/quant/auth/AuthInterceptor.java`、`src/main/java/com/example/quant/controller/AuthController.java`
+  - 个人 LLM API（BYOK）：`src/main/resources/db/migration/V55__user_llm_profile.sql`、`src/main/java/com/example/quant/ai/LlmRuntimeConfig.java`、`src/main/java/com/example/quant/ai/LlmConnectionTestResult.java`、`src/main/java/com/example/quant/ai/UserLlmProfileEntity.java`、`src/main/java/com/example/quant/ai/UserLlmProfileRepository.java`、`src/main/java/com/example/quant/ai/UserLlmProfileView.java`、`src/main/java/com/example/quant/ai/UserLlmProfileStatus.java`、`src/main/java/com/example/quant/ai/SaveUserLlmProfileRequest.java`、`src/main/java/com/example/quant/ai/UserLlmProfileService.java`、`src/main/java/com/example/quant/ai/AiAnalysisService.java`、`src/main/java/com/example/quant/controller/UserLlmProfileController.java`
+  - 配置与前端：`src/main/resources/application.yml`、`.env.example`、`frontend/src/api/authProvider.ts`、`frontend/src/api/quantApi.ts`、`frontend/src/pages/LoginPage.tsx`、`frontend/src/pages/LlmSettingsPage.tsx`、`frontend/src/pages/Dashboard.tsx`、`frontend/src/App.tsx`、`frontend/src/layout.tsx`、`frontend/src/i18n.en.json`
+  - 测试：`src/test/java/com/example/quant/auth/AuthUserServiceTest.java`、`src/test/java/com/example/quant/auth/AuthInterceptorTest.java`、`src/test/java/com/example/quant/ai/UserLlmProfileServiceTest.java`
+- **影响范围**：
+  - 新增公开接口 `GET /api/quant/auth/registration-config` 与 `POST /api/quant/auth/register`，默认开放注册（`QUANT_AUTH_REGISTRATION_ENABLED=true`，可选 `QUANT_AUTH_INVITE_CODE`），新注册账号固定分配 `USER` 角色并自动签发登录会话。
+  - 新增 `quant_user_llm_profile` 表（Flyway V55）及 `/api/quant/llm/profiles` 系列接口，复用 `OkxCredentialCodec`（AES-GCM）加密存储用户自带 API Key，永不回显明文；`AiAnalysisService` 新增按 `LlmRuntimeConfig` 调用与连通性测试能力。
+  - 前端登录页新增登录/注册切换，侧边栏与移动端菜单新增「大模型 API」配置页（`/llm-settings`），总览页在未绑定 OKX 密钥或未配置大模型 API 时展示两步引导卡片。
+- **验证结果**：
+  - 后端：`mvn -B -o test`（全量 1,189 项测试）发现并修复 `AuthProperties` 重载构造器缺少 `@ConstructorBinding` 后，全部 13 个受影响的 Spring/JPA/Flyway 迁移测试类与 4 个 Auth/LLM 单元测试类共 55 项全部通过（0 失败、0 错误，Flyway 成功迁移至 V55）。
+  - 前端：`npm --prefix frontend ci && npm --prefix frontend run build` 通过 `tsc` 类型检查与 Vite 6.4.3 生产构建（4,981 个模块，0 错误）。
+
 ### 2026-11-26 - 控制台中英文切换与双语 README
 
 - 登录页和控制台顶部提供语言切换。`frontend/src/i18n.ts` 默认使用简体中文，在浏览器保存选择，并同步页面语言及日期、数字格式。

@@ -5,10 +5,13 @@
 !frontend/package.json
 !frontend/package-lock.json
 !frontend/index.html
+!frontend/public/favicon.svg
 !frontend/tsconfig*.json
 !frontend/vite.config.ts
 !frontend/src/**/*.ts
 !frontend/src/**/*.tsx
+!frontend/src/styles/*.css
+!frontend/src/fonts/*.woff2
 !frontend/src/i18n.en.json
 !src/main/java/**/*.java
 !src/main/resources/application.properties

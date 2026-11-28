@@ -4,19 +4,19 @@ import type { ButtonHTMLAttributes } from 'react';
 import { cn } from '../../lib/cn';
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-[13px] font-medium transition-[background-color,color,transform,border-color] duration-150 ease-out disabled:pointer-events-none disabled:opacity-45 active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-[13px] font-medium transition-[background-color,color,transform,border-color,box-shadow] duration-150 ease-out disabled:pointer-events-none disabled:opacity-45 active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
   {
     variants: {
       variant: {
-        primary: 'bg-accent text-on-accent hover:brightness-110',
-        ghost: 'border border-line-strong bg-transparent text-ink hover:bg-sunken',
+        primary: 'bg-accent text-on-accent shadow-[0_1px_2px_rgba(19,38,27,0.12)] hover:brightness-110',
+        ghost: 'border border-line-strong bg-raised/70 text-ink hover:bg-sunken',
         quiet: 'bg-transparent text-ink hover:bg-sunken',
         danger: 'bg-down text-on-accent hover:brightness-110',
         warning: 'border border-warning/40 bg-warning-soft text-warning hover:bg-warning-soft',
       },
       size: {
-        md: 'h-12 px-4 text-[15px]',
-        sm: 'h-8 px-3',
+        md: 'h-11 px-5 text-[14px]',
+        sm: 'h-8 px-3.5',
         icon: 'size-8 px-0',
       },
     },
