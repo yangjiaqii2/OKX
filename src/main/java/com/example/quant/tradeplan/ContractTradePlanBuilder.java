@@ -42,6 +42,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class ContractTradePlanBuilder {
     private static final BigDecimal MIN_RISK_REWARD = BigDecimal.valueOf(1.5);
+    private static final BigDecimal MIN_AGENT_WEIGHTED_NET_RISK_REWARD = new BigDecimal("1.20");
     private static final String STRATEGY_VERSION = "contract-analysis-s1s2-v2";
 
     private final ContractAnalysisService analysisService;
@@ -316,8 +317,9 @@ public class ContractTradePlanBuilder {
         if (executionRisk != null) {
             var intent = TradeIntent.fromPlan(tradePlan, agentProperties.takeProfit().tp1Ratio(),
                     agentProperties.takeProfit().tp2Ratio(), agentProperties.takeProfit().tp3Ratio(), "trade-plan-v1");
+            BigDecimal minNetRatio = overrides != null ? MIN_AGENT_WEIGHTED_NET_RISK_REWARD : MIN_RISK_REWARD;
             var limits = new PlanExecutionRisk.Limits(risk.maxLossAmount(), tradePlan.suggestedMargin(),
-                    usableBalance(account), tradePlan.suggestedLeverage(), MIN_RISK_REWARD, riskRequest);
+                    usableBalance(account), tradePlan.suggestedLeverage(), minNetRatio, riskRequest);
             var estimate = executionRisk.estimate(intent, limits, automatic);
             if (!estimate.accepted()) {
                 return rejectPlan(candidate, gateWarnings, draft, estimate.denial());

@@ -296,7 +296,7 @@ public class OrderConfirmService {
                 return OrderExecutionResult.rejected(risk.rejectReason());
             }
             if (executionRisk != null) {
-                var estimate = estimateExecution(order, riskRequest, risk, account, autoFixedMargin);
+                var estimate = estimateExecution(order, riskRequest, risk, account, autoFixedMargin, agentManagedAuto);
                 if (!estimate.accepted()) {
                     rejectBeforeSubmit(order, estimate.denial(), autoFixedMargin, "EXECUTION_RISK_REJECTED");
                     return OrderExecutionResult.rejected(estimate.denial());
@@ -395,8 +395,11 @@ public class OrderConfirmService {
         }
     }
 
+    private static final BigDecimal MIN_AGENT_WEIGHTED_NET_RISK_REWARD = new BigDecimal("1.20");
+
     private PlanExecutionRisk.Estimate estimateExecution(PendingOrder order, ContractRiskRequest request,
-                                                         RiskCheckResult risk, AccountSummary account, boolean automatic) {
+                                                         RiskCheckResult risk, AccountSummary account,
+                                                         boolean automatic, boolean agentManaged) {
         AgentProperties properties = agentProperties == null ? new AgentProperties() : agentProperties;
         TradeIntent intent = TradeIntent.fromPendingOrder(order, properties.takeProfit().tp1Ratio(),
                 properties.takeProfit().tp2Ratio(), properties.takeProfit().tp3Ratio(), "trade-plan-v1");
@@ -406,9 +409,12 @@ public class OrderConfirmService {
                 && previous.risk().estimatedNetStopLossAmount() != null && previous.risk().riskBudget() != null) {
             budget = budget.min(previous.risk().riskBudget());
         }
+        BigDecimal minNetRatio = agentManaged
+                ? request.minRiskRewardRatio().min(MIN_AGENT_WEIGHTED_NET_RISK_REWARD)
+                : request.minRiskRewardRatio();
         var limits = new PlanExecutionRisk.Limits(budget, order.marginAmount(),
                 account == null ? BigDecimal.ZERO : account.availableBalance(),
-                order.leverage(), request.minRiskRewardRatio(), request);
+                order.leverage(), minNetRatio, request);
         return executionRisk.estimate(intent, limits, automatic);
     }
 
